@@ -4,4 +4,26 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "jax>=0.9.1",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.3",
+    "scipy>=1.17.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-benchmark>=5.2.3",
+    "pytest-regressions>=2.10.0",
+    "ruff>=0.15.5",
+]
+
+[tool.ruff.lint]
+# On top of the default `select`, enable imports sorting
+extend-select = ["I"]
+
+[tool.pyright]
+typeCheckingMode = "recommended"
+venv = ".venv"
+venvPath = "."
