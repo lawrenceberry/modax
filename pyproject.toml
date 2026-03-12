@@ -24,6 +24,10 @@ dev = [
     "ruff>=0.15.5",
 ]
 
+[tool.pytest.ini_options]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+addopts = "-m 'not slow'"
+
 [tool.ruff.lint]
 # On top of the default `select`, enable imports sorting
 extend-select = ["I"]

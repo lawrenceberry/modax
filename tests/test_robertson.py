@@ -24,6 +24,7 @@ def _run_julia(n=2, timeout=300):
         raise RuntimeError(f"Julia failed:\n{result.stderr}")
     return json.loads(result.stdout.strip())
 
+
 _STANDARD_PARAMS = jnp.array([0.04, 1e4, 3e7])
 
 
@@ -92,6 +93,7 @@ def test_rodas5(benchmark):
     np.testing.assert_allclose(y[2], 9.821340e-01, rtol=1e-4)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("params_batch", [2, 100], indirect=True)
 def test_scipy_bdf_ensemble_N(benchmark, params_batch):
     results = benchmark.pedantic(
