@@ -6,9 +6,11 @@ Reproduces the benchmark flow from GPUODEBenchmarks:
 - DiffEqGPU.vectorized_asolve (adaptive dt)
 
 Usage:
-    julia benchmarks/lorenz_julia.jl [N]
+    julia benchmarks/lorenz_julia.jl [N] [rtol] [atol]
 
 N: number of trajectories (default 8192)
+rtol: relative tolerance (default 1e-8)
+atol: absolute tolerance (default 1e-8)
 
 Outputs JSON to stdout with minimum benchmark times in milliseconds.
 """
@@ -19,6 +21,8 @@ using JSON
 using SimpleDiffEq
 
 numberOfParameters = length(ARGS) >= 1 ? parse(Int64, ARGS[1]) : 8192
+const RTOL = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 1e-8
+const ATOL = length(ARGS) >= 3 ? parse(Float64, ARGS[3]) : 1e-8
 
 const SOLVER = GPUTsit5()
 const SOLVER_NAME = "GPUTsit5"
@@ -35,6 +39,7 @@ tspan = (0.0f0, 1.0f0)
 p = @SArray [21.0f0]
 
 lorenzProblem = DiffEqGPU.ODEProblem(lorenz, u0, tspan, p)
+fixed_dt = (tspan[2] - tspan[1]) / 1000  # 1000 steps, matching the Julia paper's fixed dt
 parameterList = range(0.0f0, stop = 21.0f0, length = numberOfParameters)
 prob_func = (prob, i, repeat) -> DiffEqGPU.remake(prob, p = @SArray [parameterList[i]])
 ensembleProb = DiffEqGPU.EnsembleProblem(lorenzProblem, prob_func = prob_func)
@@ -54,8 +59,6 @@ end
 
 fixed_min_ms = 0.0
 adaptive_min_ms = 0.0
-fixed_allocs = -1
-adaptive_allocs = -1
 
 # Strict paper path: build per-trajectory problems and use vectorized APIs.
 I = 1:numberOfParameters
@@ -77,34 +80,28 @@ fixed_min_ms = min_time_ms() do
     CUDA.@sync DiffEqGPU.vectorized_solve(probs, ensembleProb.prob,
                                           SOLVER;
                                           save_everystep = false,
-                                          dt = 0.001f0)
+                                          dt = fixed_dt)
 end
 adaptive_min_ms = min_time_ms() do
     CUDA.@sync DiffEqGPU.vectorized_asolve(probs, ensembleProb.prob,
                                            SOLVER;
-                                           dt = 0.001f0,
-                                           reltol = 1.0f-8,
-                                           abstol = 1.0f-8)
+                                           dt = fixed_dt,
+                                           reltol = RTOL,
+                                           abstol = ATOL)
 end
 
 result = Dict(
-    "mode" => "gpu_lorenz_ensemble",
-    "backend" => "CUDA",
-    "dtype" => "Float32",
     "solver" => SOLVER_NAME,
     "n_trajectories" => numberOfParameters,
     "fixed_dt" => Dict(
-        "dt" => 0.001f0,
+        "dt" => fixed_dt,
         "min_time_ms" => fixed_min_ms,
-        "allocs" => fixed_allocs,
     ),
     "adaptive_dt" => Dict(
-        "dt" => 0.001f0,
-        "reltol" => 1.0f-8,
-        "abstol" => 1.0f-8,
+        "dt" => fixed_dt,
+        "reltol" => RTOL,
+        "abstol" => ATOL,
         "min_time_ms" => adaptive_min_ms,
-        "allocs" => adaptive_allocs,
     ),
-    "benchmark_backend" => "manual_min_time",
 )
 println(JSON.json(result))

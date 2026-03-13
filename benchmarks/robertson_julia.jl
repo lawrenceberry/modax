@@ -1,85 +1,113 @@
 """
-Julia GPU ensemble benchmark for Robertson equation.
+Julia GPU ensemble benchmark for Robertson equation (paper baseline).
+
+Reproduces the benchmark flow from GPUODEBenchmarks:
+- DiffEqGPU.vectorized_solve (fixed dt)
+- DiffEqGPU.vectorized_asolve (adaptive dt)
 
 Usage:
-    julia robertson_julia.jl [N]
+    julia benchmarks/robertson_julia.jl [N] [rtol] [atol]
 
-N: number of trajectories (default 2)
+N: number of trajectories (default 8192)
+rtol: relative tolerance (default 1e-6)
+atol: absolute tolerance (default 1e-8)
 
-Runs with Float64 only.
-Outputs JSON to stdout with timing and results.
+Outputs JSON to stdout with minimum benchmark times in milliseconds.
 """
 
-using OrdinaryDiffEq, StaticArrays, LinearAlgebra, JSON, Random, CUDA, DiffEqGPU
+using DiffEqGPU, StaticArrays
+using CUDA
+using JSON
+using Random
 
-N = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 2
-const T = Float64
+numberOfParameters = length(ARGS) >= 1 ? parse(Int64, ARGS[1]) : 8192
+const RTOL = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 1e-6
+const ATOL = length(ARGS) >= 3 ? parse(Float64, ARGS[3]) : 1e-8
 
-# Paper-style Robertson ODE form (conservative):
-#   dy1/dt = -k1*y1 + k3*y2*y3
-#   dy2/dt =  k1*y1 - k2*y2^2 - k3*y2*y3
-#   dy3/dt =  k2*y2^2
-function robertson_ode(u, p, t)
+const SOLVER = GPURosenbrock23()
+const SOLVER_NAME = "GPURosenbrock23"
+
+function robertson(u, p, t)
     y1, y2, y3 = u
     k1, k2, k3 = p
-    return @SVector [
-        -k1 * y1 + k3 * y2 * y3,
-         k1 * y1 - k2 * y2^2 - k3 * y2 * y3,
-         k2 * y2^2,
-    ]
+    du1 = -k1 * y1 + k3 * y2 * y3
+    du2 =  k1 * y1 - k2 * y2^2 - k3 * y2 * y3
+    du3 =  k2 * y2^2
+    return @SVector [du1, du2, du3]
 end
 
-params = @SVector [T(0.04), T(3e7), T(1e4)]
-u0 = @SVector [one(T), zero(T), zero(T)]
-tspan = (zero(T), T(1e5))
-prob = ODEProblem{false}(robertson_ode, u0, tspan, params)
+u0 = @SVector [1.0, 0.0, 0.0]
+tspan = (0.0, 1e5)
+p = @SVector [0.04, 3e7, 1e4]
 
-# Generate perturbed parameters (±10%)
-function make_perturbed_params(N::Int)
-    base = [T(0.04), T(3e7), T(1e4)]
-    rng = MersenneTwister(42)
-    return [SVector{3,T}(base .* (one(T) .+ T(0.1) .* (2 .* rand(rng, T, 3) .- one(T)))) for _ in 1:N]
+robertsonProblem = DiffEqGPU.ODEProblem(robertson, u0, tspan, p)
+fixed_dt = (tspan[2] - tspan[1]) / 1000  # 1000 steps, matching the Julia paper's fixed dt
+
+rng = MersenneTwister(42)
+base = [0.04, 3e7, 1e4]
+parameterList = [SVector{3,Float64}(base .* (1.0 .+ 0.1 .* (2.0 .* rand(rng, Float64, 3) .- 1.0))) for _ in 1:numberOfParameters]
+
+prob_func = (prob, i, repeat) -> DiffEqGPU.remake(prob, p = parameterList[i])
+ensembleProb = DiffEqGPU.EnsembleProblem(robertsonProblem, prob_func = prob_func)
+
+function min_time_ms(f; repeats = 5)
+    best = Inf
+    for _ in 1:repeats
+        CUDA.synchronize()
+        t0 = time_ns()
+        f()
+        CUDA.synchronize()
+        dt_ms = (time_ns() - t0) / 1e6
+        best = min(best, dt_ms)
+    end
+    return best
 end
 
-params_list = make_perturbed_params(N)
-prob_func = (prob, i, repeat) -> remake(prob, p=params_list[i])
-monteprob = EnsembleProblem(prob, prob_func=prob_func, safetycopy=false)
+fixed_min_ms = 0.0
+adaptive_min_ms = 0.0
 
-backend = CUDA.CUDABackend()
-
-reltol = T(1e-6)
-abstol = T(1e-8)
-dt0 = T(1e-3)
-
-function run_solve(monteprob, backend, N, dt0, abstol, reltol)
-    return solve(monteprob, GPURosenbrock23(), EnsembleGPUKernel(backend),
-                 trajectories=N, adaptive=true, dt=dt0, abstol=abstol, reltol=reltol,
-                 save_everystep=false)
+# Strict paper path: build per-trajectory problems and use vectorized APIs.
+I = 1:numberOfParameters
+if ensembleProb.safetycopy
+    probs = map(I) do i
+        p = ensembleProb.prob_func(deepcopy(ensembleProb.prob), i, 1)
+        convert(DiffEqGPU.ImmutableODEProblem, p)
+    end
+else
+    probs = map(I) do i
+        p = ensembleProb.prob_func(ensembleProb.prob, i, 1)
+        convert(DiffEqGPU.ImmutableODEProblem, p)
+    end
 end
 
-# Warmup (compile GPU kernel)
-warmup_monte = EnsembleProblem(prob, prob_func=(p,i,r)->p, safetycopy=false)
-run_solve(warmup_monte, backend, 2, dt0, abstol, reltol)
-CUDA.synchronize()
+probs = cu(probs)
 
-# Benchmark
-CUDA.synchronize()
-t_start = time()
-sol = run_solve(monteprob, backend, N, dt0, abstol, reltol)
-CUDA.synchronize()
-elapsed = time() - t_start
+fixed_min_ms = min_time_ms() do
+    CUDA.@sync DiffEqGPU.vectorized_solve(probs, ensembleProb.prob,
+                                          SOLVER;
+                                          save_everystep = false,
+                                          dt = fixed_dt)
+end
+adaptive_min_ms = min_time_ms() do
+    CUDA.@sync DiffEqGPU.vectorized_asolve(probs, ensembleProb.prob,
+                                           SOLVER;
+                                           dt = 1e-3,
+                                           reltol = RTOL,
+                                           abstol = ATOL)
+end
 
-finals = [[s.u[end][j] for j in 1:3] for s in sol.u]
-conservations = [sum(s.u[end]) for s in sol.u]
 result = Dict(
-    "solver" => "GPURosenbrock23",
-    "backend" => "CUDA",
-    "reltol" => reltol,
-    "abstol" => abstol,
-    "elapsed_seconds" => elapsed,
-    "n_trajectories" => N,
-    "y_finals" => finals,
-    "conservations" => conservations,
-    "converged" => sol.converged,
+    "solver" => SOLVER_NAME,
+    "n_trajectories" => numberOfParameters,
+    "fixed_dt" => Dict(
+        "dt" => fixed_dt,
+        "min_time_ms" => fixed_min_ms,
+    ),
+    "adaptive_dt" => Dict(
+        "dt" => 1e-3,
+        "reltol" => RTOL,
+        "abstol" => ATOL,
+        "min_time_ms" => adaptive_min_ms,
+    ),
 )
 println(JSON.json(result))
