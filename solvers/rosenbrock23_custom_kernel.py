@@ -33,6 +33,13 @@ _qmin = 0.2  # 1/5
 _sc_gamma = 0.9  # 9/10
 _qoldinit = 1.0e-4
 
+# The number of ODE trajectories solved per block. One CUDA warp runs on one of 4 blocks within a streaming 
+# multi-processor (SM). It always executes 32 threads in lockstep, even if the actual hardware in the block
+# doesn't have enough cores to execute them all in parallel (e.g. if there are only 2 FP64 cores, the 32 
+# threads will take 16 clock cycles to execute the warp). Therefore, if this value is smaller than 32, we 
+# don't fully utilize the available operations/s in the block, but if it's larger than 32, we are batching
+# more ODEs at once, and will end up with more "warp divergence" where some ODE trajectories have finished
+# before others, so operations/s go unused as some ODEs have finished and no longer have any work to do.
 _BLOCK = 32
 
 
