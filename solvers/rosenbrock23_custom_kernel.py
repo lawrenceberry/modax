@@ -7,6 +7,11 @@ with 32 trajectories per block.
 
 Reference: https://github.com/SciML/DiffEqGPU.jl
 """
+# TODOS:
+# 1. Remove Cramer's rule and use a more general jax LU solve
+# 2. Instead of 3 1D blocks, use a single 2D block
+# 3. Add support for non-Robertson problems i.e. general ODEs, using jax.grad or jax.jacfwd for Jacobian and a more general kernel body
+# 4. Rewrite the rodas5_custom_kernel solver to match how the rosenbrock23 solver works i.e. batching 32 trajectories in one warp, masking out trajectories that are done.
 
 import functools
 import math
@@ -43,35 +48,63 @@ def _robertson_rb23_step(y0, y1, y2, p0, p1, p2, dt):
     gamma = dt * _d
 
     # Analytical Jacobian of Robertson system
-    j00 = -p0;       j01 = p1 * y2;                   j02 = p1 * y1
-    j10 = p0;        j11 = -p1 * y2 - 2.0 * p2 * y1;  j12 = -p1 * y1
-    j20 = 0.0 * p0;  j21 = 2.0 * p2 * y1;              j22 = 0.0 * p0
+    j00 = -p0
+    j01 = p1 * y2
+    j02 = p1 * y1
+    j10 = p0
+    j11 = -p1 * y2 - 2.0 * p2 * y1
+    j12 = -p1 * y1
+    j20 = 0.0 * p0
+    j21 = 2.0 * p2 * y1
+    j22 = 0.0 * p0
 
     # W = I - gamma * J
-    w00 = 1.0 - gamma * j00;  w01 = -gamma * j01;       w02 = -gamma * j02
-    w10 = -gamma * j10;        w11 = 1.0 - gamma * j11;  w12 = -gamma * j12
-    w20 = -gamma * j20;        w21 = -gamma * j21;        w22 = 1.0 - gamma * j22
+    w00 = 1.0 - gamma * j00
+    w01 = -gamma * j01
+    w02 = -gamma * j02
+    w10 = -gamma * j10
+    w11 = 1.0 - gamma * j11
+    w12 = -gamma * j12
+    w20 = -gamma * j20
+    w21 = -gamma * j21
+    w22 = 1.0 - gamma * j22
 
     # W⁻¹ via adjugate (Cramer's rule)
-    a00 = w11 * w22 - w12 * w21;  a01 = w02 * w21 - w01 * w22;  a02 = w01 * w12 - w02 * w11
-    a10 = w12 * w20 - w10 * w22;  a11 = w00 * w22 - w02 * w20;  a12 = w02 * w10 - w00 * w12
-    a20 = w10 * w21 - w11 * w20;  a21 = w01 * w20 - w00 * w21;  a22 = w00 * w11 - w01 * w10
+    a00 = w11 * w22 - w12 * w21
+    a01 = w02 * w21 - w01 * w22
+    a02 = w01 * w12 - w02 * w11
+    a10 = w12 * w20 - w10 * w22
+    a11 = w00 * w22 - w02 * w20
+    a12 = w02 * w10 - w00 * w12
+    a20 = w10 * w21 - w11 * w20
+    a21 = w01 * w20 - w00 * w21
+    a22 = w00 * w11 - w01 * w10
     inv_det = 1.0 / (w00 * a00 + w01 * a10 + w02 * a20)
-    i00 = a00 * inv_det;  i01 = a01 * inv_det;  i02 = a02 * inv_det
-    i10 = a10 * inv_det;  i11 = a11 * inv_det;  i12 = a12 * inv_det
-    i20 = a20 * inv_det;  i21 = a21 * inv_det;  i22 = a22 * inv_det
+    i00 = a00 * inv_det
+    i01 = a01 * inv_det
+    i02 = a02 * inv_det
+    i10 = a10 * inv_det
+    i11 = a11 * inv_det
+    i12 = a12 * inv_det
+    i20 = a20 * inv_det
+    i21 = a21 * inv_det
+    i22 = a22 * inv_det
 
     # Robertson RHS
     def F(s0, s1, s2):
-        return (-p0 * s0 + p1 * s1 * s2,
-                p0 * s0 - p1 * s1 * s2 - p2 * s1 * s1,
-                p2 * s1 * s1)
+        return (
+            -p0 * s0 + p1 * s1 * s2,
+            p0 * s0 - p1 * s1 * s2 - p2 * s1 * s1,
+            p2 * s1 * s1,
+        )
 
     # W⁻¹ @ v
     def S(v0, v1, v2):
-        return (i00 * v0 + i01 * v1 + i02 * v2,
-                i10 * v0 + i11 * v1 + i12 * v2,
-                i20 * v0 + i21 * v1 + i22 * v2)
+        return (
+            i00 * v0 + i01 * v1 + i02 * v2,
+            i10 * v0 + i11 * v1 + i12 * v2,
+            i20 * v0 + i21 * v1 + i22 * v2,
+        )
 
     # Stage 1: k1 = W⁻¹ * F₀  (dT=0 for autonomous system)
     F00, F01, F02 = F(y0, y1, y2)
@@ -152,8 +185,7 @@ def solve(f, y0, t_span, *, rtol=1e-8, atol=1e-10, first_step=None, max_steps=10
 
         # PI controller
         q11 = jnp.where(EEst == 0.0, 1e-18, EEst) ** _beta1
-        q_accept = jnp.clip(q11 / (qold ** _beta2) / _sc_gamma,
-                            1.0 / _qmax, 1.0 / _qmin)
+        q_accept = jnp.clip(q11 / (qold**_beta2) / _sc_gamma, 1.0 / _qmax, 1.0 / _qmin)
         q_reject = jnp.minimum(1.0 / _qmin, q11 / _sc_gamma)
         dtnew = jnp.where(accept, dt / q_accept, dt / q_reject)
         qold_new = jnp.where(accept, jnp.maximum(EEst, _qoldinit), qold)
@@ -161,18 +193,37 @@ def solve(f, y0, t_span, *, rtol=1e-8, atol=1e-10, first_step=None, max_steps=10
         return (t_new, y_out, dtnew, n + 1, qold_new)
 
     _, final_y, _, _, _ = jax.lax.while_loop(
-        cond_fn, body_fn,
-        (jnp.float64(t0), y0_arr, dt0, jnp.int32(0), jnp.float64(_qoldinit))
+        cond_fn,
+        body_fn,
+        (jnp.float64(t0), y0_arr, dt0, jnp.int32(0), jnp.float64(_qoldinit)),
     )
     return final_y
 
 
-def solve_ensemble(f, y0, t_span, params_batch, *, rtol=1e-8, atol=1e-10,
-                   first_step=None, max_steps=100000):
+def solve_ensemble(
+    f,
+    y0,
+    t_span,
+    params_batch,
+    *,
+    rtol=1e-8,
+    atol=1e-10,
+    first_step=None,
+    max_steps=100000,
+):
     """Solve ensemble using vmap."""
+
     def _solve_one(params):
-        return solve(lambda y: f(y, params), y0, t_span,
-                     rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps)
+        return solve(
+            lambda y: f(y, params),
+            y0,
+            t_span,
+            rtol=rtol,
+            atol=atol,
+            first_step=first_step,
+            max_steps=max_steps,
+        )
+
     return jax.jit(jax.vmap(_solve_one))(params_batch)
 
 
@@ -185,8 +236,9 @@ def solve_ensemble(f, y0, t_span, params_batch, *, rtol=1e-8, atol=1e-10,
     jax.jit,
     static_argnames=("n_pad", "tf", "dt0", "r_tol", "a_tol", "y00", "y01", "y02", "ms"),
 )
-def _rb23_pallas_solve(p0_arr, p1_arr, p2_arr, *,
-                       n_pad, tf, dt0, r_tol, a_tol, y00, y01, y02, ms):
+def _rb23_pallas_solve(
+    p0_arr, p1_arr, p2_arr, *, n_pad, tf, dt0, r_tol, a_tol, y00, y01, y02, ms
+):
     """JIT-compiled Pallas kernel call (cached across invocations)."""
 
     def kernel_body(p0_ref, p1_ref, p2_ref, y0_ref, y1_ref, y2_ref):
@@ -230,13 +282,15 @@ def _rb23_pallas_solve(p0_arr, p1_arr, p2_arr, *,
             o2 = jnp.where(mask, n2, s2)
 
             safe_EEst = jnp.where(
-                jnp.isnan(EEst) | (EEst > 1e18), 1e18,
+                jnp.isnan(EEst) | (EEst > 1e18),
+                1e18,
                 jnp.where(EEst == 0.0, 1e-18, EEst),
             )
-            q11 = safe_EEst ** _beta1
+            q11 = safe_EEst**_beta1
             q_accept = jnp.clip(
-                q11 / (qold ** _beta2) / _sc_gamma,
-                1.0 / _qmax, 1.0 / _qmin,
+                q11 / (qold**_beta2) / _sc_gamma,
+                1.0 / _qmax,
+                1.0 / _qmin,
             )
             q_reject = jnp.minimum(1.0 / _qmin, q11 / _sc_gamma)
 
@@ -288,17 +342,26 @@ def solve_ensemble_pallas(
     N = params_batch.shape[0]
     N_pad = ((N + _BLOCK - 1) // _BLOCK) * _BLOCK
     tf = float(t_span[1])
-    dt0 = float(first_step if first_step is not None else (tf - float(t_span[0])) * 1e-6)
+    dt0 = float(
+        first_step if first_step is not None else (tf - float(t_span[0])) * 1e-6
+    )
 
     p0_arr = jnp.pad(params_batch[:, 0], (0, N_pad - N))
     p1_arr = jnp.pad(params_batch[:, 1], (0, N_pad - N))
     p2_arr = jnp.pad(params_batch[:, 2], (0, N_pad - N))
 
     y0_out, y1_out, y2_out = _rb23_pallas_solve(
-        p0_arr, p1_arr, p2_arr,
-        n_pad=N_pad, tf=tf, dt0=dt0,
-        r_tol=float(rtol), a_tol=float(atol),
-        y00=float(y0[0]), y01=float(y0[1]), y02=float(y0[2]),
+        p0_arr,
+        p1_arr,
+        p2_arr,
+        n_pad=N_pad,
+        tf=tf,
+        dt0=dt0,
+        r_tol=float(rtol),
+        a_tol=float(atol),
+        y00=float(y0[0]),
+        y01=float(y0[1]),
+        y02=float(y0[2]),
         ms=int(max_steps),
     )
 
