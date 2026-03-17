@@ -72,34 +72,26 @@ def _robertson_rb23_step(y0, y1, y2, p0, p1, p2, dt):
     w21 = -gamma * j21
     w22 = 1.0 - gamma * j22
 
-    # W⁻¹ via adjugate (Cramer's rule)
-    a00 = w11 * w22 - w12 * w21
-    a01 = w02 * w21 - w01 * w22
-    a02 = w01 * w12 - w02 * w11
-    a10 = w12 * w20 - w10 * w22
-    a11 = w00 * w22 - w02 * w20
-    a12 = w02 * w10 - w00 * w12
-    a20 = w10 * w21 - w11 * w20
-    a21 = w01 * w20 - w00 * w21
-    a22 = w00 * w11 - w01 * w10
-    inv_det = 1.0 / (w00 * a00 + w01 * a10 + w02 * a20)
-    i00 = a00 * inv_det
-    i01 = a01 * inv_det
-    i02 = a02 * inv_det
-    i10 = a10 * inv_det
-    i11 = a11 * inv_det
-    i12 = a12 * inv_det
-    i20 = a20 * inv_det
-    i21 = a21 * inv_det
-    i22 = a22 * inv_det
+    # LU decomposition of W (Doolittle, no pivoting)
+    u00 = w00
+    u01 = w01
+    u02 = w02
+    l10 = w10 / u00
+    u11 = w11 - l10 * u01
+    u12 = w12 - l10 * u02
+    l20 = w20 / u00
+    l21 = (w21 - l20 * u01) / u11
+    u22 = w22 - l20 * u02 - l21 * u12
 
-    # W⁻¹ @ v
+    # Solve W @ x = v via LU: forward substitution then back substitution
     def S(v0, v1, v2):
-        return (
-            i00 * v0 + i01 * v1 + i02 * v2,
-            i10 * v0 + i11 * v1 + i12 * v2,
-            i20 * v0 + i21 * v1 + i22 * v2,
-        )
+        z0 = v0
+        z1 = v1 - l10 * z0
+        z2 = v2 - l20 * z0 - l21 * z1
+        x2 = z2 / u22
+        x1 = (z1 - u12 * x2) / u11
+        x0 = (z0 - u01 * x1 - u02 * x2) / u00
+        return x0, x1, x2
 
     # Stage 1: k1 = W⁻¹ * F₀  (dT=0 for autonomous system)
     F00, F01, F02 = F(y0, y1, y2)
@@ -157,18 +149,19 @@ def solve(f, y0, t_span, *, rtol=1e-8, atol=1e-10, first_step=None, max_steps=10
         J = jac_fn(y)
         gamma = dt * _d
         W = jnp.eye(3) - gamma * J
-        Wi = jnp.linalg.inv(W)
+        lu, piv = jax.scipy.linalg.lu_factor(W)
+        S = lambda v: jax.scipy.linalg.lu_solve((lu, piv), v)
 
         F0 = f(y)
-        k1 = Wi @ F0
+        k1 = S(F0)
 
         F1 = f(y + (dt / 2.0) * k1)
-        k2 = Wi @ (F1 - k1) + k1
+        k2 = S(F1 - k1) + k1
 
         u = y + dt * k2
 
         F2 = f(u)
-        k3 = Wi @ (F2 - _e32 * (k2 - F1) - 2.0 * (k1 - F0))
+        k3 = S(F2 - _e32 * (k2 - F1) - 2.0 * (k1 - F0))
 
         err_vec = (dt / 6.0) * (k1 - 2.0 * k2 + k3)
         scale = atol + rtol * jnp.maximum(jnp.abs(y), jnp.abs(u))
