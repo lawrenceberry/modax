@@ -294,6 +294,14 @@ def make_solver(ode_fn):
             grid=(n_pad // _BLOCK,),
             in_specs=(p_bs, y_bs),
             out_specs=y_bs,
+            # num_warps: specifies how many warps (groups of 32 threads) are
+            # assigned to run on each block of the SM. Increasing num_warps
+            # means the GPU can switch between warps to hide SRAM memory latency,
+            # at the cost of higher register usage.
+            # num_stages: specifies how many kernel data blocks (p_bs, y_bs)will
+            # be loaded into SRAM from HBM at once. Increasing num_stages means the
+            # GPU does not need to wait for new data from HBM to be loaded into SRAM
+            # before running the kernel, at the cost of higher SRAM usage.
             compiler_params=pltriton.CompilerParams(num_warps=1, num_stages=2),
         )(params_arr, y0_arr)
 
