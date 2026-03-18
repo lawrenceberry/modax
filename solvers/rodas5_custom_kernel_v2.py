@@ -15,9 +15,6 @@ while_loop carries only (t, dt, step_count) — all vectors live in Refs.
 The LU decomposition and forward/back substitution also use fori_loop with
 Pallas Ref scratch memory and pl.ds dynamic indexing.
 
-An optional ode_ref_fn can be supplied for Ref-based ODE evaluation with
-fori_loop, further reducing compiled code size for large systems.
-
 Reference: https://github.com/SciML/DiffEqGPU.jl
 """
 
@@ -64,30 +61,23 @@ def _pad_cols_pow2(n_cols):
 # ---------------------------------------------------------------------------
 
 
-def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
+def _make_rodas5_step(ode_fn, n_vars, n_params):
     """Create Rodas5 step function with Ref-based stage vectors.
 
     Stage vectors k1..k8 are stored in k_ref, intermediate state in u_ref,
     and ODE evaluations / linear solve RHS in x_ref. All per-element vector
     arithmetic uses fori_loop for compact Triton IR.
-
-    The Jacobian is always computed via JVP on the tuple-based ode_fn.
-    Stage ODE evaluations use ode_ref_fn if available, else ode_fn wrapped
-    with Ref reads/writes.
     """
     nv = n_vars
     np_ = n_params
 
     # -- Helper: evaluate ODE from src_ref, write result to dst_ref ----------
-    def _eval_F(src_ref, p_ref, dst_ref, c_ref):
-        if ode_ref_fn is not None:
-            ode_ref_fn(src_ref, p_ref, dst_ref, c_ref)
-        else:
-            y_t = tuple(src_ref.at[:, i][...] for i in range(nv))
-            p_t = tuple(p_ref.at[:, i][...] for i in range(np_))
-            dy = ode_fn(y_t, p_t)
-            for i in range(nv):
-                dst_ref.at[:, i][...] = dy[i]
+    def _eval_F(src_ref, p_ref, dst_ref):
+        y_t = tuple(src_ref.at[:, i][...] for i in range(nv))
+        p_t = tuple(p_ref.at[:, i][...] for i in range(np_))
+        dy = ode_fn(y_t, p_t)
+        for i in range(nv):
+            dst_ref.at[:, i][...] = dy[i]
 
     # -- Helper: LU forward/back solve, copy result to k_ref ----------------
     def _lu_solve(w_ref, x_ref, k_ref, stage):
@@ -137,14 +127,14 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
         jax.lax.fori_loop(0, nv, copy_k, jnp.int32(0))
 
     # -- Main step function --------------------------------------------------
-    def step(p_ref, dt, w_ref, x_ref, y_ref, k_ref, u_ref, c_ref):
+    def step(p_ref, dt, w_ref, x_ref, y_ref, k_ref, u_ref):
         """One Rodas5 step.  Reads state from y_ref, writes y_new to u_ref,
         error estimate k8 to k_ref[7*nv:]."""
         dtgamma = dt * _gamma
         inv_dt = 1.0 / dt
         d = 1.0 / dtgamma
 
-        # --- Jacobian via JVP (trace-time unrolled, uses tuple-based ode_fn) ---
+        # --- Jacobian via JVP (trace-time unrolled) ---
         y_tuple = tuple(y_ref.at[:, i][...] for i in range(nv))
         p_tuple = tuple(p_ref.at[:, i][...] for i in range(np_))
         ones = y_tuple[0] * 0.0 + 1.0
@@ -190,7 +180,7 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
         # ====================== 8 Rodas5 stages ========================
 
         # Stage 1: k1 = S(F(y))
-        _eval_F(y_ref, p_ref, x_ref, c_ref)
+        _eval_F(y_ref, p_ref, x_ref)
         _lu_solve(w_ref, x_ref, k_ref, 0)
 
         # Stage 2: u = y + a21*k1, k2 = S(F(u) + C21*k1/dt)
@@ -201,7 +191,7 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
             return carry
 
         jax.lax.fori_loop(0, nv, s2_u, jnp.int32(0))
-        _eval_F(u_ref, p_ref, x_ref, c_ref)
+        _eval_F(u_ref, p_ref, x_ref)
 
         def s2_rhs(i, carry):
             fi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
@@ -221,15 +211,15 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
             return carry
 
         jax.lax.fori_loop(0, nv, s3_u, jnp.int32(0))
-        _eval_F(u_ref, p_ref, x_ref, c_ref)
+        _eval_F(u_ref, p_ref, x_ref)
 
         def s3_rhs(i, carry):
             fi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
             k1i = k_ref.at[:, pl.ds(0 * nv + i, 1)][...][:, 0]
             k2i = k_ref.at[:, pl.ds(1 * nv + i, 1)][...][:, 0]
-            x_ref.at[:, pl.ds(i, 1)][...] = (fi + (_C31 * k1i + _C32 * k2i) * inv_dt)[
-                :, None
-            ]
+            x_ref.at[:, pl.ds(i, 1)][...] = (
+                fi + (_C31 * k1i + _C32 * k2i) * inv_dt
+            )[:, None]
             return carry
 
         jax.lax.fori_loop(0, nv, s3_rhs, jnp.int32(0))
@@ -241,13 +231,13 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
             k1i = k_ref.at[:, pl.ds(0 * nv + i, 1)][...][:, 0]
             k2i = k_ref.at[:, pl.ds(1 * nv + i, 1)][...][:, 0]
             k3i = k_ref.at[:, pl.ds(2 * nv + i, 1)][...][:, 0]
-            u_ref.at[:, pl.ds(i, 1)][...] = (yi + _a41 * k1i + _a42 * k2i + _a43 * k3i)[
-                :, None
-            ]
+            u_ref.at[:, pl.ds(i, 1)][...] = (
+                yi + _a41 * k1i + _a42 * k2i + _a43 * k3i
+            )[:, None]
             return carry
 
         jax.lax.fori_loop(0, nv, s4_u, jnp.int32(0))
-        _eval_F(u_ref, p_ref, x_ref, c_ref)
+        _eval_F(u_ref, p_ref, x_ref)
 
         def s4_rhs(i, carry):
             fi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
@@ -275,7 +265,7 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
             return carry
 
         jax.lax.fori_loop(0, nv, s5_u, jnp.int32(0))
-        _eval_F(u_ref, p_ref, x_ref, c_ref)
+        _eval_F(u_ref, p_ref, x_ref)
 
         def s5_rhs(i, carry):
             fi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
@@ -305,7 +295,7 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
             return carry
 
         jax.lax.fori_loop(0, nv, s6_u, jnp.int32(0))
-        _eval_F(u_ref, p_ref, x_ref, c_ref)
+        _eval_F(u_ref, p_ref, x_ref)
 
         def s6_rhs(i, carry):
             fi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
@@ -332,7 +322,7 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
             return carry
 
         jax.lax.fori_loop(0, nv, s7_u, jnp.int32(0))
-        _eval_F(u_ref, p_ref, x_ref, c_ref)
+        _eval_F(u_ref, p_ref, x_ref)
 
         def s7_rhs(i, carry):
             fi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
@@ -367,7 +357,7 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
             return carry
 
         jax.lax.fori_loop(0, nv, s8_u, jnp.int32(0))
-        _eval_F(u_ref, p_ref, x_ref, c_ref)
+        _eval_F(u_ref, p_ref, x_ref)
 
         def s8_rhs(i, carry):
             fi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
@@ -414,7 +404,7 @@ def _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params):
 # ---------------------------------------------------------------------------
 
 
-def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
+def make_solver(ode_fn):
     """Create a Pallas ensemble solver for the given ODE using Rodas5.
 
     Args:
@@ -423,18 +413,7 @@ def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
             where y and p are tuples of scalar-like values and the return
             is a tuple of the same length as y. The function must use only
             element-wise operations so it can run inside a Pallas/Triton
-            kernel.  Always required (used for Jacobian computation via JVP).
-
-        ode_ref_fn: Optional Ref-based ODE function with signature
-            (y_ref, p_ref, dy_ref, c_ref) -> None
-            that reads state from y_ref, parameters from p_ref, and writes
-            derivatives to dy_ref.  c_ref provides the constants array.
-            Can use fori_loop for compact Triton IR in large systems.
-            If None, ode_fn is wrapped with Ref reads/writes instead.
-
-        constants: Optional 1-D array of constants passed to ode_ref_fn
-            via c_ref.  Broadcast to every block so that each trajectory
-            sees the same constant values.
+            kernel.
 
     Returns:
         solve_ensemble_pallas function.
@@ -461,7 +440,6 @@ def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
             "w_cols",
             "x_cols",
             "k_cols",
-            "c_cols",
             "n_vars",
             "n_params",
             "tf",
@@ -474,7 +452,6 @@ def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
     def _rodas5_pallas_solve(
         params_arr,
         y0_arr,
-        c_arr,
         *,
         n_pad,
         p_cols,
@@ -482,7 +459,6 @@ def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
         w_cols,
         x_cols,
         k_cols,
-        c_cols,
         n_vars,
         n_params,
         tf,
@@ -491,10 +467,10 @@ def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
         a_tol,
         ms,
     ):
-        step_fn = _make_rodas5_step(ode_fn, ode_ref_fn, n_vars, n_params)
+        step_fn = _make_rodas5_step(ode_fn, n_vars, n_params)
         nv = n_vars
 
-        def kernel_body(params_ref, y0_ref, c_ref, y_ref, w_ref, x_ref, k_ref, u_ref):
+        def kernel_body(params_ref, y0_ref, y_ref, w_ref, x_ref, k_ref, u_ref):
             # Copy initial conditions to working state
             for i in range(n_vars):
                 y_ref.at[:, i][...] = y0_ref.at[:, i][...]
@@ -515,14 +491,7 @@ def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
 
                 # Rodas5 step: y_ref -> u_ref (y_new), k_ref[7*nv:] (k8 err)
                 step_fn(
-                    params_ref,
-                    dt_use,
-                    w_ref,
-                    x_ref,
-                    y_ref,
-                    k_ref,
-                    u_ref,
-                    c_ref,
+                    params_ref, dt_use, w_ref, x_ref, y_ref, k_ref, u_ref,
                 )
 
                 # Error estimation via fori_loop
@@ -568,7 +537,6 @@ def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
         w_bs = pl.BlockSpec((_BLOCK, w_cols), lambda i: (i, 0))
         x_bs = pl.BlockSpec((_BLOCK, x_cols), lambda i: (i, 0))
         k_bs = pl.BlockSpec((_BLOCK, k_cols), lambda i: (i, 0))
-        c_bs = pl.BlockSpec((_BLOCK, c_cols), lambda i: (i, 0))
         results = pl.pallas_call(
             kernel_body,
             out_shape=[
@@ -579,10 +547,10 @@ def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
                 jax.ShapeDtypeStruct((n_pad, x_cols), jnp.float64),
             ],
             grid=(n_pad // _BLOCK,),
-            in_specs=(p_bs, y_bs, c_bs),
+            in_specs=(p_bs, y_bs),
             out_specs=(y_bs, w_bs, x_bs, k_bs, x_bs),
             compiler_params=pltriton.CompilerParams(num_warps=1, num_stages=2),
-        )(params_arr, y0_arr, c_arr)
+        )(params_arr, y0_arr)
         return results[0]
 
     def solve_ensemble_pallas(
@@ -628,33 +596,18 @@ def make_solver(ode_fn, *, ode_ref_fn=None, constants=None):
         x_cols = _pad_cols_pow2(n_vars)
         k_cols = _pad_cols_pow2(8 * n_vars)
 
-        # Constants array (broadcast to every row)
-        if constants is not None:
-            n_const = len(constants)
-            c_cols = _pad_cols_pow2(n_const)
-            c_1d = jnp.pad(
-                jnp.asarray(constants, dtype=jnp.float64),
-                (0, c_cols - n_const),
-            )
-            c_arr = jnp.tile(c_1d[None, :], (N_pad, 1))
-        else:
-            c_cols = 1
-            c_arr = jnp.zeros((N_pad, 1), dtype=jnp.float64)
-
         params_arr = jnp.pad(params_batch, ((0, N_pad - N), (0, p_cols - n_params)))
         y0_arr = jnp.pad(y0_batch, ((0, N_pad - N), (0, y_cols - n_vars)))
 
         y_out = _rodas5_pallas_solve(
             params_arr,
             y0_arr,
-            c_arr,
             n_pad=N_pad,
             p_cols=p_cols,
             y_cols=y_cols,
             w_cols=w_cols,
             x_cols=x_cols,
             k_cols=k_cols,
-            c_cols=c_cols,
             n_vars=n_vars,
             n_params=n_params,
             tf=tf,
