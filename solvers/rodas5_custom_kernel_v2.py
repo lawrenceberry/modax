@@ -8,10 +8,15 @@ The W-transformed variant is from Di Marzo (1993) and DISCO-EB (Hahn).
 8 stages with adaptive step size control. Pallas/Triton custom GPU kernel
 with 32 trajectories per block.
 
+The LU decomposition and forward/back substitution use jax.lax.fori_loop
+with Pallas Ref scratch memory and pl.ds dynamic indexing, producing compact
+compiled GPU loops instead of O(n^3) unrolled instructions.
+
 Reference: https://github.com/SciML/DiffEqGPU.jl
 """
 
 import functools
+import itertools
 
 import jax
 
@@ -49,44 +54,32 @@ def _pad_cols_pow2(n_cols):
 
 
 # ---------------------------------------------------------------------------
-# General Rodas5 step (works with any ODE via tuples of scalars)
+# Rodas5 step: fori_loop LU with Pallas Ref scratch memory
 # ---------------------------------------------------------------------------
 
 
 def _make_rodas5_step(ode_fn, n_vars):
-    """Create a Rodas5 step function for a general ODE.
+    """Rodas5 step with fori_loop-based LU using Pallas Ref scratch memory.
 
-    All state/parameter components are separate (_BLOCK,) arrays accessed via
-    Python tuple indexing. Python loops over n_vars are unrolled at JAX trace
-    time.
-
-    Args:
-        ode_fn: ODE right-hand side (y_tuple, p_tuple) -> dy_tuple.
-        n_vars: Number of state variables.
+    For systems where unrolling the O(n^3) LU decomposition would generate
+    too much Triton IR code (n_vars > 16). Uses fori_loop for compact
+    compiled GPU loops and Pallas Refs with pl.ds for dynamic matrix access.
     """
+    nv = n_vars  # Python int, promoted automatically in JAX arithmetic
 
-    def step(y, p, dt):
-        """Compute one Rodas5 step.
-
-        Args:
-            y: tuple of n_vars (_BLOCK,) arrays — current state.
-            p: tuple of n_params (_BLOCK,) arrays — parameters.
-            dt: (_BLOCK,) step size.
-
-        Returns:
-            (y_new, err) where y_new and err are tuples of n_vars (_BLOCK,) arrays.
-        """
+    def step(y, p, dt, w_ref, x_ref):
         dtgamma = dt * _gamma
         inv_dt = 1.0 / dt
+        d = 1.0 / dtgamma
 
         def F(y):
             return ode_fn(y, p)
 
         F0 = F(y)
 
-        # Jacobian via forward-mode AD (one jvp per column)
+        # Jacobian via JVP (trace-time unrolled, n_vars iterations)
         ones = y[0] * 0.0 + 1.0
-        J_cols = []  # J_cols[j][i] = dF_i / dy_j
+        J_cols = []
         for j in range(n_vars):
 
             def f_j(yj, j=j):
@@ -96,154 +89,238 @@ def _make_rodas5_step(ode_fn, n_vars):
             _, col = jax.jvp(f_j, (y[j],), (ones,))
             J_cols.append(col)
 
-        # W = I/(dt*gamma) - J
-        d = 1.0 / dtgamma
-        W = [[None] * n_vars for _ in range(n_vars)]
-        for i in range(n_vars):
-            for j in range(n_vars):
-                w_ij = -J_cols[j][i]
-                if i == j:
-                    w_ij = w_ij + d
-                W[i][j] = w_ij
+        # Fill W = I/(dt*gamma) - J into w_ref (static Python-int indexing)
+        for i_s in range(n_vars):
+            for j_s in range(n_vars):
+                val = -J_cols[j_s][i_s]
+                if i_s == j_s:
+                    val = val + d
+                w_ref.at[:, i_s * nv + j_s][...] = val
 
-        # LU decomposition (Doolittle, no pivoting)
-        U = [[W[i][j] for j in range(n_vars)] for i in range(n_vars)]
-        L = [[y[0] * 0.0 for _ in range(n_vars)] for _ in range(n_vars)]
-        for j in range(n_vars):
-            for i in range(j + 1, n_vars):
-                L[i][j] = U[i][j] / U[j][j]
-                for k in range(j, n_vars):
-                    U[i][k] = U[i][k] - L[i][j] * U[j][k]
+        # --- LU decomposition in-place on w_ref via fori_loop ---
+        def lu_col(j, carry):
+            pivot = w_ref.at[:, pl.ds(j * nv + j, 1)][...][:, 0]
 
-        def S(b):
-            """Solve W @ x = b via LU forward/back substitution."""
-            z = list(b)
-            for i in range(n_vars):
-                for j in range(i):
-                    z[i] = z[i] - L[i][j] * z[j]
-            x = list(z)
-            for i in range(n_vars - 1, -1, -1):
-                for j in range(i + 1, n_vars):
-                    x[i] = x[i] - U[i][j] * x[j]
-                x[i] = x[i] / U[i][i]
-            return tuple(x)
+            def lu_row(i, carry):
+                l_ij = w_ref.at[:, pl.ds(i * nv + j, 1)][...][:, 0] / pivot
+                w_ref.at[:, pl.ds(i * nv + j, 1)][...] = l_ij[:, None]
 
-        # Stage 1: k1 = W^{-1} * F0
-        k1 = S(F0)
+                def lu_elem(k, carry):
+                    ik = w_ref.at[:, pl.ds(i * nv + k, 1)][...][:, 0]
+                    jk = w_ref.at[:, pl.ds(j * nv + k, 1)][...][:, 0]
+                    w_ref.at[:, pl.ds(i * nv + k, 1)][...] = (ik - l_ij * jk)[:, None]
+                    return carry
 
-        # Stage 2
-        u = tuple(y[i] + _a21 * k1[i] for i in range(n_vars))
-        Fu = F(u)
-        rhs = tuple(
-            Fu[i] + _C21 * k1[i] * inv_dt for i in range(n_vars)
-        )
-        k2 = S(rhs)
+                return jax.lax.fori_loop(j + 1, nv, lu_elem, carry)
 
-        # Stage 3
-        u = tuple(
-            y[i] + _a31 * k1[i] + _a32 * k2[i] for i in range(n_vars)
-        )
-        Fu = F(u)
-        rhs = tuple(
-            Fu[i] + (_C31 * k1[i] + _C32 * k2[i]) * inv_dt
-            for i in range(n_vars)
-        )
-        k3 = S(rhs)
+            return jax.lax.fori_loop(j + 1, nv, lu_row, carry)
 
-        # Stage 4
-        u = tuple(
-            y[i] + _a41 * k1[i] + _a42 * k2[i] + _a43 * k3[i]
-            for i in range(n_vars)
-        )
-        Fu = F(u)
-        rhs = tuple(
-            Fu[i] + (_C41 * k1[i] + _C42 * k2[i] + _C43 * k3[i]) * inv_dt
-            for i in range(n_vars)
-        )
-        k4 = S(rhs)
+        jax.lax.fori_loop(0, nv, lu_col, jnp.int32(0))
 
-        # Stage 5
-        u = tuple(
-            y[i] + _a51 * k1[i] + _a52 * k2[i] + _a53 * k3[i] + _a54 * k4[i]
-            for i in range(n_vars)
-        )
-        Fu = F(u)
-        rhs = tuple(
-            Fu[i]
-            + (_C51 * k1[i] + _C52 * k2[i] + _C53 * k3[i] + _C54 * k4[i])
-            * inv_dt
-            for i in range(n_vars)
-        )
-        k5 = S(rhs)
+        # --- Solve W @ x = b via LU stored in w_ref ---
+        def S(b_tuple):
+            # Store RHS in x_ref (static Python-int indexing)
+            for i_s in range(n_vars):
+                x_ref.at[:, i_s][...] = b_tuple[i_s]
 
-        # Stage 6
-        u = tuple(
-            y[i]
-            + _a61 * k1[i]
-            + _a62 * k2[i]
-            + _a63 * k3[i]
-            + _a64 * k4[i]
-            + _a65 * k5[i]
-            for i in range(n_vars)
-        )
-        Fu = F(u)
-        rhs = tuple(
-            Fu[i]
-            + (
-                _C61 * k1[i]
-                + _C62 * k2[i]
-                + _C63 * k3[i]
-                + _C64 * k4[i]
-                + _C65 * k5[i]
-            )
-            * inv_dt
-            for i in range(n_vars)
-        )
-        k6 = S(rhs)
+            # Forward substitution: z[i] -= L[i,j] * z[j] for j < i
+            def fwd_row(i, carry):
+                def fwd_col(j, carry):
+                    xi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
+                    xj = x_ref.at[:, pl.ds(j, 1)][...][:, 0]
+                    lij = w_ref.at[:, pl.ds(i * nv + j, 1)][...][:, 0]
+                    x_ref.at[:, pl.ds(i, 1)][...] = (xi - lij * xj)[:, None]
+                    return carry
 
-        # Stage 7: u = u_stage6 + k6
-        u = tuple(u[i] + k6[i] for i in range(n_vars))
-        Fu = F(u)
-        rhs = tuple(
-            Fu[i]
-            + (
-                _C71 * k1[i]
-                + _C72 * k2[i]
-                + _C73 * k3[i]
-                + _C74 * k4[i]
-                + _C75 * k5[i]
-                + _C76 * k6[i]
-            )
-            * inv_dt
-            for i in range(n_vars)
-        )
-        k7 = S(rhs)
+                return jax.lax.fori_loop(0, i, fwd_col, carry)
 
-        # Stage 8: u = u_stage7 + k7
-        u = tuple(u[i] + k7[i] for i in range(n_vars))
-        Fu = F(u)
-        rhs = tuple(
-            Fu[i]
-            + (
-                _C81 * k1[i]
-                + _C82 * k2[i]
-                + _C83 * k3[i]
-                + _C84 * k4[i]
-                + _C85 * k5[i]
-                + _C86 * k6[i]
-                + _C87 * k7[i]
-            )
-            * inv_dt
-            for i in range(n_vars)
-        )
-        k8 = S(rhs)
+            jax.lax.fori_loop(0, nv, fwd_row, jnp.int32(0))
 
-        # Solution: y_new = u + k8, error estimate = k8
-        y_new = tuple(u[i] + k8[i] for i in range(n_vars))
+            # Back substitution: x[i] = (z[i] - sum U[i,j]*x[j]) / U[i,i]
+            def bwd_row(i_rev, carry):
+                i = nv - 1 - i_rev
 
-        return y_new, k8
+                def bwd_col(j_off, carry):
+                    j = i + 1 + j_off
+                    xi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
+                    xj = x_ref.at[:, pl.ds(j, 1)][...][:, 0]
+                    uij = w_ref.at[:, pl.ds(i * nv + j, 1)][...][:, 0]
+                    x_ref.at[:, pl.ds(i, 1)][...] = (xi - uij * xj)[:, None]
+                    return carry
+
+                jax.lax.fori_loop(0, nv - 1 - i, bwd_col, carry)
+                xi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
+                uii = w_ref.at[:, pl.ds(i * nv + i, 1)][...][:, 0]
+                x_ref.at[:, pl.ds(i, 1)][...] = (xi / uii)[:, None]
+                return carry
+
+            jax.lax.fori_loop(0, nv, bwd_row, jnp.int32(0))
+
+            # Read result (static Python-int indexing)
+            return tuple(x_ref.at[:, i_s][...] for i_s in range(n_vars))
+
+        return _rodas5_stages(F, S, y, F0, inv_dt, n_vars)
 
     return step
+
+
+# ---------------------------------------------------------------------------
+# Shared: Rodas5 8-stage computation (used by both step implementations)
+# ---------------------------------------------------------------------------
+
+
+def _rodas5_stages(F, S, y, F0, inv_dt, n_vars):
+    """Compute the 8 Rodas5 stages given ODE function F and linear solver S."""
+    k1 = S(F0)
+
+    u = jax.tree.map(lambda yi, k1i: yi + _a21 * k1i, y, k1)
+    Fu = F(u)
+    k2 = S(jax.tree.map(lambda fui, k1i: fui + _C21 * k1i * inv_dt, Fu, k1))
+
+    u = jax.tree.map(
+        lambda yi, k1i, k2i: yi + _a31 * k1i + _a32 * k2i,
+        y,
+        k1,
+        k2,
+    )
+    Fu = F(u)
+    k3 = S(
+        jax.tree.map(
+            lambda fui, k1i, k2i: fui + (_C31 * k1i + _C32 * k2i) * inv_dt,
+            Fu,
+            k1,
+            k2,
+        )
+    )
+
+    u = jax.tree.map(
+        lambda yi, k1i, k2i, k3i: yi + _a41 * k1i + _a42 * k2i + _a43 * k3i,
+        y,
+        k1,
+        k2,
+        k3,
+    )
+    Fu = F(u)
+    k4 = S(
+        jax.tree.map(
+            lambda fui, k1i, k2i, k3i: (
+                fui + (_C41 * k1i + _C42 * k2i + _C43 * k3i) * inv_dt
+            ),
+            Fu,
+            k1,
+            k2,
+            k3,
+        )
+    )
+
+    u = jax.tree.map(
+        lambda yi, k1i, k2i, k3i, k4i: (
+            yi + _a51 * k1i + _a52 * k2i + _a53 * k3i + _a54 * k4i
+        ),
+        y,
+        k1,
+        k2,
+        k3,
+        k4,
+    )
+    Fu = F(u)
+    k5 = S(
+        jax.tree.map(
+            lambda fui, k1i, k2i, k3i, k4i: (
+                fui + (_C51 * k1i + _C52 * k2i + _C53 * k3i + _C54 * k4i) * inv_dt
+            ),
+            Fu,
+            k1,
+            k2,
+            k3,
+            k4,
+        )
+    )
+
+    u = jax.tree.map(
+        lambda yi, k1i, k2i, k3i, k4i, k5i: (
+            yi + _a61 * k1i + _a62 * k2i + _a63 * k3i + _a64 * k4i + _a65 * k5i
+        ),
+        y,
+        k1,
+        k2,
+        k3,
+        k4,
+        k5,
+    )
+    Fu = F(u)
+    k6 = S(
+        jax.tree.map(
+            lambda fui, k1i, k2i, k3i, k4i, k5i: (
+                fui
+                + (_C61 * k1i + _C62 * k2i + _C63 * k3i + _C64 * k4i + _C65 * k5i)
+                * inv_dt
+            ),
+            Fu,
+            k1,
+            k2,
+            k3,
+            k4,
+            k5,
+        )
+    )
+
+    u = jax.tree.map(lambda ui, k6i: ui + k6i, u, k6)
+    Fu = F(u)
+    k7 = S(
+        jax.tree.map(
+            lambda fui, k1i, k2i, k3i, k4i, k5i, k6i: (
+                fui
+                + (
+                    _C71 * k1i
+                    + _C72 * k2i
+                    + _C73 * k3i
+                    + _C74 * k4i
+                    + _C75 * k5i
+                    + _C76 * k6i
+                )
+                * inv_dt
+            ),
+            Fu,
+            k1,
+            k2,
+            k3,
+            k4,
+            k5,
+            k6,
+        )
+    )
+
+    u = jax.tree.map(lambda ui, k7i: ui + k7i, u, k7)
+    Fu = F(u)
+    k8 = S(
+        jax.tree.map(
+            lambda fui, k1i, k2i, k3i, k4i, k5i, k6i, k7i: (
+                fui
+                + (
+                    _C81 * k1i
+                    + _C82 * k2i
+                    + _C83 * k3i
+                    + _C84 * k4i
+                    + _C85 * k5i
+                    + _C86 * k6i
+                    + _C87 * k7i
+                )
+                * inv_dt
+            ),
+            Fu,
+            k1,
+            k2,
+            k3,
+            k4,
+            k5,
+            k6,
+            k7,
+        )
+    )
+
+    y_new = jax.tree.map(lambda ui, k8i: ui + k8i, u, k8)
+    return y_new, k8
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +361,8 @@ def make_solver(ode_fn):
             "n_pad",
             "p_cols",
             "y_cols",
+            "w_cols",
+            "x_cols",
             "n_vars",
             "n_params",
             "tf",
@@ -300,6 +379,8 @@ def make_solver(ode_fn):
         n_pad,
         p_cols,
         y_cols,
+        w_cols,
+        x_cols,
         n_vars,
         n_params,
         tf,
@@ -310,7 +391,7 @@ def make_solver(ode_fn):
     ):
         step_fn = _make_rodas5_step(ode_fn, n_vars)
 
-        def kernel_body(params_ref, y0_ref, y_ref):
+        def kernel_body(params_ref, y0_ref, y_ref, w_ref, x_ref):
             p = tuple(params_ref.at[:, i][...] for i in range(n_params))
             y = tuple(y0_ref.at[:, i][...] for i in range(n_vars))
 
@@ -330,22 +411,32 @@ def make_solver(ode_fn):
                 active = t < tf
                 dt_use = jnp.maximum(jnp.minimum(dt_v, tf - t), 1e-30)
 
-                u, err = step_fn(y, p, dt_use)
+                u, err = step_fn(y, p, dt_use, w_ref, x_ref)
 
-                sc = tuple(
-                    a_tol + r_tol * jnp.maximum(jnp.abs(y[i]), jnp.abs(u[i]))
-                    for i in range(n_vars)
+                sc = jax.tree.map(
+                    lambda yi, ui: (
+                        a_tol + r_tol * jnp.maximum(jnp.abs(yi), jnp.abs(ui))
+                    ),
+                    y,
+                    u,
                 )
-                err_sq = sum((err[i] / sc[i]) ** 2 for i in range(n_vars))
+                err_terms = jax.tree.map(
+                    lambda eri, sci: (eri / sci) ** 2,
+                    err,
+                    sc,
+                )
+                err_sq = jax.tree_util.tree_reduce(
+                    lambda acc, x: acc + x,
+                    err_terms,
+                    initializer=jnp.zeros_like(t),
+                )
                 EEst = jnp.sqrt(err_sq / n_vars)
 
                 accept = (EEst <= 1.0) & ~jnp.isnan(EEst)
                 mask = active & accept
 
                 t_new = jnp.where(mask, t + dt_use, t)
-                y_new = tuple(
-                    jnp.where(mask, u[i], y[i]) for i in range(n_vars)
-                )
+                y_new = jax.tree.map(lambda ui, yi: jnp.where(mask, ui, yi), u, y)
 
                 safe_EEst = jnp.where(
                     jnp.isnan(EEst) | (EEst > 1e18),
@@ -366,14 +457,21 @@ def make_solver(ode_fn):
 
         p_bs = pl.BlockSpec((_BLOCK, p_cols), lambda i: (i, 0))
         y_bs = pl.BlockSpec((_BLOCK, y_cols), lambda i: (i, 0))
-        return pl.pallas_call(
+        w_bs = pl.BlockSpec((_BLOCK, w_cols), lambda i: (i, 0))
+        x_bs = pl.BlockSpec((_BLOCK, x_cols), lambda i: (i, 0))
+        results = pl.pallas_call(
             kernel_body,
-            out_shape=jax.ShapeDtypeStruct((n_pad, y_cols), jnp.float64),
+            out_shape=[
+                jax.ShapeDtypeStruct((n_pad, y_cols), jnp.float64),
+                jax.ShapeDtypeStruct((n_pad, w_cols), jnp.float64),
+                jax.ShapeDtypeStruct((n_pad, x_cols), jnp.float64),
+            ],
             grid=(n_pad // _BLOCK,),
             in_specs=(p_bs, y_bs),
-            out_specs=y_bs,
+            out_specs=(y_bs, w_bs, x_bs),
             compiler_params=pltriton.CompilerParams(num_warps=1, num_stages=2),
         )(params_arr, y0_arr)
+        return results[0]
 
     def solve_ensemble_pallas(
         y0_batch,
@@ -397,11 +495,9 @@ def make_solver(ode_fn):
         n_params = params_batch.shape[1]
 
         # Verify ODE function dimensions via JAX abstract evaluation
-        y_trace = tuple(
-            jax.ShapeDtypeStruct((), jnp.float64) for _ in range(n_vars)
-        )
+        y_trace = tuple(itertools.repeat(jax.ShapeDtypeStruct((), jnp.float64), n_vars))
         p_trace = tuple(
-            jax.ShapeDtypeStruct((), jnp.float64) for _ in range(n_params)
+            itertools.repeat(jax.ShapeDtypeStruct((), jnp.float64), n_params)
         )
         out_trace = jax.eval_shape(ode_fn, y_trace, p_trace)
         assert len(out_trace) == n_vars, (
@@ -411,17 +507,15 @@ def make_solver(ode_fn):
         N_pad = ((N + _BLOCK - 1) // _BLOCK) * _BLOCK
         tf = float(t_span[1])
         dt0 = float(
-            first_step
-            if first_step is not None
-            else (tf - float(t_span[0])) * 1e-6
+            first_step if first_step is not None else (tf - float(t_span[0])) * 1e-6
         )
 
         p_cols = _pad_cols_pow2(n_params)
         y_cols = _pad_cols_pow2(n_vars)
+        w_cols = _pad_cols_pow2(n_vars * n_vars)
+        x_cols = _pad_cols_pow2(n_vars)
 
-        params_arr = jnp.pad(
-            params_batch, ((0, N_pad - N), (0, p_cols - n_params))
-        )
+        params_arr = jnp.pad(params_batch, ((0, N_pad - N), (0, p_cols - n_params)))
         y0_arr = jnp.pad(y0_batch, ((0, N_pad - N), (0, y_cols - n_vars)))
 
         y_out = _rodas5_pallas_solve(
@@ -430,6 +524,8 @@ def make_solver(ode_fn):
             n_pad=N_pad,
             p_cols=p_cols,
             y_cols=y_cols,
+            w_cols=w_cols,
+            x_cols=x_cols,
             n_vars=n_vars,
             n_params=n_params,
             tf=tf,
