@@ -217,9 +217,9 @@ def _make_rodas5_step(ode_fn, n_vars, n_params):
             fi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
             k1i = k_ref.at[:, pl.ds(0 * nv + i, 1)][...][:, 0]
             k2i = k_ref.at[:, pl.ds(1 * nv + i, 1)][...][:, 0]
-            x_ref.at[:, pl.ds(i, 1)][...] = (
-                fi + (_C31 * k1i + _C32 * k2i) * inv_dt
-            )[:, None]
+            x_ref.at[:, pl.ds(i, 1)][...] = (fi + (_C31 * k1i + _C32 * k2i) * inv_dt)[
+                :, None
+            ]
             return carry
 
         jax.lax.fori_loop(0, nv, s3_rhs, jnp.int32(0))
@@ -231,9 +231,9 @@ def _make_rodas5_step(ode_fn, n_vars, n_params):
             k1i = k_ref.at[:, pl.ds(0 * nv + i, 1)][...][:, 0]
             k2i = k_ref.at[:, pl.ds(1 * nv + i, 1)][...][:, 0]
             k3i = k_ref.at[:, pl.ds(2 * nv + i, 1)][...][:, 0]
-            u_ref.at[:, pl.ds(i, 1)][...] = (
-                yi + _a41 * k1i + _a42 * k2i + _a43 * k3i
-            )[:, None]
+            u_ref.at[:, pl.ds(i, 1)][...] = (yi + _a41 * k1i + _a42 * k2i + _a43 * k3i)[
+                :, None
+            ]
             return carry
 
         jax.lax.fori_loop(0, nv, s4_u, jnp.int32(0))
@@ -491,7 +491,13 @@ def make_solver(ode_fn):
 
                 # Rodas5 step: y_ref -> u_ref (y_new), k_ref[7*nv:] (k8 err)
                 step_fn(
-                    params_ref, dt_use, w_ref, x_ref, y_ref, k_ref, u_ref,
+                    params_ref,
+                    dt_use,
+                    w_ref,
+                    x_ref,
+                    y_ref,
+                    k_ref,
+                    u_ref,
                 )
 
                 # Error estimation via fori_loop

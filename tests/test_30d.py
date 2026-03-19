@@ -207,5 +207,3 @@ def test_rodas5_v2_30d_pallas_compile_time(benchmark):
     )
     benchmark.extra_info["compile_estimate_s"] = float(compile_estimate_s)
     assert compile_estimate_s >= 0.0
-
-
