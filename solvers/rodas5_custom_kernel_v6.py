@@ -9,6 +9,7 @@ per-trajectory and stored into ``m_ref`` in flattened row-major form.
 import functools
 
 import jax
+import numpy as np
 
 jax.config.update("jax_enable_x64", True)  # noqa: E402 - must precede jax.numpy import
 import jax.numpy as jnp  # isort: skip  # noqa: E402
@@ -255,9 +256,11 @@ def make_solver(jac_fn):
             "r_tol",
             "a_tol",
             "ms",
+            "n_save",
         ),
     )
     def _rodas5_pallas_solve(
+        times_arr,
         y0_arr,
         *,
         n_pad,
@@ -265,6 +268,7 @@ def make_solver(jac_fn):
         w_cols,
         x_cols,
         k_cols,
+        n_save,
         t0,
         tf,
         dt0,
@@ -273,24 +277,51 @@ def make_solver(jac_fn):
         ms,
     ):
         step_fn = _make_rodas5_step(jac_fn, n_vars)
+        hist_cols = n_save * y_cols
 
-        def kernel_body(y0_ref, y_ref, w_ref, x_ref, k_ref, u_ref, m_ref):
+        def kernel_body(times_ref, y0_ref, hist_ref, y_ref, w_ref, x_ref, k_ref, u_ref, m_ref):
             for i in range(n_vars):
                 y_ref.at[:, i][...] = y0_ref.at[:, i][...]
 
             z = y0_ref.at[:, 0][...] * 0.0
+            save_idx0 = z.astype(jnp.int32) + 1
             t = z + t0
             dt_v = z + dt0
 
+            def init_hist(col, carry):
+                hist_ref.at[:, pl.ds(col, 1)][...] = z[:, None]
+                return carry
+
+            jax.lax.fori_loop(0, hist_cols, init_hist, jnp.int32(0))
+
+            def save_initial(i, carry):
+                yi = y_ref.at[:, pl.ds(i, 1)][...][:, 0]
+                hist_ref.at[:, pl.ds(i, 1)][...] = yi[:, None]
+                return carry
+
+            jax.lax.fori_loop(0, n_vars, save_initial, jnp.int32(0))
+
             def cond_fn(state):
-                t, _dt_v, n = state
-                return (jnp.min(t) < tf) & (n < ms)
+                t, _dt_v, save_idx, n = state
+                active = save_idx < n_save
+                return (jnp.min(jnp.where(active, t, tf)) < tf) & (n < ms)
 
             def body_fn(state):
-                t, dt_v, n = state
+                t, dt_v, save_idx, n = state
 
-                active = t < tf
-                dt_use = jnp.maximum(jnp.minimum(dt_v, tf - t), 1e-30)
+                active = save_idx < n_save
+
+                def select_target(s, target):
+                    ts = times_ref.at[pl.ds(s, 1)][...][0]
+                    return jnp.where(save_idx == s, ts, target)
+
+                next_target = jax.lax.fori_loop(0, n_save, select_target, z + tf)
+                dt_cap = next_target - t
+                dt_use = jnp.where(
+                    active,
+                    jnp.maximum(jnp.minimum(dt_v, dt_cap), 1e-30),
+                    1e-30,
+                )
                 t_use = jnp.where(active, t, tf)
 
                 step_fn(
@@ -327,6 +358,26 @@ def make_solver(jac_fn):
 
                 jax.lax.fori_loop(0, n_vars, update_y, jnp.int32(0))
 
+                target_tol = 1e-12 * jnp.maximum(1.0, jnp.abs(next_target))
+                reached_target = mask & (jnp.abs(t_new - next_target) <= target_tol)
+
+                def write_slot(s, save_idx_carry):
+                    write_mask = reached_target & (save_idx == s)
+
+                    def write_var(i, carry):
+                        yi = y_ref.at[:, pl.ds(i, 1)][...][:, 0]
+                        hist_col = s * y_cols + i
+                        prev = hist_ref.at[:, pl.ds(hist_col, 1)][...][:, 0]
+                        hist_ref.at[:, pl.ds(hist_col, 1)][...] = jnp.where(
+                            write_mask, yi, prev
+                        )[:, None]
+                        return carry
+
+                    jax.lax.fori_loop(0, n_vars, write_var, jnp.int32(0))
+                    return jnp.where(write_mask, save_idx_carry + 1, save_idx_carry)
+
+                save_idx_new = jax.lax.fori_loop(0, n_save, write_slot, save_idx)
+
                 safe_EEst = jnp.where(
                     jnp.isnan(EEst) | (EEst > 1e18),
                     1e18,
@@ -335,10 +386,12 @@ def make_solver(jac_fn):
                 factor = jnp.clip(0.9 * safe_EEst ** (-1.0 / 6.0), 0.2, 6.0)
                 new_dt = jnp.where(active, dt_use * factor, dt_v)
 
-                return (t_new, new_dt, n + 1)
+                return (t_new, new_dt, save_idx_new, n + 1)
 
-            jax.lax.while_loop(cond_fn, body_fn, (t, dt_v, jnp.int32(0)))
+            jax.lax.while_loop(cond_fn, body_fn, (t, dt_v, save_idx0, jnp.int32(0)))
 
+        times_bs = pl.BlockSpec((n_save,), lambda i: (0,))
+        hist_bs = pl.BlockSpec((_BLOCK, hist_cols), lambda i: (i, 0))
         y_bs = pl.BlockSpec((_BLOCK, y_cols), lambda i: (i, 0))
         w_bs = pl.BlockSpec((_BLOCK, w_cols), lambda i: (i, 0))
         x_bs = pl.BlockSpec((_BLOCK, x_cols), lambda i: (i, 0))
@@ -348,6 +401,7 @@ def make_solver(jac_fn):
         results = pl.pallas_call(
             kernel_body,
             out_shape=[
+                jax.ShapeDtypeStruct((n_pad, hist_cols), jnp.float64),
                 jax.ShapeDtypeStruct((n_pad, y_cols), jnp.float64),
                 jax.ShapeDtypeStruct((n_pad, w_cols), jnp.float64),
                 jax.ShapeDtypeStruct((n_pad, x_cols), jnp.float64),
@@ -356,18 +410,19 @@ def make_solver(jac_fn):
                 jax.ShapeDtypeStruct((n_pad, m_cols), jnp.float64),
             ],
             grid=(n_pad // _BLOCK,),
-            in_specs=(y_bs,),
-            # Output refs match kernel_body(y0_ref, y_ref, w_ref, x_ref, k_ref, u_ref, m_ref):
+            in_specs=(times_bs, y_bs),
+            # Output refs match kernel_body(times_ref, y0_ref, hist_ref, y_ref, w_ref, x_ref, k_ref, u_ref, m_ref):
+            # hist_bs -> saved states over the requested time array
             # y_bs -> accepted state y
             # w_bs -> LU workspace for W = I/(dt*gamma) - M(t)
             # x_bs -> stage RHS / solve workspace x
             # k_bs -> stacked Rodas5 stage increments k1..k8
             # x_bs -> temporary stage state u
             # m_bs -> per-trajectory flattened Jacobian M(t)
-            out_specs=(y_bs, w_bs, x_bs, k_bs, x_bs, m_bs),
+            out_specs=(hist_bs, y_bs, w_bs, x_bs, k_bs, x_bs, m_bs),
             compiler_params=pltriton.CompilerParams(num_warps=1, num_stages=2),
-        )(y0_arr)
-        return results[0]
+        )(times_arr, y0_arr)
+        return jnp.reshape(results[0], (n_pad, n_save, y_cols))
 
     def solve_ensemble_pallas(
         y0_batch,
@@ -385,12 +440,25 @@ def make_solver(jac_fn):
                 f"{y0_batch.shape[1]} vars but jac_fn(0.0) is {n_vars}x{n_vars}"
             )
 
+        times_arr = np.asarray(t_span, dtype=np.float64)
+        if times_arr.ndim != 1:
+            raise ValueError(
+                f"t_span must be a 1D array of save times, got shape {times_arr.shape}"
+            )
+        if times_arr.size < 2:
+            raise ValueError(
+                f"t_span must contain at least 2 save times, got {times_arr.size}"
+            )
+        if not np.all(np.diff(times_arr) > 0.0):
+            raise ValueError("t_span must be strictly increasing")
+
         N = y0_batch.shape[0]
         N_pad = ((N + _BLOCK - 1) // _BLOCK) * _BLOCK
 
-        tf = float(t_span[1])
-        t0 = float(t_span[0])
+        tf = float(times_arr[-1])
+        t0 = float(times_arr[0])
         dt0 = float(first_step if first_step is not None else (tf - t0) * 1e-6)
+        n_save = int(times_arr.size)
 
         y_cols = _pad_cols_pow2(n_vars)
         w_cols = _pad_cols_pow2(n_vars * n_vars)
@@ -398,14 +466,17 @@ def make_solver(jac_fn):
         k_cols = _pad_cols_pow2(8 * n_vars)
 
         y0_arr = jnp.pad(y0_batch, ((0, N_pad - N), (0, y_cols - n_vars)))
+        times_jnp = jnp.asarray(times_arr, dtype=jnp.float64)
 
-        y_out = _rodas5_pallas_solve(
+        y_hist = _rodas5_pallas_solve(
+            times_jnp,
             y0_arr,
             n_pad=N_pad,
             y_cols=y_cols,
             w_cols=w_cols,
             x_cols=x_cols,
             k_cols=k_cols,
+            n_save=n_save,
             t0=t0,
             tf=tf,
             dt0=dt0,
@@ -414,6 +485,6 @@ def make_solver(jac_fn):
             ms=int(max_steps),
         )
 
-        return y_out[:N, :n_vars]
+        return y_hist[:N, :, :n_vars]
 
     return solve_ensemble_pallas

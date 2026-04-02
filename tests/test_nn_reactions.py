@@ -18,6 +18,8 @@ from solvers.rodas5_custom_kernel_v5 import make_solver as make_rodas5_v5_solver
 from solvers.rodas5_custom_kernel_v6 import make_solver as make_rodas5_v6_solver
 
 _T_SPAN = (0.0, 1.0)
+_V6_SAVE_TIMES = jnp.array(_T_SPAN, dtype=jnp.float64)
+_V6_MULTI_SAVE_TIMES = jnp.array((0.0, 0.125, 0.25, 0.5, 1.0), dtype=jnp.float64)
 _SYSTEM_DIMS = [30, 50, 70]
 _ENSEMBLE_SIZES = [2, 100, 1000, 10000, 100_000]
 
@@ -132,6 +134,18 @@ def _make_params_batch(size, seed):
 
 def _broadcast_y0(y0, size):
     return jnp.broadcast_to(y0, (size, y0.shape[0]))
+
+
+def _time_exact_trajectory(system, save_times):
+    save_times_np = np.asarray(save_times, dtype=np.float64)
+    t0 = float(save_times_np[0])
+    return np.stack(
+        [
+            np.asarray(system["time_exact"](system["y0"], (t0, float(tf))), dtype=np.float64)
+            for tf in save_times_np
+        ],
+        axis=0,
+    )
 
 
 @pytest.fixture
@@ -578,20 +592,51 @@ def test_rodas5_v6_matches_closed_form_time_dependent_reference(nn_reaction_syst
     solve_v6 = make_rodas5_v6_solver(system["time_jac"])
     y_v6 = solve_v6(
         y0_batch=y0_batch,
-        t_span=_T_SPAN,
+        t_span=_V6_SAVE_TIMES,
         first_step=1e-6,
         rtol=1e-6,
         atol=1e-8,
     ).block_until_ready()
     y_v6_np = np.asarray(y_v6)
 
-    y_exact = system["time_exact"](system["y0"], _T_SPAN)
-    y_exact_batch = _broadcast_y0(y_exact, N)
-    y_exact_np = np.asarray(y_exact_batch)
+    y_exact_traj = _time_exact_trajectory(system, _V6_SAVE_TIMES)
+    y_exact_batch = np.broadcast_to(
+        y_exact_traj, (N, y_exact_traj.shape[0], y_exact_traj.shape[1])
+    )
 
-    assert y_v6.shape == (N, system["n_vars"])
-    np.testing.assert_allclose(y_v6_np.sum(axis=1), 1.0, atol=3e-6)
-    np.testing.assert_allclose(y_v6_np, y_exact_np, rtol=2e-4, atol=3e-8)
+    assert y_v6.shape == (N, len(_V6_SAVE_TIMES), system["n_vars"])
+    np.testing.assert_allclose(y_v6_np[:, 0, :], np.asarray(y0_batch), atol=0.0)
+    np.testing.assert_allclose(y_v6_np.sum(axis=2), 1.0, atol=3e-6)
+    np.testing.assert_allclose(y_v6_np, y_exact_batch, rtol=2e-4, atol=3e-8)
+
+
+@pytest.mark.parametrize("nn_reaction_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
+def test_rodas5_v6_saves_multiple_times(nn_reaction_system):
+    """Validate v6 solver on several requested save times."""
+    N = 64
+    system = nn_reaction_system
+
+    y0_batch = _broadcast_y0(system["y0"], N)
+    solve_v6 = make_rodas5_v6_solver(system["time_jac"])
+
+    y_v6 = solve_v6(
+        y0_batch=y0_batch,
+        t_span=_V6_MULTI_SAVE_TIMES,
+        first_step=1e-6,
+        rtol=1e-6,
+        atol=1e-8,
+    ).block_until_ready()
+    y_v6_np = np.asarray(y_v6)
+
+    y_exact_traj = _time_exact_trajectory(system, _V6_MULTI_SAVE_TIMES)
+    y_exact_batch = np.broadcast_to(
+        y_exact_traj, (N, y_exact_traj.shape[0], y_exact_traj.shape[1])
+    )
+
+    assert y_v6.shape == (N, len(_V6_MULTI_SAVE_TIMES), system["n_vars"])
+    np.testing.assert_allclose(y_v6_np[:, 0, :], np.asarray(y0_batch), atol=0.0)
+    np.testing.assert_allclose(y_v6_np.sum(axis=2), 1.0, atol=3e-6)
+    np.testing.assert_allclose(y_v6_np, y_exact_batch, rtol=2e-4, atol=3e-8)
 
 
 @pytest.mark.parametrize("nn_reaction_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
@@ -604,7 +649,7 @@ def test_rodas5_v6_pallas_ensemble_N(benchmark, nn_reaction_system, ensemble_siz
     results = benchmark.pedantic(
         lambda: solve_v6(
             y0_batch=y0_batch,
-            t_span=_T_SPAN,
+            t_span=_V6_SAVE_TIMES,
             first_step=1e-6,
             rtol=1e-6,
             atol=1e-8,
@@ -613,8 +658,8 @@ def test_rodas5_v6_pallas_ensemble_N(benchmark, nn_reaction_system, ensemble_siz
         rounds=1,
     )
 
-    assert results.shape == (ensemble_size, system["n_vars"])
-    np.testing.assert_allclose(np.asarray(results).sum(axis=1), 1.0, atol=3e-6)
+    assert results.shape == (ensemble_size, len(_V6_SAVE_TIMES), system["n_vars"])
+    np.testing.assert_allclose(np.asarray(results).sum(axis=2), 1.0, atol=3e-6)
 
 
 @pytest.mark.parametrize("nn_reaction_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
@@ -628,7 +673,7 @@ def test_rodas5_v6_pallas_compile_time(benchmark, nn_reaction_system):
 
     kwargs = dict(
         y0_batch=y0_batch,
-        t_span=_T_SPAN,
+        t_span=_V6_SAVE_TIMES,
         first_step=7e-7,
         rtol=1.23e-6,
         atol=4.56e-8,
@@ -644,9 +689,9 @@ def test_rodas5_v6_pallas_compile_time(benchmark, nn_reaction_system):
         y_second = solve_v6(**kwargs).block_until_ready()
         second_call_s = time.perf_counter() - t1
 
-        assert y_first.shape == (N, system["n_vars"])
-        assert y_second.shape == (N, system["n_vars"])
-        np.testing.assert_allclose(np.asarray(y_first).sum(axis=1), 1.0, atol=3e-6)
+        assert y_first.shape == (N, len(_V6_SAVE_TIMES), system["n_vars"])
+        assert y_second.shape == (N, len(_V6_SAVE_TIMES), system["n_vars"])
+        np.testing.assert_allclose(np.asarray(y_first).sum(axis=2), 1.0, atol=3e-6)
         return max(first_call_s - second_call_s, 0.0)
 
     compile_estimate_s = benchmark.pedantic(
@@ -657,3 +702,27 @@ def test_rodas5_v6_pallas_compile_time(benchmark, nn_reaction_system):
     )
     benchmark.extra_info["compile_estimate_s"] = float(compile_estimate_s)
     assert compile_estimate_s >= 0.0
+
+
+@pytest.mark.parametrize(
+    ("t_span", "match"),
+    [
+        (jnp.array([[0.0, 1.0]], dtype=jnp.float64), "1D array"),
+        (jnp.array([0.0], dtype=jnp.float64), "at least 2"),
+        (jnp.array([0.0, 0.5, 0.5], dtype=jnp.float64), "strictly increasing"),
+    ],
+)
+def test_rodas5_v6_rejects_invalid_save_times(t_span, match):
+    """Validate v6 save-time input checks."""
+    system = _make_nn_reaction_system(30)
+    solve_v6 = make_rodas5_v6_solver(system["time_jac"])
+    y0_batch = _broadcast_y0(system["y0"], 4)
+
+    with pytest.raises(ValueError, match=match):
+        solve_v6(
+            y0_batch=y0_batch,
+            t_span=t_span,
+            first_step=1e-6,
+            rtol=1e-6,
+            atol=1e-8,
+        )
