@@ -209,6 +209,79 @@ def test_rodas5_v2_30d_pallas_ensemble_N(benchmark, params_batch_30d):
     np.testing.assert_allclose(results.sum(axis=1), 1.0, atol=3e-6)
 
 
+@pytest.fixture
+def y0_batch_30d(request):
+    """30D initial condition batch (all mass in first species)."""
+    N = request.param
+    y0 = jnp.array([1.0] + [0.0] * (_N_VARS - 1), dtype=jnp.float64)
+    return jnp.broadcast_to(y0, (N, _N_VARS))
+
+
+@pytest.mark.parametrize("y0_batch_30d", [2, 100, 1000, 10000, 100_000], indirect=True)
+def test_rodas5_v3_30d_pallas_ensemble_N(benchmark, y0_batch_30d):
+    """Rodas5 v3 (matrix) Pallas custom kernel ensemble benchmark on the stiff 30D system."""
+    solve_v3 = make_rodas5_v3_solver(_M_30D)
+    results = benchmark.pedantic(
+        lambda: solve_v3(
+            y0_batch=y0_batch_30d,
+            t_span=_T_SPAN,
+            first_step=1e-6,
+            rtol=1e-6,
+            atol=1e-8,
+        ).block_until_ready(),
+        warmup_rounds=1,
+        rounds=1,
+    )
+
+    assert results.shape == (y0_batch_30d.shape[0], _N_VARS)
+    np.testing.assert_allclose(results.sum(axis=1), 1.0, atol=3e-6)
+
+
+def test_rodas5_v3_30d_pallas_compile_time(benchmark):
+    """Measure approximate compile time for v3 (matrix) Pallas solver.
+
+    Uses first-call latency minus steady-state latency as estimate.
+    """
+    N = 1234
+
+    solve_v3 = make_rodas5_v3_solver(_M_30D)
+    y0 = jnp.array([1.0] + [0.0] * (_N_VARS - 1), dtype=jnp.float64)
+    y0_batch = jnp.broadcast_to(y0, (N, _N_VARS))
+
+    # Use uncommon static args to avoid reusing an already-compiled cache entry.
+    kwargs = dict(
+        y0_batch=y0_batch,
+        t_span=_T_SPAN,
+        first_step=7e-7,
+        rtol=1.23e-6,
+        atol=4.56e-8,
+        max_steps=654321,
+    )
+
+    def measure_compile_estimate():
+        t0 = time.perf_counter()
+        y_first = solve_v3(**kwargs).block_until_ready()
+        first_call_s = time.perf_counter() - t0
+
+        t1 = time.perf_counter()
+        y_second = solve_v3(**kwargs).block_until_ready()
+        second_call_s = time.perf_counter() - t1
+
+        assert y_first.shape == (N, _N_VARS)
+        assert y_second.shape == (N, _N_VARS)
+        np.testing.assert_allclose(y_first.sum(axis=1), 1.0, atol=3e-6)
+        return max(first_call_s - second_call_s, 0.0)
+
+    compile_estimate_s = benchmark.pedantic(
+        measure_compile_estimate,
+        warmup_rounds=0,
+        rounds=1,
+        iterations=1,
+    )
+    benchmark.extra_info["compile_estimate_s"] = float(compile_estimate_s)
+    assert compile_estimate_s >= 0.0
+
+
 def test_rodas5_v2_30d_pallas_compile_time(benchmark):
     """Measure approximate compile time as first-call latency minus steady-state latency.
 
