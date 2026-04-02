@@ -170,7 +170,9 @@ def _make_rodas5_step(n_vars):
             fi = x_ref.at[:, pl.ds(i, 1)][...][:, 0]
             k1i = k_ref.at[:, pl.ds(0 * nv + i, 1)][...][:, 0]
             k2i = k_ref.at[:, pl.ds(1 * nv + i, 1)][...][:, 0]
-            x_ref.at[:, pl.ds(i, 1)][...] = (fi + (_C31 * k1i + _C32 * k2i) * inv_dt)[:, None]
+            x_ref.at[:, pl.ds(i, 1)][...] = (fi + (_C31 * k1i + _C32 * k2i) * inv_dt)[
+                :, None
+            ]
             return carry
 
         jax.lax.fori_loop(0, nv, s3_rhs, jnp.int32(0))
@@ -181,7 +183,9 @@ def _make_rodas5_step(n_vars):
             k1i = k_ref.at[:, pl.ds(0 * nv + i, 1)][...][:, 0]
             k2i = k_ref.at[:, pl.ds(1 * nv + i, 1)][...][:, 0]
             k3i = k_ref.at[:, pl.ds(2 * nv + i, 1)][...][:, 0]
-            u_ref.at[:, pl.ds(i, 1)][...] = (yi + _a41 * k1i + _a42 * k2i + _a43 * k3i)[:, None]
+            u_ref.at[:, pl.ds(i, 1)][...] = (yi + _a41 * k1i + _a42 * k2i + _a43 * k3i)[
+                :, None
+            ]
             return carry
 
         jax.lax.fori_loop(0, nv, s4_u, jnp.int32(0))
@@ -192,7 +196,9 @@ def _make_rodas5_step(n_vars):
             k1i = k_ref.at[:, pl.ds(0 * nv + i, 1)][...][:, 0]
             k2i = k_ref.at[:, pl.ds(1 * nv + i, 1)][...][:, 0]
             k3i = k_ref.at[:, pl.ds(2 * nv + i, 1)][...][:, 0]
-            x_ref.at[:, pl.ds(i, 1)][...] = (fi + (_C41 * k1i + _C42 * k2i + _C43 * k3i) * inv_dt)[:, None]
+            x_ref.at[:, pl.ds(i, 1)][...] = (
+                fi + (_C41 * k1i + _C42 * k2i + _C43 * k3i) * inv_dt
+            )[:, None]
             return carry
 
         jax.lax.fori_loop(0, nv, s4_rhs, jnp.int32(0))
@@ -204,7 +210,9 @@ def _make_rodas5_step(n_vars):
             k2i = k_ref.at[:, pl.ds(1 * nv + i, 1)][...][:, 0]
             k3i = k_ref.at[:, pl.ds(2 * nv + i, 1)][...][:, 0]
             k4i = k_ref.at[:, pl.ds(3 * nv + i, 1)][...][:, 0]
-            u_ref.at[:, pl.ds(i, 1)][...] = (yi + _a51 * k1i + _a52 * k2i + _a53 * k3i + _a54 * k4i)[:, None]
+            u_ref.at[:, pl.ds(i, 1)][...] = (
+                yi + _a51 * k1i + _a52 * k2i + _a53 * k3i + _a54 * k4i
+            )[:, None]
             return carry
 
         jax.lax.fori_loop(0, nv, s5_u, jnp.int32(0))
@@ -216,7 +224,9 @@ def _make_rodas5_step(n_vars):
             k2i = k_ref.at[:, pl.ds(1 * nv + i, 1)][...][:, 0]
             k3i = k_ref.at[:, pl.ds(2 * nv + i, 1)][...][:, 0]
             k4i = k_ref.at[:, pl.ds(3 * nv + i, 1)][...][:, 0]
-            x_ref.at[:, pl.ds(i, 1)][...] = (fi + (_C51 * k1i + _C52 * k2i + _C53 * k3i + _C54 * k4i) * inv_dt)[:, None]
+            x_ref.at[:, pl.ds(i, 1)][...] = (
+                fi + (_C51 * k1i + _C52 * k2i + _C53 * k3i + _C54 * k4i) * inv_dt
+            )[:, None]
             return carry
 
         jax.lax.fori_loop(0, nv, s5_rhs, jnp.int32(0))
@@ -229,7 +239,9 @@ def _make_rodas5_step(n_vars):
             k3i = k_ref.at[:, pl.ds(2 * nv + i, 1)][...][:, 0]
             k4i = k_ref.at[:, pl.ds(3 * nv + i, 1)][...][:, 0]
             k5i = k_ref.at[:, pl.ds(4 * nv + i, 1)][...][:, 0]
-            u_ref.at[:, pl.ds(i, 1)][...] = (yi + _a61 * k1i + _a62 * k2i + _a63 * k3i + _a64 * k4i + _a65 * k5i)[:, None]
+            u_ref.at[:, pl.ds(i, 1)][...] = (
+                yi + _a61 * k1i + _a62 * k2i + _a63 * k3i + _a64 * k4i + _a65 * k5i
+            )[:, None]
             return carry
 
         jax.lax.fori_loop(0, nv, s6_u, jnp.int32(0))
@@ -243,7 +255,9 @@ def _make_rodas5_step(n_vars):
             k4i = k_ref.at[:, pl.ds(3 * nv + i, 1)][...][:, 0]
             k5i = k_ref.at[:, pl.ds(4 * nv + i, 1)][...][:, 0]
             x_ref.at[:, pl.ds(i, 1)][...] = (
-                fi + (_C61 * k1i + _C62 * k2i + _C63 * k3i + _C64 * k4i + _C65 * k5i) * inv_dt
+                fi
+                + (_C61 * k1i + _C62 * k2i + _C63 * k3i + _C64 * k4i + _C65 * k5i)
+                * inv_dt
             )[:, None]
             return carry
 
@@ -268,7 +282,16 @@ def _make_rodas5_step(n_vars):
             k5i = k_ref.at[:, pl.ds(4 * nv + i, 1)][...][:, 0]
             k6i = k_ref.at[:, pl.ds(5 * nv + i, 1)][...][:, 0]
             x_ref.at[:, pl.ds(i, 1)][...] = (
-                fi + (_C71 * k1i + _C72 * k2i + _C73 * k3i + _C74 * k4i + _C75 * k5i + _C76 * k6i) * inv_dt
+                fi
+                + (
+                    _C71 * k1i
+                    + _C72 * k2i
+                    + _C73 * k3i
+                    + _C74 * k4i
+                    + _C75 * k5i
+                    + _C76 * k6i
+                )
+                * inv_dt
             )[:, None]
             return carry
 
@@ -295,7 +318,15 @@ def _make_rodas5_step(n_vars):
             k7i = k_ref.at[:, pl.ds(6 * nv + i, 1)][...][:, 0]
             x_ref.at[:, pl.ds(i, 1)][...] = (
                 fi
-                + (_C81 * k1i + _C82 * k2i + _C83 * k3i + _C84 * k4i + _C85 * k5i + _C86 * k6i + _C87 * k7i)
+                + (
+                    _C81 * k1i
+                    + _C82 * k2i
+                    + _C83 * k3i
+                    + _C84 * k4i
+                    + _C85 * k5i
+                    + _C86 * k6i
+                    + _C87 * k7i
+                )
                 * inv_dt
             )[:, None]
             return carry
@@ -461,7 +492,9 @@ def make_solver(M):
         N_pad = ((N + _BLOCK - 1) // _BLOCK) * _BLOCK
 
         tf = float(t_span[1])
-        dt0 = float(first_step if first_step is not None else (tf - float(t_span[0])) * 1e-6)
+        dt0 = float(
+            first_step if first_step is not None else (tf - float(t_span[0])) * 1e-6
+        )
 
         y_cols = _pad_cols_pow2(n_vars)
         w_cols = _pad_cols_pow2(n_vars * n_vars)
