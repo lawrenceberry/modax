@@ -24,7 +24,8 @@ _V6_SAVE_TIMES = jnp.array(_T_SPAN, dtype=jnp.float64)
 _V6_MULTI_SAVE_TIMES = jnp.array((0.0, 0.125, 0.25, 0.5, 1.0), dtype=jnp.float64)
 _SYSTEM_DIMS = [30, 50, 70]
 _ENSEMBLE_SIZES = [2, 100, 1000, 10000, 100_000]
-_V6_LINEAR_SOLVERS = ("fp64", "fp32")
+_LINEAR_SOLVER_PRECISIONS = ("fp64", "fp32")
+_V6_LINEAR_SOLVERS = _LINEAR_SOLVER_PRECISIONS
 
 
 def _time_linear_scale(t):
@@ -971,6 +972,37 @@ def test_rodas5_v2_jac_fn_matches_reference(nn_reaction_system):
     np.testing.assert_allclose(y_jac, y_ref, rtol=1e-6, atol=1e-9)
 
 
+@pytest.mark.parametrize("nn_reaction_system", [50], indirect=True, ids=_dim_id)
+def test_rodas5_v2_fp32_linear_solver_matches_fp64_baseline(nn_reaction_system):
+    """Validate FP32 LU solves against the FP64 baseline on the jac_fn path."""
+    N = 256
+    system = nn_reaction_system
+    params_batch = _make_params_batch(N, seed=0)
+
+    common_kwargs = dict(
+        y0=system["y0"],
+        t_span=_T_SPAN,
+        params_batch=params_batch,
+        jac_fn=system["jac_array"],
+        first_step=1e-6,
+        rtol=1e-6,
+        atol=1e-8,
+    )
+
+    y_fp64 = rodas5_v2_solve_ensemble(
+        None,
+        linear_solver_precision="fp64",
+        **common_kwargs,
+    ).block_until_ready()
+    y_fp32 = rodas5_v2_solve_ensemble(
+        None,
+        linear_solver_precision="fp32",
+        **common_kwargs,
+    ).block_until_ready()
+
+    np.testing.assert_allclose(np.asarray(y_fp32), np.asarray(y_fp64), rtol=2e-4, atol=3e-8)
+
+
 @pytest.mark.parametrize("nn_reaction_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 def test_rodas5_v2_jac_fn_ensemble_N(benchmark, nn_reaction_system, ensemble_size):
@@ -991,6 +1023,39 @@ def test_rodas5_v2_jac_fn_ensemble_N(benchmark, nn_reaction_system, ensemble_siz
         warmup_rounds=1,
         rounds=1,
     )
+
+    assert results.shape == (ensemble_size, system["n_vars"])
+    np.testing.assert_allclose(results.sum(axis=1), 1.0, atol=3e-6)
+
+
+@pytest.mark.parametrize("nn_reaction_system", [50], indirect=True, ids=_dim_id)
+@pytest.mark.parametrize(
+    "linear_solver_precision", _LINEAR_SOLVER_PRECISIONS, ids=_linear_solver_id
+)
+def test_rodas5_v2_jac_fn_linear_solver_precision_timing(
+    benchmark, nn_reaction_system, linear_solver_precision
+):
+    """Benchmark the jac_fn path with FP64 vs FP32 LU precision."""
+    ensemble_size = 10_000
+    system = nn_reaction_system
+    params_batch = _make_params_batch(ensemble_size, seed=42)
+
+    results = benchmark.pedantic(
+        lambda: rodas5_v2_solve_ensemble(
+            None,
+            y0=system["y0"],
+            t_span=_T_SPAN,
+            params_batch=params_batch,
+            jac_fn=system["jac_array"],
+            linear_solver_precision=linear_solver_precision,
+            first_step=1e-6,
+            rtol=1e-6,
+            atol=1e-8,
+        ).block_until_ready(),
+        warmup_rounds=1,
+        rounds=1,
+    )
+    benchmark.extra_info["backend"] = jax.default_backend()
 
     assert results.shape == (ensemble_size, system["n_vars"])
     np.testing.assert_allclose(results.sum(axis=1), 1.0, atol=3e-6)

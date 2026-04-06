@@ -38,6 +38,8 @@ _C71 = 34.20013733472935;  _C72 = -14.15535402717690;  _C73 = 57.82335640988400;
 _C81 = 42.57076742291101;  _C82 = -13.80770672017997;  _C83 = 93.98938432427124;   _C84 = 18.77919633714503;  _C85 = -31.58359187223370;  _C86 = -6.685968952921985;  _C87 = -5.810979938412932
 # fmt: on
 
+_SUPPORTED_LINEAR_SOLVER_PRECISIONS = ("fp64", "fp32")
+
 
 def solve_ensemble(
     f,
@@ -46,6 +48,7 @@ def solve_ensemble(
     params_batch,
     *,
     jac_fn=None,
+    linear_solver_precision="fp32",
     rtol=1e-8,
     atol=1e-10,
     first_step=None,
@@ -72,6 +75,8 @@ def solve_ensemble(
         params_batch: Array of shape (n_ensemble, ...) with parameters.
         jac_fn: JAX function (params) -> (n, n) Jacobian matrix (linear
             systems only).  Mutually exclusive with f.
+        linear_solver_precision: ``"fp64"`` or ``"fp32"`` for the LU
+            factorization and triangular solves.
         rtol: Relative tolerance.
         atol: Absolute tolerance.
         first_step: Initial step size (optional).
@@ -83,6 +88,11 @@ def solve_ensemble(
     """
     if (f is None) == (jac_fn is None):
         raise ValueError("Exactly one of f or jac_fn must be provided")
+    if linear_solver_precision not in _SUPPORTED_LINEAR_SOLVER_PRECISIONS:
+        raise ValueError(
+            "linear_solver_precision must be one of "
+            f"{_SUPPORTED_LINEAR_SOLVER_PRECISIONS}, got {linear_solver_precision!r}"
+        )
 
     y0_arr = jnp.asarray(y0, dtype=jnp.float64)
     n_vars = y0_arr.shape[0]
@@ -90,6 +100,7 @@ def solve_ensemble(
     t0, tf = t_span
     dt0 = jnp.float64(first_step if first_step is not None else (tf - t0) * 1e-6)
     bs = N if batch_size is None else batch_size
+    lu_dtype = jnp.float32 if linear_solver_precision == "fp32" else jnp.float64
 
     lu_factor_batched = jax.vmap(jax.scipy.linalg.lu_factor)
     lu_solve_batched = jax.vmap(jax.scipy.linalg.lu_solve)
@@ -120,11 +131,12 @@ def solve_ensemble(
         J, f_eval = _get_J_and_f_eval(y, params)
         dtgamma = dt * _gamma
         W = jnp.eye(n_vars)[None] / dtgamma[:, None, None] - J
-        LU_piv = lu_factor_batched(W)
+        LU_piv = lu_factor_batched(W.astype(lu_dtype))
         inv_dt = (1.0 / dt)[:, None]
 
         def lu_solve(rhs):
-            return lu_solve_batched(LU_piv, rhs)
+            sol = lu_solve_batched(LU_piv, rhs.astype(lu_dtype))
+            return sol.astype(jnp.float64)
 
         # Stage 1
         dy = f_eval(y)
