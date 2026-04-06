@@ -17,6 +17,7 @@ from solvers.rodas5_custom_kernel_v4 import make_solver as make_rodas5_v4_solver
 from solvers.rodas5_custom_kernel_v5 import make_solver as make_rodas5_v5_solver
 from solvers.rodas5_custom_kernel_v6 import make_solver as make_rodas5_v6_solver
 from solvers.rodas5_custom_kernel_v7_tc import make_solver as make_rodas5_v7_tc_solver
+from solvers.rodas5_v2 import make_solver as make_rodas5_v2_dense_solver
 from solvers.rodas5_v2 import solve_ensemble as rodas5_v2_solve_ensemble
 
 _T_SPAN = (0.0, 1.0)
@@ -155,7 +156,9 @@ def _time_exact_trajectory(system, save_times):
     t0 = float(save_times_np[0])
     return np.stack(
         [
-            np.asarray(system["time_exact"](system["y0"], (t0, float(tf))), dtype=np.float64)
+            np.asarray(
+                system["time_exact"](system["y0"], (t0, float(tf))), dtype=np.float64
+            )
             for tf in save_times_np
         ],
         axis=0,
@@ -775,7 +778,9 @@ def test_rodas5_v6_fp32_matches_fp64_baseline(nn_reaction_system):
         atol=1e-8,
     ).block_until_ready()
 
-    np.testing.assert_allclose(np.asarray(y_fp32), np.asarray(y_fp64), rtol=2e-4, atol=3e-8)
+    np.testing.assert_allclose(
+        np.asarray(y_fp32), np.asarray(y_fp64), rtol=2e-4, atol=3e-8
+    )
 
 
 @pytest.mark.parametrize("nn_reaction_system", [50], indirect=True, ids=_dim_id)
@@ -1000,7 +1005,9 @@ def test_rodas5_v2_fp32_linear_solver_matches_fp64_baseline(nn_reaction_system):
         **common_kwargs,
     ).block_until_ready()
 
-    np.testing.assert_allclose(np.asarray(y_fp32), np.asarray(y_fp64), rtol=2e-4, atol=3e-8)
+    np.testing.assert_allclose(
+        np.asarray(y_fp32), np.asarray(y_fp64), rtol=2e-4, atol=3e-8
+    )
 
 
 @pytest.mark.parametrize("nn_reaction_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
@@ -1009,13 +1016,15 @@ def test_rodas5_v2_jac_fn_ensemble_N(benchmark, nn_reaction_system, ensemble_siz
     """Rodas5 v2 jac_fn (linear, no AD) ensemble benchmark."""
     system = nn_reaction_system
     params_batch = _make_params_batch(ensemble_size, seed=42)
+    solve_v2 = make_rodas5_v2_dense_solver(
+        jac_fn=system["jac_array"],
+        linear_solver_precision="fp32",
+    )
     results = benchmark.pedantic(
-        lambda: rodas5_v2_solve_ensemble(
-            None,
+        lambda: solve_v2(
             y0=system["y0"],
             t_span=_T_SPAN,
             params_batch=params_batch,
-            jac_fn=system["jac_array"],
             first_step=1e-6,
             rtol=1e-6,
             atol=1e-8,

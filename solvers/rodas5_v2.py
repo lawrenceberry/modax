@@ -15,6 +15,7 @@ automatic differentiation entirely.
 import jax
 
 jax.config.update("jax_enable_x64", True)  # noqa: E402 - must precede jax.numpy import
+from jax import lax  # isort: skip  # noqa: E402
 import jax.numpy as jnp  # isort: skip  # noqa: E402
 
 # fmt: off
@@ -39,53 +40,21 @@ _C81 = 42.57076742291101;  _C82 = -13.80770672017997;  _C83 = 93.98938432427124;
 # fmt: on
 
 _SUPPORTED_LINEAR_SOLVER_PRECISIONS = ("fp64", "fp32")
+_MATVEC_DOT_PRECISION = lax.DotAlgorithmPreset.TF32_TF32_F32
+_BATCHED_DOT_DIMENSION_NUMBERS = (((2,), (1,)), ((0,), (0,)))
 
 
-def solve_ensemble(
-    f,
-    y0,
-    t_span,
-    params_batch,
-    *,
-    jac_fn=None,
-    linear_solver_precision="fp32",
-    rtol=1e-8,
-    atol=1e-10,
-    first_step=None,
-    max_steps=100000,
-    batch_size=None,
-):
-    """Solve an ensemble of ODEs with configurable batch grouping.
+def _batched_matvec(mat, vec, *, precision):
+    out = lax.dot(
+        mat,
+        vec[..., None],
+        dimension_numbers=_BATCHED_DOT_DIMENSION_NUMBERS,
+        precision=precision,
+    )
+    return out[..., 0]
 
-    Trajectories are split into chunks of ``batch_size``.  Within each chunk
-    a single ``jax.lax.while_loop`` advances all trajectories together;
-    chunks are parallelised with ``jax.vmap``.
 
-    Either ``f`` or ``jac_fn`` must be provided (not both).
-
-    * ``f(y, params) -> dy/dt`` — general nonlinear ODE.  The Jacobian is
-      computed via ``jax.jacobian`` each step.
-    * ``jac_fn(params) -> (n, n) array`` — linear system shortcut.  The
-      ODE is ``dy/dt = J @ y`` and no automatic differentiation is needed.
-
-    Args:
-        f: JAX function (y, params) -> dy/dt, or None when using jac_fn.
-        y0: Initial conditions, shared across ensemble.
-        t_span: Tuple (t0, tf) for integration bounds.
-        params_batch: Array of shape (n_ensemble, ...) with parameters.
-        jac_fn: JAX function (params) -> (n, n) Jacobian matrix (linear
-            systems only).  Mutually exclusive with f.
-        linear_solver_precision: ``"fp64"`` or ``"fp32"`` for the LU
-            factorization and triangular solves.
-        rtol: Relative tolerance.
-        atol: Absolute tolerance.
-        first_step: Initial step size (optional).
-        max_steps: Maximum number of steps.
-        batch_size: Number of trajectories per while-loop chunk (default: N).
-
-    Returns:
-        Array of shape (n_ensemble, n_components) with final states.
-    """
+def _validate_solver_args(f, jac_fn, linear_solver_precision):
     if (f is None) == (jac_fn is None):
         raise ValueError("Exactly one of f or jac_fn must be provided")
     if linear_solver_precision not in _SUPPORTED_LINEAR_SOLVER_PRECISIONS:
@@ -94,13 +63,33 @@ def solve_ensemble(
             f"{_SUPPORTED_LINEAR_SOLVER_PRECISIONS}, got {linear_solver_precision!r}"
         )
 
-    y0_arr = jnp.asarray(y0, dtype=jnp.float64)
-    n_vars = y0_arr.shape[0]
-    N = params_batch.shape[0]
-    t0, tf = t_span
-    dt0 = jnp.float64(first_step if first_step is not None else (tf - t0) * 1e-6)
-    bs = N if batch_size is None else batch_size
+
+def make_solver(
+    f=None,
+    *,
+    jac_fn=None,
+    linear_solver_precision="fp64",
+    batch_size=None,
+):
+    """Create a reusable Rodas5 ensemble solver.
+
+    The returned callable keeps the JIT-compiled solve graph alive across
+    invocations, which is especially important for benchmarking and repeated
+    solves with fixed problem structure.
+    """
+    _validate_solver_args(f, jac_fn, linear_solver_precision)
+
     lu_dtype = jnp.float32 if linear_solver_precision == "fp32" else jnp.float64
+    matvec_dtype = (
+        jnp.float32
+        if jac_fn is not None and linear_solver_precision == "fp32"
+        else jnp.float64
+    )
+    dot_precision = (
+        _MATVEC_DOT_PRECISION
+        if linear_solver_precision == "fp32" and jax.default_backend() != "cpu"
+        else lax.Precision.DEFAULT
+    )
 
     lu_factor_batched = jax.vmap(jax.scipy.linalg.lu_factor)
     lu_solve_batched = jax.vmap(jax.scipy.linalg.lu_solve)
@@ -110,146 +99,232 @@ def solve_ensemble(
         # Linear path: dy/dt = J(params) @ y — no AD needed.
         _jac_fn_batched = jax.vmap(jac_fn)
 
-        def _get_J_and_f_eval_linear(_y, params):
-            J = _jac_fn_batched(params)  # (bs, n, n)
-            return J, lambda u: jnp.einsum("bij,bj->bi", J, u)
-
-        _get_J_and_f_eval = _get_J_and_f_eval_linear
     else:
         # General path: f supplied, Jacobian via AD.
         _f_batched = jax.vmap(f)
         _jac_batched = jax.vmap(lambda y, p: jax.jacobian(lambda y_: f(y_, p))(y))
 
-        def _get_J_and_f_eval_general(y, params):
-            J = _jac_batched(y, params)  # (bs, n, n)
-            return J, lambda u: _f_batched(u, params)
+    @jax.jit
+    def _solve_groups(y0_arr, params_groups, t0, tf, dt0, rtol, atol, max_steps):
+        n_vars = y0_arr.shape[0]
+        bs = params_groups.shape[1]
+        eye_lu = jnp.eye(n_vars, dtype=lu_dtype)[None, :, :]
 
-        _get_J_and_f_eval = _get_J_and_f_eval_general
+        def _factorize_from_jacobian(jac_lu, dt):
+            dtgamma_inv = (1.0 / (dt * _gamma)).astype(lu_dtype)[:, None, None]
+            return lu_factor_batched(dtgamma_inv * eye_lu - jac_lu)
 
-    def _step_batch(y, dt, params):
-        """Batched Rodas5 step: y (bs, n), dt (bs,), params (bs, ...)."""
-        J, f_eval = _get_J_and_f_eval(y, params)
-        dtgamma = dt * _gamma
-        W = jnp.eye(n_vars)[None] / dtgamma[:, None, None] - J
-        LU_piv = lu_factor_batched(W.astype(lu_dtype))
-        inv_dt = (1.0 / dt)[:, None]
-
-        def lu_solve(rhs):
-            sol = lu_solve_batched(LU_piv, rhs.astype(lu_dtype))
+        def _solve_factorized(factorized, rhs):
+            sol = lu_solve_batched(factorized, rhs.astype(lu_dtype))
             return sol.astype(jnp.float64)
 
-        # Stage 1
-        dy = f_eval(y)
-        k1 = lu_solve(dy)
+        def _step_with_factored_system(y, dt, f_eval, jac_lu):
+            factorized = _factorize_from_jacobian(jac_lu, dt)
+            inv_dt = (1.0 / dt)[:, None]
 
-        # Stage 2
-        u = y + _a21 * k1
-        du = f_eval(u)
-        k2 = lu_solve(du + _C21 * k1 * inv_dt)
+            def lu_solve(rhs):
+                return _solve_factorized(factorized, rhs)
 
-        # Stage 3
-        u = y + _a31 * k1 + _a32 * k2
-        du = f_eval(u)
-        k3 = lu_solve(du + (_C31 * k1 + _C32 * k2) * inv_dt)
+            dy = f_eval(y)
+            k1 = lu_solve(dy)
 
-        # Stage 4
-        u = y + _a41 * k1 + _a42 * k2 + _a43 * k3
-        du = f_eval(u)
-        k4 = lu_solve(du + (_C41 * k1 + _C42 * k2 + _C43 * k3) * inv_dt)
+            u = y + _a21 * k1
+            du = f_eval(u)
+            k2 = lu_solve(du + _C21 * k1 * inv_dt)
 
-        # Stage 5
-        u = y + _a51 * k1 + _a52 * k2 + _a53 * k3 + _a54 * k4
-        du = f_eval(u)
-        k5 = lu_solve(du + (_C51 * k1 + _C52 * k2 + _C53 * k3 + _C54 * k4) * inv_dt)
+            u = y + _a31 * k1 + _a32 * k2
+            du = f_eval(u)
+            k3 = lu_solve(du + (_C31 * k1 + _C32 * k2) * inv_dt)
 
-        # Stage 6
-        u = y + _a61 * k1 + _a62 * k2 + _a63 * k3 + _a64 * k4 + _a65 * k5
-        du = f_eval(u)
-        k6 = lu_solve(
-            du + (_C61 * k1 + _C62 * k2 + _C63 * k3 + _C64 * k4 + _C65 * k5) * inv_dt
-        )
+            u = y + _a41 * k1 + _a42 * k2 + _a43 * k3
+            du = f_eval(u)
+            k4 = lu_solve(du + (_C41 * k1 + _C42 * k2 + _C43 * k3) * inv_dt)
 
-        # Stage 7
-        u = u + k6
-        du = f_eval(u)
-        k7 = lu_solve(
-            du
-            + (_C71 * k1 + _C72 * k2 + _C73 * k3 + _C74 * k4 + _C75 * k5 + _C76 * k6)
-            * inv_dt
-        )
+            u = y + _a51 * k1 + _a52 * k2 + _a53 * k3 + _a54 * k4
+            du = f_eval(u)
+            k5 = lu_solve(du + (_C51 * k1 + _C52 * k2 + _C53 * k3 + _C54 * k4) * inv_dt)
 
-        # Stage 8
-        u = u + k7
-        du = f_eval(u)
-        k8 = lu_solve(
-            du
-            + (
-                _C81 * k1
-                + _C82 * k2
-                + _C83 * k3
-                + _C84 * k4
-                + _C85 * k5
-                + _C86 * k6
-                + _C87 * k7
+            u = y + _a61 * k1 + _a62 * k2 + _a63 * k3 + _a64 * k4 + _a65 * k5
+            du = f_eval(u)
+            k6 = lu_solve(
+                du
+                + (_C61 * k1 + _C62 * k2 + _C63 * k3 + _C64 * k4 + _C65 * k5) * inv_dt
             )
-            * inv_dt
-        )
 
-        y_new = u + k8
-        return y_new, k8
-
-    def _solve_chunk(params_chunk):
-        """Run a single while-loop for a chunk of ``bs`` trajectories."""
-
-        def cond_fn(state):
-            t, _, _, n_steps = state
-            return jnp.any(t < tf) & (n_steps < max_steps)
-
-        def body_fn(state):
-            t, y, dt, n_steps = state
-            active = t < tf
-            dt_use = jnp.where(active, jnp.minimum(dt, tf - t), 1e-30)
-
-            y_new, err_est = _step_batch(y, dt_use, params_chunk)
-
-            scale = atol + rtol * jnp.maximum(jnp.abs(y), jnp.abs(y_new))
-            err_norm = jnp.sqrt(jnp.mean((err_est / scale) ** 2, axis=1))
-
-            accept = active & (err_norm <= 1.0) & ~jnp.isnan(err_norm)
-            t_new = jnp.where(accept, t + dt_use, t)
-            y_out = jnp.where(accept[:, None], y_new, y)
-
-            safe_err = jnp.where(
-                jnp.isnan(err_norm) | (err_norm > 1e18),
-                1e18,
-                jnp.where(err_norm == 0.0, 1e-18, err_norm),
+            u = u + k6
+            du = f_eval(u)
+            k7 = lu_solve(
+                du
+                + (
+                    _C71 * k1
+                    + _C72 * k2
+                    + _C73 * k3
+                    + _C74 * k4
+                    + _C75 * k5
+                    + _C76 * k6
+                )
+                * inv_dt
             )
-            factor = jnp.clip(0.9 * safe_err ** (-1.0 / 6.0), 0.2, 6.0)
-            dt_new = jnp.where(active, dt_use * factor, dt)
 
-            return (t_new, y_out, dt_new, n_steps + 1)
+            u = u + k7
+            du = f_eval(u)
+            k8 = lu_solve(
+                du
+                + (
+                    _C81 * k1
+                    + _C82 * k2
+                    + _C83 * k3
+                    + _C84 * k4
+                    + _C85 * k5
+                    + _C86 * k6
+                    + _C87 * k7
+                )
+                * inv_dt
+            )
 
-        y_init = jnp.broadcast_to(y0_arr, (bs, n_vars)).copy()
-        t_init = jnp.full((bs,), t0, dtype=jnp.float64)
-        dt_init = jnp.full((bs,), dt0, dtype=jnp.float64)
+            return u + k8, k8
 
-        init = (t_init, y_init, dt_init, jnp.int32(0))
-        _, final_y, _, _ = jax.lax.while_loop(cond_fn, body_fn, init)
-        return final_y
+        def _solve_chunk(params_chunk):
+            if jac_fn is not None:
+                jac = _jac_fn_batched(params_chunk)
+                jac_matvec = jac.astype(matvec_dtype)
+                jac_lu = jac.astype(lu_dtype)
 
-    # Pad N to a multiple of bs, split into chunks, vmap, trim.
-    n_chunks = (N + bs - 1) // bs
-    n_padded = n_chunks * bs
+                def _step_batch(y, dt):
+                    def f_eval(u):
+                        out = _batched_matvec(
+                            jac_matvec,
+                            u.astype(matvec_dtype),
+                            precision=dot_precision,
+                        )
+                        return out.astype(jnp.float64)
 
-    if n_padded > N:
-        # Repeat last row so padded trajectories have valid params
-        pad_rows = jnp.broadcast_to(
-            params_batch[-1:], (n_padded - N,) + params_batch.shape[1:]
+                    return _step_with_factored_system(y, dt, f_eval, jac_lu)
+
+            else:
+
+                def _step_batch(y, dt):
+                    jac = _jac_batched(y, params_chunk)
+                    jac_lu = jac.astype(lu_dtype)
+
+                    def f_eval(u):
+                        return _f_batched(u, params_chunk)
+
+                    return _step_with_factored_system(y, dt, f_eval, jac_lu)
+
+            def cond_fn(state):
+                t, _, _, n_steps = state
+                return jnp.any(t < tf) & (n_steps < max_steps)
+
+            def body_fn(state):
+                t, y, dt, n_steps = state
+                active = t < tf
+                dt_use = jnp.where(active, jnp.minimum(dt, tf - t), 1e-30)
+
+                y_new, err_est = _step_batch(y, dt_use)
+
+                scale = atol + rtol * jnp.maximum(jnp.abs(y), jnp.abs(y_new))
+                err_norm = jnp.sqrt(jnp.mean((err_est / scale) ** 2, axis=1))
+
+                accept = active & (err_norm <= 1.0) & ~jnp.isnan(err_norm)
+                t_new = jnp.where(accept, t + dt_use, t)
+                y_out = jnp.where(accept[:, None], y_new, y)
+
+                safe_err = jnp.where(
+                    jnp.isnan(err_norm) | (err_norm > 1e18),
+                    1e18,
+                    jnp.where(err_norm == 0.0, 1e-18, err_norm),
+                )
+                factor = jnp.clip(0.9 * safe_err ** (-1.0 / 6.0), 0.2, 6.0)
+                dt_new = jnp.where(active, dt_use * factor, dt)
+
+                return (t_new, y_out, dt_new, n_steps + 1)
+
+            y_init = jnp.broadcast_to(y0_arr, (bs, n_vars)).copy()
+            t_init = jnp.full((bs,), t0, dtype=jnp.float64)
+            dt_init = jnp.full((bs,), dt0, dtype=jnp.float64)
+
+            init = (t_init, y_init, dt_init, jnp.int32(0))
+            _, final_y, _, _ = jax.lax.while_loop(cond_fn, body_fn, init)
+            return final_y
+
+        return jax.vmap(_solve_chunk)(params_groups)
+
+    def _solve(
+        y0,
+        t_span,
+        params_batch,
+        *,
+        rtol=1e-8,
+        atol=1e-10,
+        first_step=None,
+        max_steps=100000,
+    ):
+        y0_arr = jnp.asarray(y0, dtype=jnp.float64)
+        params_batch_arr = jnp.asarray(params_batch)
+        n_vars = int(y0_arr.shape[0])
+        N = int(params_batch_arr.shape[0])
+        t0, tf = t_span
+        dt0 = jnp.float64(first_step if first_step is not None else (tf - t0) * 1e-6)
+        bs = N if batch_size is None else batch_size
+
+        n_chunks = (N + bs - 1) // bs
+        n_padded = n_chunks * bs
+
+        if n_padded > N:
+            pad_rows = jnp.broadcast_to(
+                params_batch_arr[-1:],
+                (n_padded - N,) + params_batch_arr.shape[1:],
+            )
+            params_padded = jnp.concatenate([params_batch_arr, pad_rows], axis=0)
+        else:
+            params_padded = params_batch_arr
+
+        params_groups = params_padded.reshape(
+            (n_chunks, bs) + params_batch_arr.shape[1:]
         )
-        params_padded = jnp.concatenate([params_batch, pad_rows], axis=0)
-    else:
-        params_padded = params_batch
+        results = _solve_groups(
+            y0_arr,
+            params_groups,
+            jnp.float64(t0),
+            jnp.float64(tf),
+            dt0,
+            jnp.float64(rtol),
+            jnp.float64(atol),
+            jnp.int32(max_steps),
+        )
+        return results.reshape(n_padded, n_vars)[:N]
 
-    params_groups = params_padded.reshape((n_chunks, bs) + params_batch.shape[1:])
-    results = jax.jit(jax.vmap(_solve_chunk))(params_groups)  # (n_chunks, bs, n_vars)
-    return results.reshape(n_padded, n_vars)[:N]
+    return _solve
+
+
+def solve_ensemble(
+    f,
+    y0,
+    t_span,
+    params_batch,
+    *,
+    jac_fn=None,
+    linear_solver_precision="fp64",
+    rtol=1e-8,
+    atol=1e-10,
+    first_step=None,
+    max_steps=100000,
+    batch_size=None,
+):
+    """Solve an ensemble of ODEs with configurable batch grouping."""
+    solver = make_solver(
+        f,
+        jac_fn=jac_fn,
+        linear_solver_precision=linear_solver_precision,
+        batch_size=batch_size,
+    )
+    return solver(
+        y0,
+        t_span,
+        params_batch,
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
+    )
