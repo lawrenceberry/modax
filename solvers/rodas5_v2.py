@@ -7,6 +7,9 @@ body instead of vmap-over-while-loop.
 The batch_size parameter controls how many trajectories share a while loop.
 batch_size=N (default) puts all trajectories in one loop; batch_size=1
 recovers the vmap-over-while-loop behaviour of rodas5.py.
+
+For linear systems dy/dt = J(p) y, pass jac_fn instead of f to avoid
+automatic differentiation entirely.
 """
 
 import jax
@@ -42,6 +45,7 @@ def solve_ensemble(
     t_span,
     params_batch,
     *,
+    jac_fn=None,
     rtol=1e-8,
     atol=1e-10,
     first_step=None,
@@ -54,15 +58,20 @@ def solve_ensemble(
     a single ``jax.lax.while_loop`` advances all trajectories together;
     chunks are parallelised with ``jax.vmap``.
 
-    * ``batch_size=None`` (default) — all N trajectories in one loop.
-    * ``batch_size=1`` — equivalent to ``vmap``-over-``while_loop``
-      (same behaviour as ``rodas5.py``).
+    Either ``f`` or ``jac_fn`` must be provided (not both).
+
+    * ``f(y, params) -> dy/dt`` — general nonlinear ODE.  The Jacobian is
+      computed via ``jax.jacobian`` each step.
+    * ``jac_fn(params) -> (n, n) array`` — linear system shortcut.  The
+      ODE is ``dy/dt = J @ y`` and no automatic differentiation is needed.
 
     Args:
-        f: JAX function (y, params) -> dy/dt.
+        f: JAX function (y, params) -> dy/dt, or None when using jac_fn.
         y0: Initial conditions, shared across ensemble.
         t_span: Tuple (t0, tf) for integration bounds.
         params_batch: Array of shape (n_ensemble, ...) with parameters.
+        jac_fn: JAX function (params) -> (n, n) Jacobian matrix (linear
+            systems only).  Mutually exclusive with f.
         rtol: Relative tolerance.
         atol: Absolute tolerance.
         first_step: Initial step size (optional).
@@ -72,6 +81,9 @@ def solve_ensemble(
     Returns:
         Array of shape (n_ensemble, n_components) with final states.
     """
+    if (f is None) == (jac_fn is None):
+        raise ValueError("Exactly one of f or jac_fn must be provided")
+
     y0_arr = jnp.asarray(y0, dtype=jnp.float64)
     n_vars = y0_arr.shape[0]
     N = params_batch.shape[0]
@@ -79,26 +91,37 @@ def solve_ensemble(
     dt0 = jnp.float64(first_step if first_step is not None else (tf - t0) * 1e-6)
     bs = N if batch_size is None else batch_size
 
-    # Batched helpers (all vmap over the chunk dimension)
-    f_batched = jax.vmap(f)
-
-    def _jac_one(y, p):
-        return jax.jacobian(lambda y_: f(y_, p))(y)
-
-    jac_batched = jax.vmap(_jac_one)
     lu_factor_batched = jax.vmap(jax.scipy.linalg.lu_factor)
     lu_solve_batched = jax.vmap(jax.scipy.linalg.lu_solve)
 
+    # Build path-specific helpers at trace time (Python-level if/else).
+    if jac_fn is not None:
+        # Linear path: dy/dt = J(params) @ y — no AD needed.
+        _jac_fn_batched = jax.vmap(jac_fn)
+
+        def _get_J_and_f_eval_linear(_y, params):
+            J = _jac_fn_batched(params)  # (bs, n, n)
+            return J, lambda u: jnp.einsum("bij,bj->bi", J, u)
+
+        _get_J_and_f_eval = _get_J_and_f_eval_linear
+    else:
+        # General path: f supplied, Jacobian via AD.
+        _f_batched = jax.vmap(f)
+        _jac_batched = jax.vmap(lambda y, p: jax.jacobian(lambda y_: f(y_, p))(y))
+
+        def _get_J_and_f_eval_general(y, params):
+            J = _jac_batched(y, params)  # (bs, n, n)
+            return J, lambda u: _f_batched(u, params)
+
+        _get_J_and_f_eval = _get_J_and_f_eval_general
+
     def _step_batch(y, dt, params):
         """Batched Rodas5 step: y (bs, n), dt (bs,), params (bs, ...)."""
-        J = jac_batched(y, params)
+        J, f_eval = _get_J_and_f_eval(y, params)
         dtgamma = dt * _gamma
         W = jnp.eye(n_vars)[None] / dtgamma[:, None, None] - J
         LU_piv = lu_factor_batched(W)
         inv_dt = (1.0 / dt)[:, None]
-
-        def f_eval(u):
-            return f_batched(u, params)
 
         def lu_solve(rhs):
             return lu_solve_batched(LU_piv, rhs)

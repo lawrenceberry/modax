@@ -104,6 +104,11 @@ def _make_nn_reaction_system(n_vars):
             tuple(s * M_np[i, j] for j in range(n_vars)) for i in range(n_vars)
         )
 
+    def jac_array(p):
+        """Jacobian as a JAX array, function of params only (linear systems)."""
+        s = p[0]
+        return s * M
+
     def time_exact(y_init, t_span):
         """Closed-form solution for M(t) = a(t) * M with commuting matrices."""
         scale_int = _time_linear_scale_integral(*t_span)
@@ -117,6 +122,7 @@ def _make_nn_reaction_system(n_vars):
         "array": array,
         "jac": jac,
         "time_jac": time_jac,
+        "jac_array": jac_array,
         "time_exact": time_exact,
         "y0": y0,
         "y0_np": y0_np,
@@ -915,6 +921,69 @@ def test_rodas5_v2_ensemble_N(benchmark, nn_reaction_system, ensemble_size):
             y0=system["y0"],
             t_span=_T_SPAN,
             params_batch=params_batch,
+            first_step=1e-6,
+            rtol=1e-6,
+            atol=1e-8,
+        ).block_until_ready(),
+        warmup_rounds=1,
+        rounds=1,
+    )
+
+    assert results.shape == (ensemble_size, system["n_vars"])
+    np.testing.assert_allclose(results.sum(axis=1), 1.0, atol=3e-6)
+
+
+# ---------------------------------------------------------------------------
+# Rodas5 v2 — jac_fn path (linear systems, no AD)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("nn_reaction_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
+def test_rodas5_v2_jac_fn_matches_reference(nn_reaction_system):
+    """Validate jac_fn (linear) path against the f (AD) path."""
+    N = 256
+    system = nn_reaction_system
+    params_batch = _make_params_batch(N, seed=0)
+
+    y_jac = rodas5_v2_solve_ensemble(
+        None,
+        y0=system["y0"],
+        t_span=_T_SPAN,
+        params_batch=params_batch,
+        jac_fn=system["jac_array"],
+        first_step=1e-6,
+        rtol=1e-6,
+        atol=1e-8,
+    ).block_until_ready()
+
+    y_ref = rodas5_solve_ensemble(
+        system["array"],
+        y0=system["y0"],
+        t_span=_T_SPAN,
+        params_batch=params_batch,
+        first_step=1e-6,
+        rtol=1e-6,
+        atol=1e-8,
+    ).block_until_ready()
+
+    assert y_jac.shape == (N, system["n_vars"])
+    np.testing.assert_allclose(y_jac.sum(axis=1), 1.0, atol=3e-6)
+    np.testing.assert_allclose(y_jac, y_ref, rtol=1e-6, atol=1e-9)
+
+
+@pytest.mark.parametrize("nn_reaction_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
+@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
+def test_rodas5_v2_jac_fn_ensemble_N(benchmark, nn_reaction_system, ensemble_size):
+    """Rodas5 v2 jac_fn (linear, no AD) ensemble benchmark."""
+    system = nn_reaction_system
+    params_batch = _make_params_batch(ensemble_size, seed=42)
+    results = benchmark.pedantic(
+        lambda: rodas5_v2_solve_ensemble(
+            None,
+            y0=system["y0"],
+            t_span=_T_SPAN,
+            params_batch=params_batch,
+            jac_fn=system["jac_array"],
             first_step=1e-6,
             rtol=1e-6,
             atol=1e-8,
