@@ -1,6 +1,6 @@
 """Rodas5 solver — single-loop batched variant.
 
-Same Rodas5 math and float64 precision as rodas5.py, but solve_ensemble
+Same Rodas5 math and float64 precision as rodas5.py, but the solver
 uses a single jax.lax.while_loop with the batch dimension inside the loop
 body instead of vmap-over-while-loop.
 
@@ -330,33 +330,3 @@ def make_solver(
     return _solve
 
 
-def solve_ensemble(
-    f,
-    y0,
-    t_span,
-    params_batch,
-    *,
-    jac_fn=None,
-    linear_solver_precision="fp64",
-    rtol=1e-8,
-    atol=1e-10,
-    first_step=None,
-    max_steps=100000,
-    batch_size=None,
-):
-    """Solve an ensemble of ODEs with configurable batch grouping."""
-    solver = make_solver(
-        f,
-        jac_fn=jac_fn,
-        linear_solver_precision=linear_solver_precision,
-        batch_size=batch_size,
-    )
-    return solver(
-        y0,
-        t_span,
-        params_batch,
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-    )
