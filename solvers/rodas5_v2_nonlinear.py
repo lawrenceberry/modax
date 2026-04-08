@@ -13,9 +13,8 @@ recovers the vmap-over-while-loop behaviour of rodas5.py.
 
 import functools
 
-import numpy as np
-
 import jax
+import numpy as np
 
 jax.config.update("jax_enable_x64", True)  # noqa: E402 - must precede jax.numpy import
 from jax import lax  # isort: skip  # noqa: E402
@@ -75,7 +74,7 @@ def make_solver(
     lu_solve_batched = jax.vmap(jax.scipy.linalg.lu_solve)
 
     _f_batched = jax.vmap(f)
-    _jac_batched = jax.vmap(lambda y, p: jax.jacobian(lambda y_: f(y_, p))(y))
+    _jac_batched = jax.vmap(lambda y, p: jax.jacfwd(lambda y_: f(y_, p))(y))
 
     @functools.partial(
         jax.jit,
