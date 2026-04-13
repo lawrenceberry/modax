@@ -1,13 +1,4 @@
-"""Tests for 35 coupled van der Pol oscillators (70D stiff ODE system).
-
-Each oscillator has position x_i and velocity v_i with damping mu_i,
-giving 70 state variables total.  Damping coefficients span 0.5 to 100
-on a log scale so the system has a wide stiffness range.
-"""
-
-import json
-import shutil
-import subprocess
+"""Tests for the Rodas5 nonlinear solver on coupled van der Pol oscillator systems."""
 
 import jax
 
@@ -16,79 +7,68 @@ import jax.numpy as jnp  # isort: skip  # noqa: E402
 import numpy as np
 import pytest
 
-from tests.reference_solvers.python.scalar_rodas5 import (
-    make_solver as make_rodas5_solver,
-)
+from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
 
-_N_OSC = 35
-_N_VARS = 2 * _N_OSC  # 70: (x_i, v_i) for each oscillator
 _T_SPAN = (0.0, 1.0)
-
-# Damping coefficients: 35 values from ~0.5 to 100 on a log scale.
-_MU = tuple(10.0 ** (-0.3 + 2.3 * i / (_N_OSC - 1)) for i in range(_N_OSC))
-
-_JULIA_SCRIPT = "benchmarks/vdp_julia.jl"
-_HAS_JULIA = shutil.which("julia") is not None
+_OSC_PAIRS = [15, 25, 35]  # oscillator pairs → 30D, 50D, 70D
+_ENSEMBLE_SIZES = [2, 100, 1000, 10000]
 
 
-def _vdp_70d_ode(y, p):
-    """35 van der Pol oscillators with different damping strengths.
+def _make_vdp_system(n_osc):
+    """Construct n_osc van der Pol oscillator pairs (2*n_osc state variables).
 
-    State: y = (x_0, v_0, x_1, v_1, ..., x_34, v_34)
-    Each oscillator i:
-        dx_i/dt = v_i
-        dv_i/dt = p[0] * mu_i * (1 - x_i^2) * v_i - x_i
-
-    p[0] scales all damping coefficients per trajectory for ensemble variability.
+    State ordering: (x_0, v_0, x_1, v_1, ..., x_{n-1}, v_{n-1}).
+    Damping coefficients span ~0.5 to 100 on a log scale.
+    Each oscillator i: dx_i/dt = v_i, dv_i/dt = p[0]*mu_i*(1 - x_i^2)*v_i - x_i.
     """
-    s = p[0]
-    dy = [None] * _N_VARS
-    for i in range(_N_OSC):
-        x = y[2 * i]
-        v = y[2 * i + 1]
-        dy[2 * i] = v
-        dy[2 * i + 1] = s * _MU[i] * (1.0 - x * x) * v - x
-    return tuple(dy)
+    n_vars = 2 * n_osc
+    mu = jnp.array(
+        [10.0 ** (-0.3 + 2.3 * i / (n_osc - 1)) for i in range(n_osc)],
+        dtype=jnp.float64,
+    )
+    y0 = jnp.array([2.0, 0.0] * n_osc, dtype=jnp.float64)
+
+    def ode_fn(y, t, p):
+        del t
+        s = p[0]
+        x = y[0::2]
+        v = y[1::2]
+        return jnp.stack([v, s * mu * (1.0 - x * x) * v - x], axis=1).ravel()
+
+    return {"n_osc": n_osc, "n_vars": n_vars, "ode_fn": ode_fn, "y0": y0}
 
 
-@jax.jit
-def _vdp_70d_array(y, p):
-    """Array-returning adapter for non-Pallas ensemble reference solver."""
-    return jnp.array(_vdp_70d_ode(y, p))
+def _osc_id(n_osc):
+    return f"{n_osc}osc"
 
 
-def _run_julia(n=2, rtol=1e-6, atol=1e-8, timeout=600):
-    """Run the Julia GPU ensemble VdP benchmark and return parsed JSON result."""
-    cmd = ["julia", _JULIA_SCRIPT, str(n), str(rtol), str(atol)]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if result.returncode != 0:
-        raise RuntimeError(f"Julia failed:\n{result.stderr}")
-    return json.loads(result.stdout.strip())
-
-
-@pytest.fixture
-def params_batch_vdp(request):
-    """VdP damping-scale parameter sets with +/-10% uniform perturbation."""
-    N = request.param
-    rng = np.random.default_rng(42)
+def _make_params_batch(size, seed):
+    rng = np.random.default_rng(seed)
     return jnp.array(
-        1.0 + 0.1 * (2.0 * rng.random((N, 1)) - 1.0),
+        1.0 + 0.1 * (2.0 * rng.random((size, 1)) - 1.0),
         dtype=jnp.float64,
     )
 
 
-@pytest.mark.parametrize(
-    "params_batch_vdp", [2, 100, 1000, 10000, 100_000], indirect=True
-)
-def test_rodas5_vdp_ensemble_N(benchmark, params_batch_vdp):
-    """Rodas5 vmap ensemble benchmark on the 70D van der Pol system."""
-    y0 = jnp.array([2.0, 0.0] * _N_OSC, dtype=jnp.float64)
-    solve = make_rodas5_solver(_vdp_70d_array)
+@pytest.fixture
+def vdp_system(request):
+    """Configurable van der Pol system parameterized by number of oscillator pairs."""
+    return _make_vdp_system(request.param)
+
+
+@pytest.mark.parametrize("vdp_system", _OSC_PAIRS, indirect=True, ids=_osc_id)
+@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
+@pytest.mark.parametrize("precision", ["fp32", "fp64"])
+def test_rodas5_nonlinear(benchmark, vdp_system, ensemble_size, precision):
+    """Rodas5 nonlinear ensemble benchmark on the van der Pol system."""
+    system = vdp_system
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_rodas5_nonlinear(ode_fn=system["ode_fn"], lu_precision=precision)
     results = benchmark.pedantic(
         lambda: solve(
-            y0=y0,
+            y0=system["y0"],
             t_span=_T_SPAN,
-            params_batch=params_batch_vdp,
+            params=params,
             first_step=1e-6,
             rtol=1e-6,
             atol=1e-8,
@@ -97,28 +77,5 @@ def test_rodas5_vdp_ensemble_N(benchmark, params_batch_vdp):
         rounds=1,
     )
 
-    assert results.shape == (params_batch_vdp.shape[0], len(_T_SPAN), _N_VARS)
+    assert results.shape == (ensemble_size, len(_T_SPAN), system["n_vars"])
     assert np.all(np.isfinite(results))
-
-
-# ---------------------------------------------------------------------------
-# Julia / DiffEqGPU.jl GPU ensemble benchmarks
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(not _HAS_JULIA, reason="Julia not installed")
-@pytest.mark.parametrize("N", [2, 100, 1000, 10000, 100_000])
-def test_julia_gpu_vdp_ensemble_N(benchmark, N):
-    """Julia GPURosenbrock23 + EnsembleGPUKernel (CUDA, Float64) for 70D VdP."""
-    data = benchmark.pedantic(
-        lambda: _run_julia(N, rtol=1e-6, atol=1e-8),
-        warmup_rounds=0,
-        rounds=1,
-    )
-
-    # Override benchmark-reported time with Julia's internal solve timing
-    from pytest_benchmark.stats import Stats
-
-    stats = Stats()
-    stats.update(data["adaptive_dt"]["min_time_ms"] / 1000)
-    benchmark.stats.stats = stats

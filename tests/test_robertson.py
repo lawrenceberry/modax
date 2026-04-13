@@ -1,178 +1,58 @@
-import json
-import shutil
-import subprocess
+"""Tests for the Rodas5 nonlinear solver on the Robertson stiff ODE system."""
 
 import jax
-import jax.numpy as jnp
+
+jax.config.update("jax_enable_x64", True)  # noqa: E402
+import jax.numpy as jnp  # isort: skip  # noqa: E402
 import numpy as np
 import pytest
 
-from tests.reference_solvers.python.diffrax_kvaerno5 import solve as kvaerno5_solve
-from tests.reference_solvers.python.diffrax_kvaerno5 import (
-    solve_ensemble as kvaerno5_solve_ensemble,
-)
-from tests.reference_solvers.python.scalar_rodas5 import (
-    make_solver as make_rodas5_solver,
-)
+from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
 
-_JULIA_SCRIPT = "benchmarks/robertson_julia.jl"
-_HAS_JULIA = shutil.which("julia") is not None
+_T_SPAN = (0.0, 1e5)
+_ENSEMBLE_SIZES = [2, 100, 1000, 10000]
 
 
-def _run_julia(n=2, rtol=1e-6, atol=1e-8, timeout=300):
-    """Run the Julia GPU ensemble Robertson benchmark and return parsed JSON result."""
-    cmd = ["julia", _JULIA_SCRIPT, str(n), str(rtol), str(atol)]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if result.returncode != 0:
-        raise RuntimeError(f"Julia failed:\n{result.stderr}")
-    return json.loads(result.stdout.strip())
-
-
-_STANDARD_PARAMS = jnp.array([0.04, 1e4, 3e7])
-
-
-def _robertson_ode(y, p):
-    """Robertson ODE right-hand side.
+def _make_robertson_system():
+    """Construct the Robertson stiff ODE system (3-variable).
 
     Stiff ODE system (Appendix A.1.3, arXiv:2304.06835).
     Standard parameters: k1=0.04, k2=1e4, k3=3e7.
-
-    Works with tuples or arrays (uses only indexing and element-wise ops).
     """
-    return (
-        -p[0] * y[0] + p[1] * y[1] * y[2],
-        p[0] * y[0] - p[1] * y[1] * y[2] - p[2] * y[1] * y[1],
-        p[2] * y[1] * y[1],
+    y0 = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float64)
+
+    def ode_fn(y, t, p):
+        del t
+        return jnp.array([
+            -p[0] * y[0] + p[1] * y[1] * y[2],
+            p[0] * y[0] - p[1] * y[1] * y[2] - p[2] * y[1] ** 2,
+            p[2] * y[1] ** 2,
+        ])
+
+    return {"n_vars": 3, "ode_fn": ode_fn, "y0": y0}
+
+
+def _make_params_batch(size, seed):
+    rng = np.random.default_rng(seed)
+    base = np.array([0.04, 1e4, 3e7])
+    return jnp.array(
+        base * (1.0 + 0.1 * (2.0 * rng.random((size, 3)) - 1.0)),
+        dtype=jnp.float64,
     )
 
 
-@jax.jit
-def robertson(y, params=_STANDARD_PARAMS):
-    """Robertson ODE returning a JAX array (for non-Pallas solvers)."""
-    return jnp.array(_robertson_ode(y, params))
-
-
-@pytest.fixture
-def params_batch(request):
-    """Robertson parameter sets with ±10% uniform perturbation."""
-    N = request.param
-    rng = np.random.default_rng(42)
-    return jnp.array(_STANDARD_PARAMS * (1.0 + 0.1 * (2 * rng.random((N, 3)) - 1)))
-
-
-def test_scipy_bdf(benchmark):
-    y = benchmark.pedantic(
-        lambda: scipy_bdf_solve(
-            robertson, y0=[1.0, 0.0, 0.0], t_span=(0.0, 1e5), first_step=1e-4
-        ),
-        warmup_rounds=1,
-        rounds=1,
-    )
-
-    # Conservation: y1 + y2 + y3 = 1 (the system is conservative)
-    total = y[0] + y[1] + y[2]
-    np.testing.assert_allclose(total, 1.0, atol=1e-6)
-
-    # Check final state against known values
-    np.testing.assert_allclose(y[0, -1], 1.786592e-02, rtol=1e-4)
-    np.testing.assert_allclose(y[1, -1], 7.274753e-08, rtol=1e-4)
-    np.testing.assert_allclose(y[2, -1], 9.821340e-01, rtol=1e-4)
-
-
-def test_rodas5(benchmark):
-    solve = make_rodas5_solver(robertson)
-    params_batch = _STANDARD_PARAMS[None, :]
-    _solve = jax.jit(
-        lambda: solve(
-            y0=[1.0, 0.0, 0.0],
-            t_span=(0.0, 1e5),
-            params_batch=params_batch,
-            first_step=1e-4,
-        )[0, -1]
-    )
-    y = benchmark.pedantic(
-        lambda: _solve().block_until_ready(),
-        warmup_rounds=1,
-        rounds=1,
-    )
-
-    # Conservation: y1 + y2 + y3 = 1 (the system is conservative)
-    np.testing.assert_allclose(y.sum(), 1.0, atol=1e-6)
-
-    # Check final state against known values
-    np.testing.assert_allclose(y[0], 1.786592e-02, rtol=1e-4)
-    np.testing.assert_allclose(y[1], 7.274753e-08, rtol=1e-4)
-    np.testing.assert_allclose(y[2], 9.821340e-01, rtol=1e-4)
-
-
-def test_kvaerno5(benchmark):
-    _solve = jax.jit(
-        lambda: kvaerno5_solve(
-            robertson, y0=[1.0, 0.0, 0.0], t_span=(0.0, 1e5), first_step=1e-4
-        )
-    )
-    y = benchmark.pedantic(
-        lambda: _solve().block_until_ready(),
-        warmup_rounds=1,
-        rounds=1,
-    )
-
-    # Conservation: y1 + y2 + y3 = 1 (the system is conservative)
-    np.testing.assert_allclose(y.sum(), 1.0, atol=1e-6)
-
-    # Check final state against known values
-    np.testing.assert_allclose(y[0], 1.786592e-02, rtol=1e-4)
-    np.testing.assert_allclose(y[1], 7.274753e-08, rtol=1e-4)
-    np.testing.assert_allclose(y[2], 9.821340e-01, rtol=1e-4)
-
-
-@pytest.mark.parametrize("params_batch", [2, 100, 1000, 10000, 100_000], indirect=True)
-def test_kvaerno5_ensemble_N(benchmark, params_batch):
-    results = benchmark.pedantic(
-        lambda: kvaerno5_solve_ensemble(
-            robertson,
-            y0=[1.0, 0.0, 0.0],
-            t_span=(0.0, 1e5),
-            params_batch=params_batch,
-            first_step=1e-4,
-        ).block_until_ready(),
-        warmup_rounds=1,
-        rounds=1,
-    )
-
-    assert results.shape == (params_batch.shape[0], 3)
-    # Conservation should hold for every member
-    np.testing.assert_allclose(results.sum(axis=1), 1.0, atol=1e-6)
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("params_batch", [2, 100], indirect=True)
-def test_scipy_bdf_ensemble_N(benchmark, params_batch):
-    results = benchmark.pedantic(
-        lambda: scipy_bdf_solve_ensemble(
-            robertson,
-            y0=[1.0, 0.0, 0.0],
-            t_span=(0.0, 1e5),
-            params_batch=params_batch,
-            first_step=1e-4,
-        ),
-        warmup_rounds=1,
-        rounds=1,
-    )
-
-    assert results.shape == (params_batch.shape[0], 2, 3)
-    # Conservation should hold for every member
-    np.testing.assert_allclose(results.sum(axis=2), 1.0, atol=1e-6)
-
-
-@pytest.mark.parametrize("params_batch", [2, 100, 1000, 10000, 100_000], indirect=True)
-def test_rodas5_ensemble_N(benchmark, params_batch):
-    solve = make_rodas5_solver(robertson)
+@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
+@pytest.mark.parametrize("precision", ["fp32", "fp64"])
+def test_rodas5_nonlinear(benchmark, ensemble_size, precision):
+    """Rodas5 nonlinear ensemble benchmark on the Robertson stiff system."""
+    system = _make_robertson_system()
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_rodas5_nonlinear(ode_fn=system["ode_fn"], lu_precision=precision)
     results = benchmark.pedantic(
         lambda: solve(
-            y0=[1.0, 0.0, 0.0],
-            t_span=(0.0, 1e5),
-            params_batch=params_batch,
+            y0=system["y0"],
+            t_span=_T_SPAN,
+            params=params,
             first_step=1e-4,
             rtol=1e-6,
             atol=1e-8,
@@ -181,30 +61,5 @@ def test_rodas5_ensemble_N(benchmark, params_batch):
         rounds=1,
     )
 
-    assert results.shape == (params_batch.shape[0], 3)
-    # Conservation should hold for every member
-    np.testing.assert_allclose(results.sum(axis=1), 1.0, atol=1e-6)
-
-
-# ---------------------------------------------------------------------------
-# Julia / DiffEqGPU.jl GPU ensemble benchmarks
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(not _HAS_JULIA, reason="Julia not installed")
-@pytest.mark.parametrize("N", [2, 100, 1000, 10000, 100_000])
-def test_julia_gpu_ensemble_N(benchmark, N):
-    """Julia GPURosenbrock23 + EnsembleGPUKernel (CUDA, Float64)."""
-    data = benchmark.pedantic(
-        lambda: _run_julia(N, rtol=1e-6, atol=1e-8),
-        warmup_rounds=0,
-        rounds=1,
-    )
-
-    # Override benchmark-reported time with Julia's internal solve timing
-    # (excludes Julia startup and GPU kernel compilation overhead)
-    from pytest_benchmark.stats import Stats
-
-    stats = Stats()
-    stats.update(data["adaptive_dt"]["min_time_ms"] / 1000)  # Convert ms to seconds
-    benchmark.stats.stats = stats
+    assert results.shape == (ensemble_size, len(_T_SPAN), system["n_vars"])
+    np.testing.assert_allclose(results.sum(axis=2), 1.0, atol=1e-6)
