@@ -1,4 +1,10 @@
-"""Tests for the Rodas5 linear and nonlinear solvers on nearest-neighbor reaction systems."""
+"""
+Tests for the Rodas5 linear and nonlinear solvers on nearest-neighbor reaction systems.
+
+NN reactions — stiffness from rate constant heterogeneity
+
+M is tridiagonal with entries that span 8 orders of magnitude. kf goes from 1e-2 to 1e6 and kb goes from 1e6 to 1e-2 across the chain, so diagonal entries like -(kb[i-1] + kf[i]) vary wildly. The stiffness ratio (largest / smallest |eigenvalue|) is roughly 10⁸ — fixed regardless of N. Adding more variables doesn't make the problem harder; the matrix just gets larger but equally stiff.
+"""
 
 import jax
 
@@ -179,7 +185,9 @@ def test_rodas5_nonlinear(benchmark, nn_reaction_system, ensemble_size, precisio
 @pytest.mark.parametrize("nn_reaction_system", [70], indirect=True, ids=_dim_id)
 @pytest.mark.parametrize("ensemble_size", [2])
 @pytest.mark.parametrize("precision", ["fp32"])
-def test_rodas5_nonlinear_matches_reference(nn_reaction_system, ensemble_size, precision):
+def test_rodas5_nonlinear_matches_reference(
+    nn_reaction_system, ensemble_size, precision
+):
     """Validate rodas5 nonlinear against Kvaerno5 (diffrax) on a 70D system, N=2, fp32."""
     system = nn_reaction_system
     params = _make_params_batch(ensemble_size, seed=42)

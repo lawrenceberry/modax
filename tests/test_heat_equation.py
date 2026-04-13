@@ -1,0 +1,240 @@
+"""Tests for the Rodas5 linear and nonlinear solvers on semi-discretized 1D heat equation systems.
+
+Heat equation — stiffness from grid refinement
+
+M is tridiagonal with uniform entries: −2/Δx² on the diagonal and 1/Δx² on the off-diagonals.
+Eigenvalues range from about −π² (slowest mode) to −4/Δx² ≈ −4(N+1)² (fastest mode), giving
+a stiffness ratio of O(N²). With N=70 that's only ~2000 — far less stiff than nn_reactions —
+but it grows without bound as you refine the grid.
+
+PDE:  ∂u/∂t = α ∂²u/∂x²,  x ∈ (0, 1),  u(0, t) = u(1, t) = 0
+Grid: N interior points,  Δx = 1/(N+1),  x_i = (i+1)·Δx
+
+The N×N system matrix M = (1/Δx²) tridiag(1, −2, 1) is symmetric tridiagonal.
+Eigenvalues span ≈ [−4/Δx², −π²], so the stiffness ratio scales as O(N²) — a
+demanding scalability test for implicit solvers.
+
+Initial condition y0_i = sin(π x_i) is the first discrete eigenmode of M, so the
+exact solution is y_i(t) = y0_i · exp(λ₁ α t) where λ₁ = (2/Δx²)(cos(πΔx) − 1).
+This lets the reference tests validate against the analytic answer rather than
+a second numerical solver.
+
+fp32 cancellation hazard — mv_precision must stay fp64
+------------------------------------------------------
+Each row of M computes a second difference: (M@u)_i = inv_dx2*(u_{i-1} − 2u_i + u_{i+1}).
+For a smooth solution like sin(πx), the three terms nearly cancel: individual terms are
+O((N+1)²·u_i) ≈ O(1000) but the result is O(π²·u_i) ≈ O(10), a ~100× cancellation.
+In fp32 (ε ≈ 1.2×10⁻⁷), each term carries absolute error ~1000 × 1.2×10⁻⁷ ≈ 1.2×10⁻⁴,
+which survives the cancellation and gives a relative error in f_eval of ~1.2×10⁻⁴/10 = 1.2×10⁻⁵.
+That is ten times larger than rtol=1e-6, so the Rosenbrock error estimator sees inflated
+residuals in k8, rejects most steps, and the solver crawls (tested: fp32 MV on 30D/N=2
+took ~3 s vs ~4 ms for the nonlinear solver whose f_eval stays in fp64).  The fix is to
+keep mv_precision="fp64" and vary only lu_precision, which is why the benchmark tests are
+parameterised on lu_precision alone.
+"""
+
+import jax
+
+jax.config.update("jax_enable_x64", True)  # noqa: E402
+import jax.numpy as jnp  # isort: skip  # noqa: E402
+import numpy as np
+import pytest
+
+from solvers.linear.rodas5_linear import make_solver as make_rodas5_linear
+from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
+
+_T_SPAN = (0.0, 0.1)
+_MULTI_SAVE_TIMES = jnp.array((0.0, 0.025, 0.05, 0.075, 0.1), dtype=jnp.float64)
+_SYSTEM_DIMS = [30, 50, 70]
+_ENSEMBLE_SIZES = [2, 100, 1000, 10000, 100_000]
+
+
+def _make_heat_system(n_vars):
+    """Construct a semi-discretized 1D heat equation with n_vars interior grid points.
+
+    Grid: Δx = 1/(n_vars + 1), interior points x_i = (i+1)·Δx for i = 0, …, n_vars−1.
+    Diffusion matrix M: symmetric tridiagonal, (1/Δx²)(δᵢ,ⱼ₋₁ − 2δᵢⱼ + δᵢ,ⱼ₊₁).
+    Stiffness: eigenvalues span [λ_N, λ_1] ≈ [−4/Δx², −π²], ratio ∝ N².
+    """
+    if n_vars < 3:
+        raise ValueError(f"n_vars must be at least 3, got {n_vars}")
+
+    dx = 1.0 / (n_vars + 1)
+    inv_dx2 = 1.0 / dx**2
+
+    M_np = (
+        np.diag(-2.0 * inv_dx2 * np.ones(n_vars))
+        + np.diag(inv_dx2 * np.ones(n_vars - 1), 1)
+        + np.diag(inv_dx2 * np.ones(n_vars - 1), -1)
+    )
+    M = jnp.array(M_np, dtype=jnp.float64)
+
+    x = np.arange(1, n_vars + 1) * dx
+    y0 = jnp.array(np.sin(np.pi * x), dtype=jnp.float64)
+
+    def ode_fn(y, t, p):
+        del t
+        return p[0] * (M @ y)
+
+    def jac_fn(t, p):
+        del t
+        return p[0] * M
+
+    return {
+        "n_vars": n_vars,
+        "ode_fn": ode_fn,
+        "jac_fn": jac_fn,
+        "y0": y0,
+    }
+
+
+def _exact_solution(n_vars, times, params_batch):
+    """Exact discrete solution for sin(π·x) IC: y_i(t) = y0_i · exp(λ₁ · α · t).
+
+    Since y0 is the first eigenmode of M, the time evolution is a pure exponential
+    decay with the first eigenvalue λ₁ = (2/Δx²)(cos(π·Δx) − 1).
+
+    Returns array of shape (ensemble_size, n_times, n_vars).
+    """
+    dx = 1.0 / (n_vars + 1)
+    x = np.arange(1, n_vars + 1) * dx
+    y0 = np.sin(np.pi * x)  # (n_vars,)
+    lambda_1 = (2.0 / dx**2) * (np.cos(np.pi * dx) - 1.0)  # first eigenvalue of M
+    alpha = np.asarray(params_batch)[:, 0]  # (ensemble_size,)
+    times_np = np.asarray(times)  # (n_times,)
+    decay = np.exp(lambda_1 * alpha[:, None] * times_np[None, :])  # (N, n_times)
+    return y0[None, None, :] * decay[:, :, None]  # (N, n_times, n_vars)
+
+
+def _dim_id(n_vars):
+    return f"{n_vars}d"
+
+
+def _make_params_batch(size, seed):
+    rng = np.random.default_rng(seed)
+    return jnp.array(
+        1.0 + 0.1 * (2.0 * rng.random((size, 1)) - 1.0),
+        dtype=jnp.float64,
+    )
+
+
+@pytest.fixture
+def heat_system(request):
+    """Configurable heat equation system parameterized by grid dimension."""
+    return _make_heat_system(request.param)
+
+
+# ---------------------------------------------------------------------------
+# Linear solver (jac_fn path)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("heat_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
+@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
+@pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
+def test_rodas5_linear(benchmark, heat_system, ensemble_size, lu_precision):
+    """Rodas5 linear (jac_fn) ensemble benchmark parameterised by dim, size, and precision."""
+    system = heat_system
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_rodas5_linear(
+        jac_fn=system["jac_fn"], lu_precision=lu_precision, mv_precision="fp64"
+    )
+    results = benchmark.pedantic(
+        lambda: solve(
+            y0=system["y0"],
+            t_span=_T_SPAN,
+            params=params,
+            first_step=1e-6,
+            rtol=1e-6,
+            atol=1e-8,
+        ).block_until_ready(),
+        warmup_rounds=1,
+        rounds=1,
+    )
+
+    assert results.shape == (ensemble_size, len(_T_SPAN), system["n_vars"])
+    assert np.all(np.isfinite(results))
+    assert np.all(results >= -1e-6)
+
+
+@pytest.mark.parametrize("heat_system", [70], indirect=True, ids=_dim_id)
+@pytest.mark.parametrize("ensemble_size", [2])
+@pytest.mark.parametrize("lu_precision", ["fp32"])
+def test_rodas5_linear_matches_exact(heat_system, ensemble_size, lu_precision):
+    """Validate rodas5 linear against the exact discrete solution on a 70D system, N=2, fp32."""
+    system = heat_system
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_rodas5_linear(
+        jac_fn=system["jac_fn"], lu_precision=lu_precision, mv_precision="fp64"
+    )
+
+    y = solve(
+        y0=system["y0"],
+        t_span=_MULTI_SAVE_TIMES,
+        params=params,
+        first_step=1e-6,
+        rtol=1e-6,
+        atol=1e-8,
+    ).block_until_ready()
+
+    y_exact = _exact_solution(system["n_vars"], _MULTI_SAVE_TIMES, params)
+
+    assert y.shape == (ensemble_size, len(_MULTI_SAVE_TIMES), system["n_vars"])
+    assert np.all(y >= -1e-6)
+    np.testing.assert_allclose(np.asarray(y), y_exact, rtol=1e-3, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Nonlinear solver (ode_fn path)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("heat_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
+@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
+@pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
+def test_rodas5_nonlinear(benchmark, heat_system, ensemble_size, lu_precision):
+    """Rodas5 nonlinear (ode_fn) ensemble benchmark parameterised by dim, size, and precision."""
+    system = heat_system
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_rodas5_nonlinear(ode_fn=system["ode_fn"], lu_precision=lu_precision)
+    results = benchmark.pedantic(
+        lambda: solve(
+            y0=system["y0"],
+            t_span=_T_SPAN,
+            params=params,
+            first_step=1e-6,
+            rtol=1e-6,
+            atol=1e-8,
+        ).block_until_ready(),
+        warmup_rounds=1,
+        rounds=1,
+    )
+
+    assert results.shape == (ensemble_size, len(_T_SPAN), system["n_vars"])
+    assert np.all(np.isfinite(results))
+    assert np.all(results >= -1e-6)
+
+
+@pytest.mark.parametrize("heat_system", [70], indirect=True, ids=_dim_id)
+@pytest.mark.parametrize("ensemble_size", [2])
+@pytest.mark.parametrize("lu_precision", ["fp32"])
+def test_rodas5_nonlinear_matches_exact(heat_system, ensemble_size, lu_precision):
+    """Validate rodas5 nonlinear against the exact discrete solution on a 70D system, N=2, fp32."""
+    system = heat_system
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_rodas5_nonlinear(ode_fn=system["ode_fn"], lu_precision=lu_precision)
+
+    y = solve(
+        y0=system["y0"],
+        t_span=_MULTI_SAVE_TIMES,
+        params=params,
+        first_step=1e-6,
+        rtol=1e-6,
+        atol=1e-8,
+    ).block_until_ready()
+
+    y_exact = _exact_solution(system["n_vars"], _MULTI_SAVE_TIMES, params)
+
+    assert y.shape == (ensemble_size, len(_MULTI_SAVE_TIMES), system["n_vars"])
+    assert np.all(y >= -1e-6)
+    np.testing.assert_allclose(np.asarray(y), y_exact, rtol=1e-3, atol=1e-6)
