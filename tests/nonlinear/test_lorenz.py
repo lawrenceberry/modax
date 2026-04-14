@@ -32,6 +32,9 @@ import pytest
 from solvers.nonlinear.kencarp5_nonlinear import make_solver as make_kencarp5_nonlinear
 from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
 from solvers.nonlinear.tsit5_nonlinear import make_solver as make_tsit5_nonlinear
+from tests.reference_solvers.python.diffrax_kencarp5 import (
+    make_solver as make_diffrax_kencarp5_solver,
+)
 from tests.reference_solvers.python.diffrax_kvaerno5 import (
     make_solver as make_kvaerno5_solver,
 )
@@ -174,6 +177,33 @@ def test_kencarp5_nonlinear(benchmark, ensemble_size, lu_precision):
         lambda: solve(
             y0=system["y0"],
             t_span=_T_SPAN,
+            params=params,
+            first_step=1e-4,
+            rtol=1e-6,
+            atol=1e-8,
+        ).block_until_ready(),
+        warmup_rounds=1,
+        rounds=1,
+    )
+
+    assert results.shape == (ensemble_size, len(_T_SPAN), system["n_vars"])
+    assert np.all(np.isfinite(results))
+    _assert_on_attractor(np.asarray(results[:, -1, :]))
+
+
+@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
+def test_diffrax_kencarp5(benchmark, ensemble_size):
+    """Diffrax KenCarp5 benchmark with attractor-confinement validation."""
+    system = _make_lorenz_system()
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_diffrax_kencarp5_solver(
+        system["explicit_ode_fn"], system["implicit_ode_fn"]
+    )
+    t_span = jnp.array(list(_T_SPAN), dtype=jnp.float64)
+    results = benchmark.pedantic(
+        lambda: solve(
+            y0=system["y0"],
+            t_span=t_span,
             params=params,
             first_step=1e-4,
             rtol=1e-6,

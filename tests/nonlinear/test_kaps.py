@@ -20,6 +20,9 @@ import pytest
 
 from solvers.nonlinear.kencarp5_nonlinear import make_solver as make_kencarp5_nonlinear
 from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
+from tests.reference_solvers.python.diffrax_kencarp5 import (
+    make_solver as make_diffrax_kencarp5_solver,
+)
 from tests.reference_solvers.python.diffrax_kvaerno5 import (
     make_solver as make_kvaerno5_solver,
 )
@@ -173,6 +176,40 @@ def test_kencarp5_nonlinear(benchmark, kaps_system, ensemble_size, lu_precision)
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
+    )
+    results = benchmark.pedantic(
+        lambda: solve(
+            y0=system["y0"],
+            t_span=_TIMES,
+            params=params,
+            first_step=1e-6,
+            rtol=1e-6,
+            atol=1e-8,
+        ).block_until_ready(),
+        warmup_rounds=1,
+        rounds=1,
+    )
+    results_np = np.asarray(results)
+
+    assert results.shape == (ensemble_size, len(_TIMES), system["n_vars"])
+    assert np.all(np.isfinite(results_np))
+    y_exact = _exact_solution(_TIMES, params, system["n_pairs"])
+    np.testing.assert_allclose(results_np, y_exact, rtol=1e-3, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "kaps_system",
+    [(n, e) for n in _N_PAIRS for e in _EPSILON_MIN],
+    indirect=True,
+    ids=lambda p: f"{p[0]}pairs-eps{p[1]:.0e}",
+)
+@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
+def test_diffrax_kencarp5(benchmark, kaps_system, ensemble_size):
+    """Diffrax KenCarp5 benchmark on coupled Kaps singular-perturbation systems."""
+    system = kaps_system
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_diffrax_kencarp5_solver(
+        system["explicit_ode_fn"], system["implicit_ode_fn"]
     )
     results = benchmark.pedantic(
         lambda: solve(

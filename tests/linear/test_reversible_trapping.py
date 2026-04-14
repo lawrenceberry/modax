@@ -47,6 +47,9 @@ from solvers.nonlinear.kencarp5_nonlinear import (
     make_solver as make_kencarp5_nonlinear,
 )
 from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
+from tests.reference_solvers.python.diffrax_kencarp5 import (
+    make_solver as make_diffrax_kencarp5_solver,
+)
 from tests.reference_solvers.python.diffrax_kvaerno5 import (
     make_cached_solver as make_cached_kvaerno5_solver,
 )
@@ -314,6 +317,47 @@ def test_kencarp5_nonlinear(
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
+    )
+    results = benchmark.pedantic(
+        lambda: solve(
+            y0=system["y0"],
+            t_span=_TIMES,
+            params=params,
+            first_step=1e-6,
+            rtol=1e-6,
+            atol=1e-8,
+        ).block_until_ready(),
+        warmup_rounds=1,
+        rounds=1,
+    )
+    results_np = np.asarray(results)
+
+    assert results.shape == (ensemble_size, len(_TIMES), system["n_vars"])
+    assert np.all(np.isfinite(results_np))
+    np.testing.assert_allclose(results_np.sum(axis=2), 1.0, atol=3e-6)
+    if ensemble_size in _REFERENCE_ENSEMBLE_SIZES:
+        solve_ref = make_cached_kvaerno5_solver(system["ode_fn"])
+        y_ref = solve_ref(
+            y0=system["y0"],
+            t_span=_TIMES,
+            params=params,
+            first_step=1e-6,
+            rtol=1e-8,
+            atol=1e-10,
+        ).block_until_ready()
+        np.testing.assert_allclose(results_np, np.asarray(y_ref), rtol=2e-4, atol=3e-8)
+
+
+@pytest.mark.parametrize(
+    "reversible_trapping_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id
+)
+@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
+def test_diffrax_kencarp5(benchmark, reversible_trapping_system, ensemble_size):
+    """Diffrax KenCarp5 benchmark with mass-conservation validation."""
+    system = reversible_trapping_system
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_diffrax_kencarp5_solver(
+        system["explicit_ode_fn"], system["implicit_ode_fn"]
     )
     results = benchmark.pedantic(
         lambda: solve(

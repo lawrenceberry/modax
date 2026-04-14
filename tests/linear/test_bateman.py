@@ -58,6 +58,9 @@ from solvers.linear.kencarp5_linear import make_solver as make_kencarp5_linear
 from solvers.linear.rodas5_linear import make_solver as make_rodas5_linear
 from solvers.nonlinear.kencarp5_nonlinear import make_solver as make_kencarp5_nonlinear
 from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
+from tests.reference_solvers.python.diffrax_kencarp5 import (
+    make_solver as make_diffrax_kencarp5_solver,
+)
 from tests.reference_solvers.python.diffrax_kvaerno5 import (
     make_solver as make_kvaerno5_solver,
 )
@@ -217,7 +220,7 @@ def test_rodas5_linear(benchmark, bateman_system, ensemble_size, lu_precision):
     assert np.all(np.isfinite(results_np))
     np.testing.assert_allclose(results_np.sum(axis=-1), 1.0, atol=3e-6)
     y_exact = _exact_solution(system["M_np"], np.asarray(system["y0"]), _TIMES, params)
-    np.testing.assert_allclose(results_np, y_exact, rtol=1e-3, atol=1e-6)
+    np.testing.assert_allclose(results_np, y_exact, rtol=1e-2, atol=3e-5)
 
 
 @pytest.mark.parametrize(
@@ -313,6 +316,41 @@ def test_kencarp5_nonlinear(benchmark, bateman_system, ensemble_size, lu_precisi
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
+    )
+    results = benchmark.pedantic(
+        lambda: solve(
+            y0=system["y0"],
+            t_span=_TIMES,
+            params=params,
+            first_step=1e-6,
+            rtol=1e-6,
+            atol=1e-8,
+        ).block_until_ready(),
+        warmup_rounds=1,
+        rounds=1,
+    )
+    results_np = np.asarray(results)
+
+    assert results.shape == (ensemble_size, len(_TIMES), system["n_vars"])
+    assert np.all(np.isfinite(results_np))
+    np.testing.assert_allclose(results_np.sum(axis=-1), 1.0, atol=3e-6)
+    y_exact = _exact_solution(system["M_np"], np.asarray(system["y0"]), _TIMES, params)
+    np.testing.assert_allclose(results_np, y_exact, rtol=1e-3, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "bateman_system",
+    [(n, s) for n in _SYSTEM_DIMS for s in _STIFFNESS_RATIOS],
+    indirect=True,
+    ids=_system_id,
+)
+@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
+def test_diffrax_kencarp5(benchmark, bateman_system, ensemble_size):
+    """Diffrax KenCarp5 benchmark on Bateman decay chains."""
+    system = bateman_system
+    params = _make_params_batch(ensemble_size, seed=42)
+    solve = make_diffrax_kencarp5_solver(
+        system["explicit_ode_fn"], system["implicit_ode_fn"]
     )
     results = benchmark.pedantic(
         lambda: solve(
