@@ -41,17 +41,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from solvers.linear.kencarp5_linear import make_solver as make_kencarp5_linear
-from solvers.linear.kencarpgersh5_linear import (
-    make_solver as make_kencarpgersh5_linear,
+from solvers.kencarp5 import (
+    make_solver as make_kencarp5,
 )
-from solvers.nonlinear.kencarp5_nonlinear import (
-    make_solver as make_kencarp5_nonlinear,
+from solvers.kencarpgersh5 import (
+    make_solver as make_kencarpgersh5,
 )
-from solvers.nonlinear.kencarpgersh5_nonlinear import (
-    make_solver as make_kencarpgersh5_nonlinear,
-)
-from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
+from solvers.rodas5 import make_solver as make_rodas5
 from tests.reference_solvers.python.diffrax_kencarp5 import (
     make_solver as make_diffrax_kencarp5_solver,
 )
@@ -217,13 +213,11 @@ def reversible_trapping_system(request):
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_rodas5_nonlinear(
-    benchmark, reversible_trapping_system, ensemble_size, lu_precision
-):
+def test_rodas5(benchmark, reversible_trapping_system, ensemble_size, lu_precision):
     """Rodas5 nonlinear benchmark with cached Diffrax validation on practical ensemble sizes."""
     system = reversible_trapping_system
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_rodas5_nonlinear(ode_fn=system["ode_fn"], lu_precision=lu_precision)
+    solve = make_rodas5(ode_fn=system["ode_fn"], lu_precision=lu_precision)
     results = benchmark.pedantic(
         lambda: solve(
             y0=system["y0"],
@@ -259,13 +253,11 @@ def test_rodas5_nonlinear(
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarp5_nonlinear(
-    benchmark, reversible_trapping_system, ensemble_size, lu_precision
-):
+def test_kencarp5(benchmark, reversible_trapping_system, ensemble_size, lu_precision):
     """KenCarp5 nonlinear benchmark with cached Diffrax validation on practical ensemble sizes."""
     system = reversible_trapping_system
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_kencarp5_nonlinear(
+    solve = make_kencarp5(
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
@@ -306,13 +298,13 @@ def test_kencarp5_nonlinear(
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarpgersh5_nonlinear(
+def test_kencarpgersh5(
     benchmark, reversible_trapping_system, ensemble_size, lu_precision
 ):
     """Dynamic Gershgorin KenCarp5 nonlinear benchmark on reversible trapping."""
     system = reversible_trapping_system
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_kencarpgersh5_nonlinear(
+    solve = make_kencarpgersh5(
         ode_fn=system["ode_fn"],
         lu_precision=lu_precision,
         linear=True,
@@ -347,6 +339,11 @@ def test_kencarpgersh5_nonlinear(
         np.testing.assert_allclose(
             results_np, np.asarray(y_ref), rtol=_GERSH_REF_RTOL, atol=3e-8
         )
+
+
+# ---------------------------------------------------------------------------
+# Reference solver timings
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -388,11 +385,6 @@ def test_diffrax_kencarp5(benchmark, reversible_trapping_system, ensemble_size):
             atol=1e-10,
         ).block_until_ready()
         np.testing.assert_allclose(results_np, np.asarray(y_ref), rtol=2e-4, atol=3e-8)
-
-
-# ---------------------------------------------------------------------------
-# Diffrax Kvaerno5 (reference solver timing)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

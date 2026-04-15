@@ -30,10 +30,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from solvers.nonlinear.kencarp5_nonlinear import (
-    make_solver as make_kencarp5_nonlinear,
+from solvers.kencarp5 import (
+    make_solver as make_kencarp5,
 )
-from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
+from solvers.rodas5 import make_solver as make_rodas5
 from tests.reference_solvers.python.diffrax_kencarp5 import (
     make_solver as make_diffrax_kencarp5_solver,
 )
@@ -189,13 +189,11 @@ def moving_diffusion_spike_system(request):
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_rodas5_nonlinear(
-    benchmark, moving_diffusion_spike_system, ensemble_size, lu_precision
-):
+def test_rodas5(benchmark, moving_diffusion_spike_system, ensemble_size, lu_precision):
     """Rodas5 nonlinear benchmark with cached Diffrax validation on practical ensemble sizes."""
     system = moving_diffusion_spike_system
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_rodas5_nonlinear(ode_fn=system["ode_fn"], lu_precision=lu_precision)
+    solve = make_rodas5(ode_fn=system["ode_fn"], lu_precision=lu_precision)
     results = benchmark.pedantic(
         lambda: solve(
             y0=system["y0"],
@@ -233,13 +231,13 @@ def test_rodas5_nonlinear(
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarp5_nonlinear(
+def test_kencarp5(
     benchmark, moving_diffusion_spike_system, ensemble_size, lu_precision
 ):
     """KenCarp5 nonlinear benchmark with cached Diffrax validation on practical ensemble sizes."""
     system = moving_diffusion_spike_system
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_kencarp5_nonlinear(
+    solve = make_kencarp5(
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
@@ -275,6 +273,11 @@ def test_kencarp5_nonlinear(
         np.testing.assert_allclose(
             results_np, np.asarray(y_ref), rtol=_REFERENCE_RTOL, atol=3e-8
         )
+
+
+# ---------------------------------------------------------------------------
+# Reference solver timings
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -318,11 +321,6 @@ def test_diffrax_kencarp5(benchmark, moving_diffusion_spike_system, ensemble_siz
         np.testing.assert_allclose(
             results_np, np.asarray(y_ref), rtol=_REFERENCE_RTOL, atol=3e-8
         )
-
-
-# ---------------------------------------------------------------------------
-# Diffrax Kvaerno5 (reference solver timing)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

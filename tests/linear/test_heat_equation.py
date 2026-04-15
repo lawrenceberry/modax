@@ -37,8 +37,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from solvers.nonlinear.kencarp5_nonlinear import make_solver as make_kencarp5_nonlinear
-from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
+from solvers.kencarp5 import make_solver as make_kencarp5
+from solvers.rodas5 import make_solver as make_rodas5
 from tests.reference_solvers.python.diffrax_kencarp5 import (
     make_solver as make_diffrax_kencarp5_solver,
 )
@@ -188,11 +188,11 @@ def heat_system(request):
 @pytest.mark.parametrize("heat_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_rodas5_nonlinear(benchmark, heat_system, ensemble_size, lu_precision):
+def test_rodas5(benchmark, heat_system, ensemble_size, lu_precision):
     """Rodas5 nonlinear benchmark with exact-solution validation."""
     system = heat_system
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_rodas5_nonlinear(ode_fn=system["ode_fn"], lu_precision=lu_precision)
+    solve = make_rodas5(ode_fn=system["ode_fn"], lu_precision=lu_precision)
     results = benchmark.pedantic(
         lambda: solve(
             y0=system["y0"],
@@ -217,11 +217,11 @@ def test_rodas5_nonlinear(benchmark, heat_system, ensemble_size, lu_precision):
 @pytest.mark.parametrize("heat_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarp5_nonlinear(benchmark, heat_system, ensemble_size, lu_precision):
+def test_kencarp5(benchmark, heat_system, ensemble_size, lu_precision):
     """KenCarp5 nonlinear benchmark with exact-solution validation."""
     system = heat_system
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_kencarp5_nonlinear(
+    solve = make_kencarp5(
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
@@ -246,6 +246,11 @@ def test_kencarp5_nonlinear(benchmark, heat_system, ensemble_size, lu_precision)
     assert np.all(np.isfinite(results_np))
     assert np.all(results_np >= -1e-6)
     np.testing.assert_allclose(results_np, y_exact, rtol=1e-3, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Reference solver timings
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("heat_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
@@ -276,11 +281,6 @@ def test_diffrax_kencarp5(benchmark, heat_system, ensemble_size):
     assert np.all(np.isfinite(results_np))
     assert np.all(results_np >= -1e-6)
     np.testing.assert_allclose(results_np, y_exact, rtol=1e-3, atol=1e-6)
-
-
-# ---------------------------------------------------------------------------
-# Diffrax Kvaerno5 (reference solver timing)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("heat_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)

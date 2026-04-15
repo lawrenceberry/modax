@@ -29,9 +29,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from solvers.nonlinear.kencarp5_nonlinear import make_solver as make_kencarp5_nonlinear
-from solvers.nonlinear.rodas5_nonlinear import make_solver as make_rodas5_nonlinear
-from solvers.nonlinear.tsit5_nonlinear import make_solver as make_tsit5_nonlinear
+from solvers.kencarp5 import make_solver as make_kencarp5
+from solvers.rodas5 import make_solver as make_rodas5
+from solvers.tsit5 import make_solver as make_tsit5
 from tests.reference_solvers.python.diffrax_kencarp5 import (
     make_solver as make_diffrax_kencarp5_solver,
 )
@@ -154,11 +154,11 @@ def _run_julia_lorenz(benchmark, solver_factory, ensemble_size, ensemble_backend
 
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_rodas5_nonlinear(benchmark, ensemble_size, lu_precision):
+def test_rodas5(benchmark, ensemble_size, lu_precision):
     """Rodas5 nonlinear ensemble benchmark on the Lorenz system."""
     system = _make_lorenz_system()
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_rodas5_nonlinear(ode_fn=system["ode_fn"], lu_precision=lu_precision)
+    solve = make_rodas5(ode_fn=system["ode_fn"], lu_precision=lu_precision)
     results = benchmark.pedantic(
         lambda: solve(
             y0=system["y0"],
@@ -178,11 +178,11 @@ def test_rodas5_nonlinear(benchmark, ensemble_size, lu_precision):
 
 
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
-def test_tsit5_nonlinear(benchmark, ensemble_size):
+def test_tsit5(benchmark, ensemble_size):
     """Tsit5 nonlinear ensemble benchmark on the Lorenz system."""
     system = _make_lorenz_system()
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_tsit5_nonlinear(ode_fn=system["ode_fn"])
+    solve = make_tsit5(ode_fn=system["ode_fn"])
     results = benchmark.pedantic(
         lambda: solve(
             y0=system["y0"],
@@ -203,11 +203,11 @@ def test_tsit5_nonlinear(benchmark, ensemble_size):
 
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarp5_nonlinear(benchmark, ensemble_size, lu_precision):
+def test_kencarp5(benchmark, ensemble_size, lu_precision):
     """KenCarp5 nonlinear ensemble benchmark on the Lorenz system."""
     system = _make_lorenz_system()
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_kencarp5_nonlinear(
+    solve = make_kencarp5(
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
@@ -289,7 +289,7 @@ def test_diffrax_tsit5(benchmark, ensemble_size):
 
 @pytest.mark.parametrize("ensemble_size", [2])
 @pytest.mark.parametrize("lu_precision", ["fp64"])
-def test_rodas5_nonlinear_stays_on_attractor(ensemble_size, lu_precision):
+def test_rodas5_stays_on_attractor(ensemble_size, lu_precision):
     """Verify trajectories remain on the attractor manifold over t ∈ [0, 20].
 
     The Lyapunov exponent λ ≈ 0.9 means initial errors grow by exp(0.9·20) ≈ 1.6×10⁸
@@ -298,7 +298,7 @@ def test_rodas5_nonlinear_stays_on_attractor(ensemble_size, lu_precision):
     """
     system = _make_lorenz_system()
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_rodas5_nonlinear(ode_fn=system["ode_fn"], lu_precision=lu_precision)
+    solve = make_rodas5(ode_fn=system["ode_fn"], lu_precision=lu_precision)
 
     y = solve(
         y0=system["y0"],
@@ -316,11 +316,11 @@ def test_rodas5_nonlinear_stays_on_attractor(ensemble_size, lu_precision):
 
 
 @pytest.mark.parametrize("ensemble_size", [2])
-def test_tsit5_nonlinear_stays_on_attractor(ensemble_size):
+def test_tsit5_stays_on_attractor(ensemble_size):
     """Verify Tsit5 trajectories remain on the attractor manifold over t ∈ [0, 20]."""
     system = _make_lorenz_system()
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_tsit5_nonlinear(ode_fn=system["ode_fn"])
+    solve = make_tsit5(ode_fn=system["ode_fn"])
 
     y = solve(
         y0=system["y0"],
@@ -339,11 +339,11 @@ def test_tsit5_nonlinear_stays_on_attractor(ensemble_size):
 
 @pytest.mark.parametrize("ensemble_size", [2])
 @pytest.mark.parametrize("lu_precision", ["fp64"])
-def test_kencarp5_nonlinear_stays_on_attractor(ensemble_size, lu_precision):
+def test_kencarp5_stays_on_attractor(ensemble_size, lu_precision):
     """Verify KenCarp5 trajectories remain on the attractor manifold over t ∈ [0, 20]."""
     system = _make_lorenz_system()
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_kencarp5_nonlinear(
+    solve = make_kencarp5(
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
@@ -365,7 +365,7 @@ def test_kencarp5_nonlinear_stays_on_attractor(ensemble_size, lu_precision):
 
 
 # ---------------------------------------------------------------------------
-# Diffrax Kvaerno5 (reference solver timing)
+# Reference solver timings
 # ---------------------------------------------------------------------------
 
 
@@ -394,7 +394,9 @@ def test_diffrax_kvaerno5(benchmark, ensemble_size):
     _assert_on_attractor(np.asarray(results[:, -1, :]))
 
 
-@pytest.mark.parametrize("ensemble_size", maybe_mark_large_ensemble_sizes(_ENSEMBLE_SIZES))
+@pytest.mark.parametrize(
+    "ensemble_size", maybe_mark_large_ensemble_sizes(_ENSEMBLE_SIZES)
+)
 @pytest.mark.parametrize(
     "ensemble_backend", JULIA_ENSEMBLE_BACKENDS, ids=julia_backend_id
 )
@@ -408,7 +410,9 @@ def test_julia_tsit5(benchmark, ensemble_size, ensemble_backend):
     _assert_on_attractor(results_np[:, -1, :])
 
 
-@pytest.mark.parametrize("ensemble_size", maybe_mark_large_ensemble_sizes(_ENSEMBLE_SIZES))
+@pytest.mark.parametrize(
+    "ensemble_size", maybe_mark_large_ensemble_sizes(_ENSEMBLE_SIZES)
+)
 @pytest.mark.parametrize(
     "ensemble_backend", JULIA_ENSEMBLE_BACKENDS, ids=julia_backend_id
 )
@@ -422,7 +426,9 @@ def test_julia_kencarp5(benchmark, ensemble_size, ensemble_backend):
     _assert_on_attractor(results_np[:, -1, :])
 
 
-@pytest.mark.parametrize("ensemble_size", maybe_mark_large_ensemble_sizes(_ENSEMBLE_SIZES))
+@pytest.mark.parametrize(
+    "ensemble_size", maybe_mark_large_ensemble_sizes(_ENSEMBLE_SIZES)
+)
 @pytest.mark.parametrize(
     "ensemble_backend", JULIA_ENSEMBLE_BACKENDS, ids=julia_backend_id
 )
@@ -436,7 +442,9 @@ def test_julia_rodas5(benchmark, ensemble_size, ensemble_backend):
     _assert_on_attractor(results_np[:, -1, :])
 
 
-@pytest.mark.parametrize("ensemble_size", maybe_mark_large_ensemble_sizes(_ENSEMBLE_SIZES))
+@pytest.mark.parametrize(
+    "ensemble_size", maybe_mark_large_ensemble_sizes(_ENSEMBLE_SIZES)
+)
 @pytest.mark.parametrize(
     "ensemble_backend", JULIA_ENSEMBLE_BACKENDS, ids=julia_backend_id
 )

@@ -17,8 +17,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from solvers.nonlinear.kencarp5_nonlinear import make_solver as make_kencarp5_nonlinear
-from solvers.nonlinear.tsit5_nonlinear import make_solver as make_tsit5_nonlinear
+from solvers.kencarp5 import make_solver as make_kencarp5
+from solvers.tsit5 import make_solver as make_tsit5
 from tests.reference_solvers.python.diffrax_kencarp5 import (
     make_solver as make_diffrax_kencarp5_solver,
 )
@@ -167,11 +167,11 @@ def _run_julia_damped_rotation(
     ids=lambda n_pairs: f"{2 * n_pairs}d",
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
-def test_tsit5_nonlinear(benchmark, damped_rotation_system, ensemble_size):
+def test_tsit5(benchmark, damped_rotation_system, ensemble_size):
     """Tsit5 nonlinear benchmark on the same linear system."""
     system = damped_rotation_system
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_tsit5_nonlinear(ode_fn=system["ode_fn"])
+    solve = make_tsit5(ode_fn=system["ode_fn"])
     results = benchmark.pedantic(
         lambda: solve(
             y0=system["y0"],
@@ -200,13 +200,11 @@ def test_tsit5_nonlinear(benchmark, damped_rotation_system, ensemble_size):
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarp5_nonlinear_on_linear_system(
-    benchmark, damped_rotation_system, ensemble_size, lu_precision
-):
+def test_kencarp5(benchmark, damped_rotation_system, ensemble_size, lu_precision):
     """KenCarp5 nonlinear benchmark on the same linear system."""
     system = damped_rotation_system
     params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_kencarp5_nonlinear(
+    solve = make_kencarp5(
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
@@ -230,6 +228,11 @@ def test_kencarp5_nonlinear_on_linear_system(
     assert results.shape == (ensemble_size, len(_TIMES), system["n_vars"])
     assert np.all(np.isfinite(results_np))
     np.testing.assert_allclose(results_np, y_exact, rtol=2e-4, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Reference solver timings
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
