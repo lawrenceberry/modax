@@ -118,17 +118,6 @@ def _make_bateman_system(n_vars, stiffness):
         del t
         return p[0] * (M @ y)
 
-    def jac_fn(t, p):
-        del t
-        return p[0] * M
-
-    def explicit_jac_fn(t, p):
-        del t, p
-        return jnp.zeros_like(M)
-
-    def implicit_jac_fn(t, p):
-        return jac_fn(t, p)
-
     def explicit_ode_fn(y, t, p):
         del y, t, p
         return jnp.zeros_like(y0)
@@ -140,11 +129,8 @@ def _make_bateman_system(n_vars, stiffness):
         "n_vars": n_vars,
         "stiffness": stiffness,
         "ode_fn": ode_fn,
-        "jac_fn": jac_fn,
         "explicit_ode_fn": explicit_ode_fn,
         "implicit_ode_fn": implicit_ode_fn,
-        "explicit_jac_fn": explicit_jac_fn,
-        "implicit_jac_fn": implicit_jac_fn,
         "y0": y0,
         "M_np": M_np,
     }

@@ -76,17 +76,6 @@ def _make_damped_rotation_system(n_pairs):
         del t
         return p[0] * (matrix @ y)
 
-    def jac_fn(t, p):
-        del t
-        return p[0] * matrix
-
-    def explicit_jac_fn(t, p):
-        return jac_fn(t, p)
-
-    def implicit_jac_fn(t, p):
-        del t, p
-        return jnp.zeros_like(matrix)
-
     def explicit_ode_fn(y, t, p):
         return ode_fn(y, t, p)
 
@@ -100,11 +89,8 @@ def _make_damped_rotation_system(n_pairs):
         "lambdas": np.asarray(lambdas, dtype=np.float64),
         "omegas": np.asarray(omegas, dtype=np.float64),
         "ode_fn": ode_fn,
-        "jac_fn": jac_fn,
         "explicit_ode_fn": explicit_ode_fn,
         "implicit_ode_fn": implicit_ode_fn,
-        "explicit_jac_fn": explicit_jac_fn,
-        "implicit_jac_fn": implicit_jac_fn,
         "y0": y0,
     }
 

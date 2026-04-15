@@ -131,11 +131,8 @@ def _make_moving_diffusion_spike_system(n_vars):
     return {
         "n_vars": n_vars,
         "ode_fn": ode_fn,
-        "jac_fn": jac_fn,
         "explicit_ode_fn": explicit_ode_fn,
         "implicit_ode_fn": implicit_ode_fn,
-        "jac_nonstiff_fn": jac_nonstiff_fn,
-        "jac_stiff_fn": jac_stiff_fn,
         "y0": y0,
     }
 
