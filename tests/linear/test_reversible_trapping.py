@@ -41,6 +41,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from solvers.linear.kencarp5_linear import make_solver as make_kencarp5_linear
+from solvers.linear.kencarpgersh5_linear import (
+    make_solver as make_kencarpgersh5_linear,
+)
 from solvers.nonlinear.kencarp5_nonlinear import (
     make_solver as make_kencarp5_nonlinear,
 )
@@ -265,6 +269,7 @@ def test_kencarp5_nonlinear(
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
+        linear=True,
     )
     results = benchmark.pedantic(
         lambda: solve(
@@ -310,6 +315,7 @@ def test_kencarpgersh5_nonlinear(
     solve = make_kencarpgersh5_nonlinear(
         ode_fn=system["ode_fn"],
         lu_precision=lu_precision,
+        linear=True,
     )
     results = benchmark.pedantic(
         lambda: solve(

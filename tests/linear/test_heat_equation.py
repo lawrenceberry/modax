@@ -225,6 +225,7 @@ def test_kencarp5_nonlinear(benchmark, heat_system, ensemble_size, lu_precision)
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
         lu_precision=lu_precision,
+        linear=True,
     )
     results = benchmark.pedantic(
         lambda: solve(
