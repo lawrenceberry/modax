@@ -510,6 +510,8 @@ def make_solver(
                         if coeff != 0.0:
                             predictor = predictor + coeff * stage_y[j]
 
+                    # TODO: try re-using the factorised Jacobian between stages and during the
+                    # Newton iteration (i.e. modified Newton).
                     y_stage, fe_stage, fi_stage, stage_failed = _solve_stage(
                         base, t_stage, dt, predictor
                     )
