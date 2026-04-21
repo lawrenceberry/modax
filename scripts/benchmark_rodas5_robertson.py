@@ -10,12 +10,15 @@ the script to regenerate the plot skips already-collected data points.
 import json
 import subprocess
 import time
+import sys
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from solvers.rodas5 import solve as rodas5_solve
 from tests.reference_solvers.python.diffrax_kvaerno5 import (
@@ -73,20 +76,43 @@ def get_gpu_name() -> str:
 
 def load_cache() -> dict:
     if _CACHE_PATH.exists():
-        return json.loads(_CACHE_PATH.read_text())
-    return {"gpu_name": None, "timings": {}}
+        cache = json.loads(_CACHE_PATH.read_text())
+        if "by_gpu" not in cache:
+            gpu_name = cache.get("gpu_name") or "unknown GPU"
+            cache = {
+                "gpu_name": gpu_name,
+                "by_gpu": {
+                    gpu_name: {
+                        "timings": cache.get("timings", {}),
+                    }
+                },
+            }
+        return cache
+    return {"gpu_name": None, "by_gpu": {}}
 
 
 def save_cache(cache: dict) -> None:
     _CACHE_PATH.write_text(json.dumps(cache, indent=2))
 
 
+def initialize_cache() -> dict:
+    cache = load_cache()
+    current_gpu_name = get_gpu_name()
+    cache.setdefault("by_gpu", {})
+    cache["by_gpu"].setdefault(current_gpu_name, {"timings": {}})
+    cache["gpu_name"] = current_gpu_name
+    save_cache(cache)
+    return cache
+
+
 def cache_get(cache: dict, solver_key: str, size: int) -> float | None:
-    return cache["timings"].get(solver_key, {}).get(str(size))
+    gpu_cache = cache["by_gpu"][cache["gpu_name"]]
+    return gpu_cache["timings"].get(solver_key, {}).get(str(size))
 
 
 def cache_set(cache: dict, solver_key: str, size: int, ms: float) -> None:
-    cache["timings"].setdefault(solver_key, {})[str(size)] = ms
+    gpu_cache = cache["by_gpu"][cache["gpu_name"]]
+    gpu_cache["timings"].setdefault(solver_key, {})[str(size)] = ms
     save_cache(cache)
 
 
@@ -196,11 +222,8 @@ def collect_or_load(cache, solver_key, size, label, timing_fn) -> float | None:
 
 
 def main():
-    cache = load_cache()
-
-    gpu_name = cache.get("gpu_name") or get_gpu_name()
-    cache["gpu_name"] = gpu_name
-    save_cache(cache)
+    cache = initialize_cache()
+    gpu_name = cache["gpu_name"]
 
     y0, ode_fn = make_robertson_system()
 

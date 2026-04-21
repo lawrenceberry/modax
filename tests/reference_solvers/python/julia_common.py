@@ -177,11 +177,7 @@ def require_julia_reference_support(
 
 
 def _julia_subprocess_env():
-    env = os.environ.copy()
-    juliaup_depot = Path(tempfile.gettempdir()) / "ode-test-juliaup"
-    juliaup_depot.mkdir(parents=True, exist_ok=True)
-    env.setdefault("JULIAUP_DEPOT_PATH", str(juliaup_depot))
-    return env
+    return os.environ.copy()
 
 
 @functools.lru_cache(maxsize=1)
