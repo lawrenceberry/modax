@@ -60,7 +60,7 @@ def benchmark_julia_solver(benchmark, solve, **solve_kwargs):
     if solve_with_timing is None:
         raise TypeError(
             "benchmark_julia_solver requires a Julia solver created by "
-            "tests.reference_solvers.python.julia_common.make_solver"
+            "reference.solvers.python.julia_common.make_solver"
         )
 
     if benchmark._mode:

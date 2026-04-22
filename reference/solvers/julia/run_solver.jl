@@ -6,7 +6,7 @@ using SciMLBase
 using StaticArrays
 
 include("common.jl")
-include("systems/registry.jl")
+include("../../systems/julia/registry.jl")
 
 function parse_first_step(value::String)
     return value == "none" ? nothing : parse(Float64, value)

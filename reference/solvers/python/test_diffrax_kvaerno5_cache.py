@@ -3,7 +3,7 @@
 import jax.numpy as jnp
 import numpy as np
 
-from tests.reference_solvers.python import diffrax_kvaerno5
+from reference.solvers.python import diffrax_kvaerno5
 
 
 def _make_ode(scale):

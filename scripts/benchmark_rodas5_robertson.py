@@ -21,11 +21,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from solvers.rodas5 import solve as rodas5_solve
-from tests.reference_solvers.python.diffrax_kvaerno5 import (
+from reference.solvers.python.diffrax_kvaerno5 import (
     make_solver as make_kvaerno5_solver,
 )
-from tests.reference_solvers.python.julia_common import _check_julia_environment
-from tests.reference_solvers.python.julia_rodas5 import (
+from reference.solvers.python.julia_common import _check_julia_environment
+from reference.solvers.python.julia_rodas5 import (
     make_solver as make_julia_rodas5_solver,
 )
 

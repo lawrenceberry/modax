@@ -6,28 +6,28 @@ import pytest
 
 from solvers.kencarp5 import solve as kencarp5_solve
 from solvers.rodas5 import solve as rodas5_solve
-from tests.reference_solvers.python.diffrax_kencarp5 import (
+from reference.solvers.python.diffrax_kencarp5 import (
     make_solver as make_diffrax_kencarp5_solver,
 )
-from tests.reference_solvers.python.diffrax_kvaerno5 import (
+from reference.solvers.python.diffrax_kvaerno5 import (
     make_cached_solver as make_cached_kvaerno5_solver,
 )
-from tests.reference_solvers.python.diffrax_kvaerno5 import (
+from reference.solvers.python.diffrax_kvaerno5 import (
     make_solver as make_kvaerno5_solver,
 )
-from tests.reference_solvers.python.julia_common import (
+from reference.solvers.python.julia_common import (
     JULIA_ENSEMBLE_BACKENDS,
     benchmark_julia_solver,
     julia_backend_id,
     maybe_mark_large_ensemble_sizes,
 )
-from tests.reference_solvers.python.julia_kencarp5 import (
+from reference.solvers.python.julia_kencarp5 import (
     make_solver as make_julia_kencarp5_solver,
 )
-from tests.reference_solvers.python.julia_kvaerno5 import (
+from reference.solvers.python.julia_kvaerno5 import (
     make_solver as make_julia_kvaerno5_solver,
 )
-from tests.reference_solvers.python.julia_rodas5 import (
+from reference.solvers.python.julia_rodas5 import (
     make_solver as make_julia_rodas5_solver,
 )
 

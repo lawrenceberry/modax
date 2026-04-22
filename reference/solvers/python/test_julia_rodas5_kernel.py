@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from tests.reference_solvers.python.julia_rodas5 import (
+from reference.solvers.python.julia_rodas5 import (
     make_solver as make_julia_rodas5_solver,
 )
 
