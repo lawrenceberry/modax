@@ -18,8 +18,8 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from solvers.tsit5 import solve as tsit5_solve
 from reference.systems.python import lorenz
+from solvers.tsit5 import solve as tsit5_solve
 
 _T_SPAN = (0.0, 5.0)
 _ENSEMBLE_SIZES = [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000]

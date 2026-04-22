@@ -4,8 +4,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from solvers.rodas5 import solve as rodas5_solve
-from solvers.tsit5 import solve as tsit5_solve
 from reference.solvers.python.diffrax_kvaerno5 import (
     make_solver as make_kvaerno5_solver,
 )
@@ -24,6 +22,8 @@ from reference.solvers.python.julia_tsit5 import (
     make_solver as make_julia_tsit5_solver,
 )
 from reference.systems.python import lorenz
+from solvers.rodas5 import solve as rodas5_solve
+from solvers.tsit5 import solve as tsit5_solve
 
 _T_SPAN = jnp.array([0.0, 5.0, 10.0, 15.0, 20.0], dtype=jnp.float64)
 _ENSEMBLE_SIZES = [10, 100]

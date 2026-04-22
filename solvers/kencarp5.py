@@ -267,9 +267,7 @@ def solve(
     def _solve_batch(params_batch):
         y_init = jnp.broadcast_to(y0_arr, (bs, n_vars)).copy()
         hist_init = (
-            jnp.zeros((bs, n_save, n_vars), dtype=jnp.float64)
-            .at[:, 0, :]
-            .set(y_init)
+            jnp.zeros((bs, n_save, n_vars), dtype=jnp.float64).at[:, 0, :].set(y_init)
         )
         t_init = jnp.full((bs,), times[0], dtype=jnp.float64)
         dt_init = jnp.full((bs,), dt0, dtype=jnp.float64)
@@ -328,12 +326,8 @@ def solve(
                             u,
                             u - delta,
                         )
-                        scale = atol + rtol * jnp.maximum(
-                            jnp.abs(u), jnp.abs(u_new)
-                        )
-                        delta_norm = jnp.sqrt(
-                            jnp.mean((delta / scale) ** 2, axis=1)
-                        )
+                        scale = atol + rtol * jnp.maximum(jnp.abs(u), jnp.abs(u_new))
+                        delta_norm = jnp.sqrt(jnp.mean((delta / scale) ** 2, axis=1))
                         invalid = (
                             jnp.any(~jnp.isfinite(u_new), axis=1)
                             | jnp.any(~jnp.isfinite(delta), axis=1)
@@ -354,9 +348,7 @@ def solve(
                     )
                     fi_final = implicit_batched(u_final, t_stage, params_batch)
                     failed = (
-                        failed
-                        | ~converged
-                        | jnp.any(~jnp.isfinite(fi_final), axis=1)
+                        failed | ~converged | jnp.any(~jnp.isfinite(fi_final), axis=1)
                     )
                     return u_final, fi_final, failed
 
@@ -446,9 +438,7 @@ def solve(
             scale = atol + rtol * jnp.maximum(jnp.abs(y), jnp.abs(y_new))
             err_norm = jnp.sqrt(jnp.mean((err_est / scale) ** 2, axis=1))
 
-            accept = (
-                active & (err_norm <= 1.0) & ~jnp.isnan(err_norm) & ~stage_failed
-            )
+            accept = active & (err_norm <= 1.0) & ~jnp.isnan(err_norm) & ~stage_failed
             t_new = jnp.where(accept, t + dt_use, t)
             y_out = jnp.where(accept[:, None], y_new, y)
 

@@ -83,9 +83,7 @@ def load_cache() -> dict:
         if "by_gpu" not in cache:
             gpu_name = cache.get("gpu_name") or "unknown GPU"
             legacy_sections = {
-                key: value
-                for key, value in cache.items()
-                if key != "gpu_name"
+                key: value for key, value in cache.items() if key != "gpu_name"
             }
             cache = {
                 "gpu_name": gpu_name,
@@ -116,7 +114,9 @@ def cache_get(cache: dict, config_key: str, solver_key: str, size: int) -> float
     return gpu_cache.get(config_key, {}).get(solver_key, {}).get(str(size))
 
 
-def cache_set(cache: dict, config_key: str, solver_key: str, size: int, ms: float) -> None:
+def cache_set(
+    cache: dict, config_key: str, solver_key: str, size: int, ms: float
+) -> None:
     gpu_cache = cache["by_gpu"][cache["gpu_name"]]
     gpu_cache.setdefault(config_key, {}).setdefault(solver_key, {})[str(size)] = ms
     save_cache(cache)
@@ -156,7 +156,9 @@ def make_vdp_system(n_osc: int, mu_max: float):
         s = p[0]
         x = y[0::2]
         v = y[1::2]
-        return jnp.stack([jnp.zeros_like(x), s * mu * (1.0 - x * x) * v], axis=1).ravel()
+        return jnp.stack(
+            [jnp.zeros_like(x), s * mu * (1.0 - x * x) * v], axis=1
+        ).ravel()
 
     return y0, ode_fn, explicit_ode_fn, implicit_ode_fn
 
@@ -177,7 +179,10 @@ def make_params_batch(size: int, seed: int = 42):
 def time_rodas5(ode_fn, y0, params, lu_precision) -> float:
     def run():
         return rodas5_solve(
-            ode_fn, y0, _TIMES, params,
+            ode_fn,
+            y0,
+            _TIMES,
+            params,
             lu_precision=lu_precision,
             first_step=1e-6,
             rtol=1e-6,
@@ -193,7 +198,9 @@ def time_rodas5(ode_fn, y0, params, lu_precision) -> float:
 def time_kvaerno5(solve, y0, params) -> float:
     def run():
         return solve(
-            y0=y0, t_span=_TIMES, params=params,
+            y0=y0,
+            t_span=_TIMES,
+            params=params,
             first_step=1e-6,
             rtol=1e-8,
             atol=1e-10,
@@ -223,7 +230,9 @@ def time_julia_rodas5(solve, y0, params) -> float:
 # ---------------------------------------------------------------------------
 
 
-def collect_or_load(cache, config_key, solver_key, size, label, timing_fn) -> float | None:
+def collect_or_load(
+    cache, config_key, solver_key, size, label, timing_fn
+) -> float | None:
     cached = cache_get(cache, config_key, solver_key, size)
     if cached is not None:
         print(f"  {label}  n={size:>6}  (cached) {cached:.1f}ms")
@@ -248,8 +257,15 @@ def drop_none(
 
 def main():
     parser = argparse.ArgumentParser(description="VDP ensemble benchmark")
-    parser.add_argument("--n-osc", type=int, default=15, help="Number of oscillator pairs (default: 15 → 30D)")
-    parser.add_argument("--mu", type=float, default=100.0, help="Max stiffness mu (default: 100)")
+    parser.add_argument(
+        "--n-osc",
+        type=int,
+        default=15,
+        help="Number of oscillator pairs (default: 15 → 30D)",
+    )
+    parser.add_argument(
+        "--mu", type=float, default=100.0, help="Max stiffness mu (default: 100)"
+    )
     args = parser.parse_args()
 
     n_osc: int = args.n_osc
@@ -259,7 +275,9 @@ def main():
     cache = initialize_cache()
     gpu_name = cache["gpu_name"]
 
-    print(f"\nVDP benchmark: {n_osc} oscillators ({2 * n_osc}D), mu_max={mu_max:g}, GPU={gpu_name}\n")
+    print(
+        f"\nVDP benchmark: {n_osc} oscillators ({2 * n_osc}D), mu_max={mu_max:g}, GPU={gpu_name}\n"
+    )
 
     y0, ode_fn, _explicit_ode_fn, _implicit_ode_fn = make_vdp_system(n_osc, mu_max)
 
@@ -271,7 +289,10 @@ def main():
         for size in _ENSEMBLE_SIZES:
             params = make_params_batch(size)
             ms = collect_or_load(
-                cache, config_key, solver_key, size,
+                cache,
+                config_key,
+                solver_key,
+                size,
                 f"meowax rodas5 {precision}",
                 lambda params=params: time_rodas5(ode_fn, y0, params, precision),
             )
@@ -283,7 +304,10 @@ def main():
     for size in _ENSEMBLE_SIZES:
         params = make_params_batch(size)
         ms = collect_or_load(
-            cache, config_key, "diffrax_kvaerno5", size,
+            cache,
+            config_key,
+            "diffrax_kvaerno5",
+            size,
             "diffrax kvaerno5",
             lambda params=params: time_kvaerno5(kvaerno5_solve, y0, params),
         )
@@ -305,7 +329,11 @@ def main():
             for size in _ENSEMBLE_SIZES:
                 params = make_params_batch(size)
                 ms = collect_or_load(
-                    cache, config_key, solver_key, size, label,
+                    cache,
+                    config_key,
+                    solver_key,
+                    size,
+                    label,
                     lambda params=params: time_julia_rodas5(solve, y0, params),
                 )
                 julia_timings[backend].append(ms)
@@ -318,7 +346,13 @@ def main():
     colors = {"fp32": "#e05c2b", "fp64": "#2b7be0"}
     for precision in _PRECISIONS:
         xs, ys = drop_none(_ENSEMBLE_SIZES, rodas5_timings[precision])
-        ax.plot(xs, ys, marker="o", label=f"meowax rodas5 {precision}", color=colors[precision])
+        ax.plot(
+            xs,
+            ys,
+            marker="o",
+            label=f"meowax rodas5 {precision}",
+            color=colors[precision],
+        )
 
     xs, ys = drop_none(_ENSEMBLE_SIZES, kvaerno5_timings)
     ax.plot(xs, ys, marker="D", label="diffrax kvaerno5", color="#2ba84a")
@@ -327,13 +361,21 @@ def main():
     for backend in _JULIA_BACKENDS:
         if backend in julia_timings:
             xs, ys = drop_none(_ENSEMBLE_SIZES, julia_timings[backend])
-            ax.plot(xs, ys, marker="^", label=_JULIA_LABELS[backend], color=julia_colors[backend])
+            ax.plot(
+                xs,
+                ys,
+                marker="^",
+                label=_JULIA_LABELS[backend],
+                color=julia_colors[backend],
+            )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Ensemble size")
     ax.set_ylabel("Solve time (ms)")
-    ax.set_title(f"VDP benchmark — {n_osc} osc ({2 * n_osc}D), μ_max={mu_max:g} — {gpu_name}")
+    ax.set_title(
+        f"VDP benchmark — {n_osc} osc ({2 * n_osc}D), μ_max={mu_max:g} — {gpu_name}"
+    )
     ax.legend(fontsize=8)
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_ENSEMBLE_SIZES)

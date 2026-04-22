@@ -149,9 +149,7 @@ def solve(
     def _solve_batch(params_batch):
         y_init = jnp.broadcast_to(y0_arr, (bs, n_vars)).copy()
         hist_init = (
-            jnp.zeros((bs, n_save, n_vars), dtype=jnp.float64)
-            .at[:, 0, :]
-            .set(y_init)
+            jnp.zeros((bs, n_save, n_vars), dtype=jnp.float64).at[:, 0, :].set(y_init)
         )
         t_init = jnp.full((bs,), times[0], dtype=jnp.float64)
         dt_init = jnp.full((bs,), dt0, dtype=jnp.float64)
@@ -190,18 +188,11 @@ def solve(
             u = y + dt_col * (_A51 * k1 + _A52 * k2 + _A53 * k3 + _A54 * k4)
             k5 = f_eval(u, t + _C5 * dt)
 
-            u = y + dt_col * (
-                _A61 * k1 + _A62 * k2 + _A63 * k3 + _A64 * k4 + _A65 * k5
-            )
+            u = y + dt_col * (_A61 * k1 + _A62 * k2 + _A63 * k3 + _A64 * k4 + _A65 * k5)
             k6 = f_eval(u, t + _C6 * dt)
 
             y_new = y + dt_col * (
-                _B1 * k1
-                + _B2 * k2
-                + _B3 * k3
-                + _B4 * k4
-                + _B5 * k5
-                + _B6 * k6
+                _B1 * k1 + _B2 * k2 + _B3 * k3 + _B4 * k4 + _B5 * k5 + _B6 * k6
             )
             k7 = f_eval(y_new, t + _C7 * dt)
 
@@ -284,9 +275,7 @@ def solve(
             k_fsal_init,
             has_fsal_init,
         )
-        _, _, _, hist_final, _, _, _, _ = jax.lax.while_loop(
-            cond_fn, body_fn, init
-        )
+        _, _, _, hist_final, _, _, _, _ = jax.lax.while_loop(cond_fn, body_fn, init)
         return hist_final
 
     results = jax.vmap(_solve_batch)(params_batches)

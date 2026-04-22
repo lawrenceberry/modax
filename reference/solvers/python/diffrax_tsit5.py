@@ -71,7 +71,9 @@ def make_solver(ode_fn):
         times_np = np.asarray(t_span, dtype=np.float64)
         save_times = jnp.asarray(times_np, dtype=jnp.float64)
         dt0 = jnp.float64(
-            first_step if first_step is not None else (times_np[-1] - times_np[0]) * 1e-6
+            first_step
+            if first_step is not None
+            else (times_np[-1] - times_np[0]) * 1e-6
         )
         return _solve_impl(
             y0_arr,

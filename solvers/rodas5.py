@@ -132,9 +132,7 @@ def solve(
     def _solve_batch(params_batch):
         y_init = jnp.broadcast_to(y0_arr, (bs, n_vars)).copy()
         hist_init = (
-            jnp.zeros((bs, n_save, n_vars), dtype=jnp.float64)
-            .at[:, 0, :]
-            .set(y_init)
+            jnp.zeros((bs, n_save, n_vars), dtype=jnp.float64).at[:, 0, :].set(y_init)
         )
         t_init = jnp.full((bs,), times[0], dtype=jnp.float64)
         dt_init = jnp.full((bs,), dt0, dtype=jnp.float64)
@@ -170,17 +168,14 @@ def solve(
 
             u = y + _a51 * k1 + _a52 * k2 + _a53 * k3 + _a54 * k4
             du = f_eval(u, t + _c5 * dt)
-            k5 = lu_solve(
-                du + (_C51 * k1 + _C52 * k2 + _C53 * k3 + _C54 * k4) * inv_dt
-            )
+            k5 = lu_solve(du + (_C51 * k1 + _C52 * k2 + _C53 * k3 + _C54 * k4) * inv_dt)
 
             t_end = t + dt
             u = y + _a61 * k1 + _a62 * k2 + _a63 * k3 + _a64 * k4 + _a65 * k5
             du = f_eval(u, t_end)
             k6 = lu_solve(
                 du
-                + (_C61 * k1 + _C62 * k2 + _C63 * k3 + _C64 * k4 + _C65 * k5)
-                * inv_dt
+                + (_C61 * k1 + _C62 * k2 + _C63 * k3 + _C64 * k4 + _C65 * k5) * inv_dt
             )
 
             u = u + k6
