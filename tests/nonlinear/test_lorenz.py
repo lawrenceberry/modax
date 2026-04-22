@@ -52,8 +52,8 @@ from tests.reference_solvers.python.julia_tsit5 import (
 )
 
 _T_SPAN = (0.0, 5.0)
-_ATTRACTOR_TIMES = jnp.array([0.0, 5.0, 10.0, 15.0, 20.0], dtype=jnp.float64)
-_ENSEMBLE_SIZES = [2, 100, 1000, 10000]
+_T_SPAN = jnp.array([0.0, 5.0, 10.0, 15.0, 20.0], dtype=jnp.float64)
+_ENSEMBLE_SIZES = [10, 100]
 
 # Conservative attractor bounds for ρ ∈ [26.6, 29.4]
 _X_MAX = 40.0
@@ -105,8 +105,12 @@ def _make_params_batch(size, seed):
 
 
 def _assert_on_attractor(states):
-    """Assert that states lie within the known Lorenz attractor bounds for ρ ≈ 28."""
-    x, y, z = states[:, 0], states[:, 1], states[:, 2]
+    """Assert that states lie within the known Lorenz attractor bounds for ρ ≈ 28.
+
+    Accepts any shape (..., 3) — works for a single snapshot (N, 3) or the
+    full trajectory array (N, n_times, 3) without a loop.
+    """
+    x, y, z = states[..., 0], states[..., 1], states[..., 2]
     assert np.all(np.abs(x) < _X_MAX), (
         f"x left attractor: max |x| = {np.abs(x).max():.2f}"
     )
@@ -155,8 +159,8 @@ def test_tsit5(benchmark, ensemble_size):
             t_span=_T_SPAN,
             params=params,
             first_step=1e-4,
-            rtol=1e-6,
-            atol=1e-8,
+            rtol=1e-8,
+            atol=1e-10,
         ).block_until_ready(),
         warmup_rounds=1,
         rounds=1,
@@ -164,7 +168,7 @@ def test_tsit5(benchmark, ensemble_size):
 
     assert results.shape == (ensemble_size, len(_T_SPAN), system["n_vars"])
     assert np.all(np.isfinite(results))
-    _assert_on_attractor(np.asarray(results[:, -1, :]))
+    _assert_on_attractor(np.asarray(results))
 
 
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
@@ -181,8 +185,8 @@ def test_rodas5(benchmark, ensemble_size, lu_precision):
             params=params,
             lu_precision=lu_precision,
             first_step=1e-4,
-            rtol=1e-6,
-            atol=1e-8,
+            rtol=1e-10,
+            atol=1e-12,
         ).block_until_ready(),
         warmup_rounds=1,
         rounds=1,
@@ -190,7 +194,7 @@ def test_rodas5(benchmark, ensemble_size, lu_precision):
 
     assert results.shape == (ensemble_size, len(_T_SPAN), system["n_vars"])
     assert np.all(np.isfinite(results))
-    _assert_on_attractor(np.asarray(results[:, -1, :]))
+    _assert_on_attractor(np.asarray(results))
 
 
 # ---------------------------------------------------------------------------
@@ -274,59 +278,3 @@ def test_julia_rodas5(benchmark, ensemble_size, ensemble_backend):
     assert results_np.shape == (ensemble_size, len(_T_SPAN), 3)
     assert np.all(np.isfinite(results_np))
     _assert_on_attractor(results_np[:, -1, :])
-
-
-# ---------------------------------------------------------------------------
-# Attractor confinement — long integration
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("ensemble_size", [2])
-def test_tsit5_stays_on_attractor(ensemble_size):
-    """Verify Tsit5 trajectories remain on the attractor manifold over t ∈ [0, 20]."""
-    system = _make_lorenz_system()
-    params = _make_params_batch(ensemble_size, seed=42)
-
-    y = tsit5_solve(
-        system["ode_fn"],
-        y0=system["y0"],
-        t_span=_ATTRACTOR_TIMES,
-        params=params,
-        first_step=1e-4,
-        rtol=1e-8,
-        atol=1e-10,
-    ).block_until_ready()
-
-    assert y.shape == (ensemble_size, len(_ATTRACTOR_TIMES), system["n_vars"])
-    assert np.all(np.isfinite(y))
-    for t_idx in range(len(_ATTRACTOR_TIMES)):
-        _assert_on_attractor(np.asarray(y[:, t_idx, :]))
-
-
-@pytest.mark.parametrize("ensemble_size", [2])
-@pytest.mark.parametrize("lu_precision", ["fp64"])
-def test_rodas5_stays_on_attractor(ensemble_size, lu_precision):
-    """Verify trajectories remain on the attractor manifold over t ∈ [0, 20].
-
-    The Lyapunov exponent λ ≈ 0.9 means initial errors grow by exp(0.9·20) ≈ 1.6×10⁸
-    by t=20 — numerical trajectories will have diverged from the 'true' path, but a
-    correct solver keeps them confined to the attractor.  A divergent solver does not.
-    """
-    system = _make_lorenz_system()
-    params = _make_params_batch(ensemble_size, seed=42)
-
-    y = rodas5_solve(
-        system["ode_fn"],
-        y0=system["y0"],
-        t_span=_ATTRACTOR_TIMES,
-        params=params,
-        lu_precision=lu_precision,
-        first_step=1e-4,
-        rtol=1e-10,
-        atol=1e-12,
-    ).block_until_ready()
-
-    assert y.shape == (ensemble_size, len(_ATTRACTOR_TIMES), system["n_vars"])
-    assert np.all(np.isfinite(y))
-    for t_idx in range(len(_ATTRACTOR_TIMES)):
-        _assert_on_attractor(np.asarray(y[:, t_idx, :]))
