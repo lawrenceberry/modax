@@ -1,7 +1,9 @@
-"""Tsit5 scaling benchmark on the Lorenz system.
+"""Solver scaling benchmark on the Lorenz system.
 
-Sweeps ensemble size from 1 to 100k on a log scale and records solve time.
-Outputs a CSV and a log-log plot named after the GPU.
+Sweeps ensemble size from 1 to 100k on a log scale and records solve time for
+the local Tsit5 solver, Diffrax Tsit5, and Julia Tsit5/Rodas5 with both
+DiffEqGPU ensemble backends. Outputs a CSV and a log-log plot named after the
+GPU.
 
 Usage:
     uv run python scripts/1_tsit5_scaling/main.py
@@ -11,21 +13,57 @@ import csv
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import jax
 import matplotlib.pyplot as plt
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
+from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
+from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
 from reference.systems.python import lorenz
 from solvers.tsit5 import solve as tsit5_solve
 
+jax.config.update("jax_enable_x64", True)
+
 _T_SPAN = (0.0, 5.0)
-_ENSEMBLE_SIZES = [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000]
+_ENSEMBLE_SIZES = (3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000)
 _N_RUNS = 10
+_JULIA_BACKENDS = ("EnsembleGPUArray", "EnsembleGPUKernel")
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+_SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
+
+# (key, label, color, marker, solve_fn)
+_JAX_SOLVER_DEFS = [
+    ("local_tsit5",   "my tsit5",      "#2b7be0", "o", tsit5_solve),
+    ("diffrax_tsit5", "diffrax tsit5", "#2ba84a", "s", diffrax_tsit5_solve),
+]
+# (key, label, solve_fn, color)
+_JULIA_SOLVER_DEFS = [
+    ("julia_tsit5",  "julia tsit5",  julia_tsit5_solve,  "#9b59b6"),
+    ("julia_rodas5", "julia rodas5", julia_rodas5_solve, "#e67e22"),
+]
+# backend -> (label_suffix, marker, linestyle)
+_JULIA_BACKEND_STYLES = {
+    "EnsembleGPUArray":  ("array",  "^", "-"),
+    "EnsembleGPUKernel": ("kernel", "v", "--"),
+}
+
+
+@dataclass(frozen=True)
+class SolverSpec:
+    key: str
+    label: str
+    color: str
+    marker: str
+    linestyle: str
+    timing_fn: Callable[[object], float]
 
 
 def get_gpu_name() -> str:
@@ -56,16 +94,14 @@ def gpu_slug(name: str) -> str:
     return name.replace(" ", "_").replace("/", "-")
 
 
-def time_solve(params) -> float:
+def time_jax_solver(solve_fn, params) -> float:
     def run():
-        return tsit5_solve(
+        return solve_fn(
             lorenz.ode_fn,
             y0=lorenz.Y0,
             t_span=_T_SPAN,
             params=params,
-            first_step=1e-4,
-            rtol=1e-6,
-            atol=1e-8,
+            **_SOLVER_KWARGS,
         ).block_until_ready()
 
     run()  # warmup / JIT compile
@@ -75,48 +111,168 @@ def time_solve(params) -> float:
     return (time.perf_counter() - t0) / _N_RUNS * 1000
 
 
-def main():
-    gpu_name = get_gpu_name()
-    slug = gpu_slug(gpu_name)
-    print(f"GPU: {gpu_name}\n")
+def time_julia_solver(solve, params, *, ensemble_backend: str) -> float:
+    """Return Julia's internal solve time in ms, excluding subprocess overhead."""
+    result = solve._julia_solve_with_timing(
+        "lorenz",
+        lorenz.Y0,
+        _T_SPAN,
+        np.asarray(params),
+        ensemble_backend=ensemble_backend,
+        **_SOLVER_KWARGS,
+    )
+    return result.solve_time_s * 1000
 
-    rows: list[tuple[int, float]] = []
-    for size in _ENSEMBLE_SIZES:
-        params = lorenz.make_params(size)
-        print(f"  n={size:>7} ...", end=" ", flush=True)
-        ms = time_solve(params)
-        print(f"{ms:.1f} ms")
-        rows.append((size, ms))
 
-    # CSV
-    csv_path = _SCRIPT_DIR / f"results-{slug}.csv"
-    with csv_path.open("w", newline="") as f:
+def make_solver_specs() -> list[SolverSpec]:
+    specs = [
+        SolverSpec(
+            key=key,
+            label=label,
+            color=color,
+            marker=marker,
+            linestyle="-",
+            timing_fn=lambda params, fn=fn: time_jax_solver(fn, params),
+        )
+        for key, label, color, marker, fn in _JAX_SOLVER_DEFS
+    ]
+    for solver_key, label, solve, color in _JULIA_SOLVER_DEFS:
+        for backend in _JULIA_BACKENDS:
+            backend_id, marker, linestyle = _JULIA_BACKEND_STYLES[backend]
+            specs.append(
+                SolverSpec(
+                    key=f"{solver_key}_{backend}",
+                    label=f"{label} {backend_id}",
+                    color=color,
+                    marker=marker,
+                    linestyle=linestyle,
+                    timing_fn=lambda params, s=solve, b=backend: time_julia_solver(s, params, ensemble_backend=b),
+                )
+            )
+    return specs
+
+
+def collect_timing(spec: SolverSpec, size: int, params) -> float | None:
+    print(f"  {spec.label:<20} n={size:>7} ...", end=" ", flush=True)
+    try:
+        ms = spec.timing_fn(params)
+    except Exception as exc:
+        print(f"FAILED ({exc})")
+        return None
+    print(f"{ms:.1f} ms")
+    return ms
+
+
+_Row = tuple[str, str, int, float | None]
+
+
+def drop_none(
+    rows: list[_Row],
+    solver_key: str,
+) -> tuple[list[int], list[float]]:
+    pairs = [(size, ms) for key, _, size, ms in rows if key == solver_key and ms is not None]
+    if not pairs:
+        return [], []
+    sizes, times = zip(*pairs)
+    return list(sizes), list(times)
+
+
+def run_benchmarks(specs: list[SolverSpec]) -> list[_Row]:
+    rows: list[_Row] = []
+    for spec in specs:
+        print(f"{spec.label}:")
+        for size in _ENSEMBLE_SIZES:
+            params = lorenz.make_params(size)
+            ms = collect_timing(spec, size, params)
+            rows.append((spec.key, spec.label, size, ms))
+        print()
+    return rows
+
+
+def save_csv(rows: list[_Row], path: Path) -> None:
+    with path.open("w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["ensemble_size", "solve_time_ms"])
+        writer.writerow(["solver_key", "solver", "ensemble_size", "solve_time_ms"])
         writer.writerows(rows)
-    print(f"\nResults saved to {csv_path}")
+    print(f"Results saved to {path}")
 
-    # Plot
-    sizes = [r[0] for r in rows]
-    times_ms = [r[1] for r in rows]
 
+def load_csv(path: Path) -> list[_Row]:
+    rows: list[_Row] = []
+    with path.open(newline="") as f:
+        for row in csv.DictReader(f):
+            raw = row["solve_time_ms"]
+            ms = None if raw == "" else float(raw)
+            rows.append((row["solver_key"], row["solver"], int(row["ensemble_size"]), ms))
+    return rows
+
+
+def plot(rows: list[_Row], specs: list[SolverSpec], gpu_name: str, output_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(sizes, times_ms, marker="o", color="#2b7be0", label="tsit5")
+    for spec in specs:
+        sizes, times_ms = drop_none(rows, spec.key)
+        if not sizes:
+            continue
+        ax.plot(
+            sizes,
+            times_ms,
+            marker=spec.marker,
+            color=spec.color,
+            linestyle=spec.linestyle,
+            label=spec.label,
+        )
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Ensemble size")
     ax.set_ylabel("Solve time (ms)")
     ax.set_title(f"Tsit5 scaling — Lorenz — {gpu_name}")
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
-    ax.set_xticks(sizes)
-    ax.set_xticklabels([str(n) for n in sizes], rotation=45, ha="right")
+    ax.set_xticks(_ENSEMBLE_SIZES)
+    ax.set_xticklabels([str(n) for n in _ENSEMBLE_SIZES], rotation=45, ha="right")
     ax.legend()
     fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+
+
+def plot_from_csv(csv_path: Path) -> None:
+    # Infer GPU name from filename: "results-{slug}.csv" -> slug -> name
+    slug = csv_path.stem.removeprefix("results-")
+    gpu_name = slug.replace("_", " ")
+    rows = load_csv(csv_path)
+    specs = make_solver_specs()
+    plot_path = csv_path.with_name(f"plot-{slug}.png")
+    plot(rows, specs, gpu_name, plot_path)
+
+
+def main() -> None:
+    gpu_name = get_gpu_name()
+    slug = gpu_slug(gpu_name)
+    print(f"GPU: {gpu_name}\n")
+
+    specs = make_solver_specs()
+    rows = run_benchmarks(specs)
+
+    csv_path = _SCRIPT_DIR / f"results-{slug}.csv"
+    save_csv(rows, csv_path)
 
     plot_path = _SCRIPT_DIR / f"plot-{slug}.png"
-    fig.savefig(plot_path, dpi=150, bbox_inches="tight")
-    print(f"Plot saved to {plot_path}")
+    plot(rows, specs, gpu_name, plot_path)
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--plot",
+        metavar="CSV",
+        type=Path,
+        help="Generate plot from an existing results CSV instead of running benchmarks.",
+    )
+    args = parser.parse_args()
+
+    if args.plot:
+        plot_from_csv(args.plot)
+    else:
+        main()
