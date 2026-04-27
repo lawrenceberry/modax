@@ -74,6 +74,8 @@ _CSV_FIELDS = (
     "batch_size",
     "solve_time_ms",
     "total_lane_iterations",
+    "wasted_lane_iterations",
+    "max_batch_loop_iterations",
     "wasted_lane_iteration_ratio",
 )
 
@@ -141,8 +143,20 @@ def summarize_stats(stats: dict) -> dict[str, float | int]:
     )
     return {
         "total_lane_iterations": total_lane_iterations,
+        "wasted_lane_iterations": int(wasted_lane_iterations),
+        "max_batch_loop_iterations": int(np.max(batch_loop_iterations)),
         "wasted_lane_iteration_ratio": float(wasted_lane_iteration_ratio),
     }
+
+
+def format_stats(row: dict) -> str:
+    return (
+        f"{row['solve_time_ms']:.1f} ms, "
+        f"lanes={row['total_lane_iterations']}, "
+        f"wasted_lanes={row['wasted_lane_iterations']}, "
+        f"max_batch_steps={row['max_batch_loop_iterations']}, "
+        f"wasted={row['wasted_lane_iteration_ratio']:.3f}"
+    )
 
 
 def solve_with_stats(y0: np.ndarray, batch_size: int):
@@ -225,10 +239,7 @@ def collect_row(
         "solve_time_ms": float(ms),
         **stats,
     }
-    print(
-        f"{ms:.1f} ms, wasted={row['wasted_lane_iteration_ratio']:.3f}",
-        flush=True,
-    )
+    print(format_stats(row), flush=True)
     return row
 
 
@@ -249,8 +260,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                 print(
                     f"  {scenario.label:<18} {grouping.label:<6} "
                     f"batch_size={bs:>6} ... (cached) "
-                    f"{row['solve_time_ms']:.1f} ms, "
-                    f"wasted={row['wasted_lane_iteration_ratio']:.3f}"
+                    f"{format_stats(row)}"
                 )
             else:
                 row = collect_row(gpu_name, scenario, grouping, y0, int(bs))
