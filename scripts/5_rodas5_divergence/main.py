@@ -31,7 +31,7 @@ jax.config.update("jax_enable_x64", True)
 _N_TRAJ = 1_000
 _T_SPAN = coupled_vdp_lattice.TIMES
 _N_RUNS = 1
-_BATCH_SIZES = tuple(np.unique(np.logspace(0, np.log10(_N_TRAJ), num=5, dtype=int)))
+_BATCH_SIZES = tuple(np.unique(np.logspace(0, np.log10(_N_TRAJ) / 2, num=5, dtype=int)))
 _SOLVER_KWARGS = {
     "first_step": 1e-6,
     "rtol": 1e-6,
@@ -73,6 +73,7 @@ _CSV_FIELDS = (
     "solve_time_ms",
     "total_lane_iterations",
     "wasted_lane_iterations",
+    "min_batch_loop_iterations",
     "max_batch_loop_iterations",
     "wasted_lane_iteration_ratio",
 )
@@ -136,6 +137,7 @@ def summarize_stats(stats: dict) -> dict[str, float | int]:
     return {
         "total_lane_iterations": total_lane_iterations,
         "wasted_lane_iterations": int(wasted_lane_iterations),
+        "min_batch_loop_iterations": int(np.min(batch_loop_iterations)),
         "max_batch_loop_iterations": int(np.max(batch_loop_iterations)),
         "wasted_lane_iteration_ratio": float(wasted_lane_iteration_ratio),
     }
@@ -146,6 +148,7 @@ def format_stats(row: dict) -> str:
         f"{row['solve_time_ms']:.1f} ms, "
         f"lanes={row['total_lane_iterations']}, "
         f"wasted_lanes={row['wasted_lane_iterations']}, "
+        f"min_batch_steps={row['min_batch_loop_iterations']}, "
         f"max_batch_steps={row['max_batch_loop_iterations']}, "
         f"wasted={row['wasted_lane_iteration_ratio']:.3f}"
     )

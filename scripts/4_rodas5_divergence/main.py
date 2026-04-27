@@ -83,6 +83,7 @@ _CSV_FIELDS = (
     "solve_time_ms",
     "total_lane_iterations",
     "wasted_lane_iterations",
+    "min_batch_loop_iterations",
     "max_batch_loop_iterations",
     "wasted_lane_iteration_ratio",
 )
@@ -165,6 +166,7 @@ def summarize_stats(stats: dict) -> dict[str, float | int]:
     return {
         "total_lane_iterations": total_lane_iterations,
         "wasted_lane_iterations": int(wasted_lane_iterations),
+        "min_batch_loop_iterations": int(np.min(batch_loop_iterations)),
         "max_batch_loop_iterations": int(np.max(batch_loop_iterations)),
         "wasted_lane_iteration_ratio": float(wasted_lane_iteration_ratio),
     }
@@ -175,6 +177,7 @@ def format_stats(row: dict) -> str:
         f"{row['solve_time_ms']:.1f} ms, "
         f"lanes={row['total_lane_iterations']}, "
         f"wasted_lanes={row['wasted_lane_iterations']}, "
+        f"min_batch_steps={row['min_batch_loop_iterations']}, "
         f"max_batch_steps={row['max_batch_loop_iterations']}, "
         f"wasted={row['wasted_lane_iteration_ratio']:.3f}"
     )
