@@ -1,6 +1,5 @@
 """Tests for the Rodas5 nonlinear solver on the Robertson stiff ODE system."""
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -17,78 +16,22 @@ from reference.solvers.python.julia_common import (
 )
 from reference.solvers.python.julia_kencarp5 import solve as julia_kencarp5_solve
 from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
+from reference.systems.python import robertson
 from solvers.kencarp5 import solve as kencarp5_solve
 from solvers.rodas5 import solve as rodas5_solve
 
-_TIMES = jnp.array((0.0, 1e-6, 1e-2, 1e2, 1e5), dtype=jnp.float64)
+_TIMES = robertson.TIMES
 _ENSEMBLE_SIZES = [2, 100, 1000, 10000]
 _REFERENCE_ENSEMBLE_SIZES = [2]
 
 
-def _make_robertson_system():
-    """Construct the Robertson stiff ODE system (3-variable).
-
-    Stiff ODE system (Appendix A.1.3, arXiv:2304.06835).
-    Standard parameters: k1=0.04, k2=1e4, k3=3e7.
-    """
-    y0 = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float64)
-
-    def ode_fn(y, t, p):
-        del t
-        return jnp.array(
-            [
-                -p[0] * y[0] + p[1] * y[1] * y[2],
-                p[0] * y[0] - p[1] * y[1] * y[2] - p[2] * y[1] ** 2,
-                p[2] * y[1] ** 2,
-            ]
-        )
-
-    def explicit_ode_fn(y, t, p):
-        del t
-        return jnp.array(
-            [
-                -p[0] * y[0],
-                p[0] * y[0],
-                0.0,
-            ]
-        )
-
-    def implicit_ode_fn(y, t, p):
-        del t
-        return jnp.array(
-            [
-                p[1] * y[1] * y[2],
-                -p[1] * y[1] * y[2] - p[2] * y[1] ** 2,
-                p[2] * y[1] ** 2,
-            ]
-        )
-
-    return {
-        "n_vars": 3,
-        "ode_fn": ode_fn,
-        "explicit_ode_fn": explicit_ode_fn,
-        "implicit_ode_fn": implicit_ode_fn,
-        "y0": y0,
-    }
-
-
-def _make_params_batch(size, seed):
-    rng = np.random.default_rng(seed)
-    base = np.array([0.04, 1e4, 3e7])
-    return jnp.array(
-        base * (1.0 + 0.1 * (2.0 * rng.random((size, 3)) - 1.0)),
-        dtype=jnp.float64,
-    )
-
-
 def _run_julia_robertson(benchmark, solver, ensemble_size, ensemble_backend):
-    system = _make_robertson_system()
-    params = _make_params_batch(ensemble_size, seed=42)
+    params = robertson.make_params(ensemble_size, seed=42)
     results_np = benchmark_julia_solver(
         benchmark,
         solver,
         "robertson",
-        y0=system["y0"],
+        y0=robertson.Y0,
         t_span=_TIMES,
         params=params,
         system_config={},
@@ -97,7 +40,7 @@ def _run_julia_robertson(benchmark, solver, ensemble_size, ensemble_backend):
         rtol=1e-6,
         atol=1e-8,
     )
-    return system, results_np
+    return results_np
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +52,11 @@ def _run_julia_robertson(benchmark, solver, ensemble_size, ensemble_backend):
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
 def test_rodas5(benchmark, ensemble_size, lu_precision):
     """Rodas5 nonlinear benchmark with cached Diffrax validation on practical ensemble sizes."""
-    system = _make_robertson_system()
-    params = _make_params_batch(ensemble_size, seed=42)
+    params = robertson.make_params(ensemble_size, seed=42)
     results = benchmark.pedantic(
         lambda: rodas5_solve(
-            system["ode_fn"],
-            system["y0"],
+            robertson.ode_fn,
+            robertson.Y0,
             _TIMES,
             params,
             lu_precision=lu_precision,
@@ -127,13 +69,13 @@ def test_rodas5(benchmark, ensemble_size, lu_precision):
     )
     results_np = np.asarray(results)
 
-    assert results.shape == (ensemble_size, len(_TIMES), system["n_vars"])
+    assert results.shape == (ensemble_size, len(_TIMES), robertson.N_VARS)
     np.testing.assert_allclose(results_np.sum(axis=2), 1.0, atol=1e-6)
 
     if ensemble_size in _REFERENCE_ENSEMBLE_SIZES:
         y_ref = diffrax_kvaerno5_solve_cached(
-            system["ode_fn"],
-            y0=system["y0"],
+            robertson.ode_fn,
+            y0=robertson.Y0,
             t_span=_TIMES,
             params=params,
             first_step=1e-4,
@@ -147,13 +89,12 @@ def test_rodas5(benchmark, ensemble_size, lu_precision):
 @pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
 def test_kencarp5(benchmark, ensemble_size, lu_precision):
     """KenCarp5 nonlinear benchmark with cached Diffrax validation on practical ensemble sizes."""
-    system = _make_robertson_system()
-    params = _make_params_batch(ensemble_size, seed=42)
+    params = robertson.make_params(ensemble_size, seed=42)
     results = benchmark.pedantic(
         lambda: kencarp5_solve(
-            system["explicit_ode_fn"],
-            system["implicit_ode_fn"],
-            system["y0"],
+            robertson.explicit_ode_fn,
+            robertson.implicit_ode_fn,
+            robertson.Y0,
             _TIMES,
             params,
             lu_precision=lu_precision,
@@ -166,7 +107,7 @@ def test_kencarp5(benchmark, ensemble_size, lu_precision):
     )
     results_np = np.asarray(results)
 
-    assert results.shape == (ensemble_size, len(_TIMES), system["n_vars"])
+    assert results.shape == (ensemble_size, len(_TIMES), robertson.N_VARS)
     np.testing.assert_allclose(results_np.sum(axis=2), 1.0, atol=1e-6)
 
     # if ensemble_size in _REFERENCE_ENSEMBLE_SIZES:
@@ -196,12 +137,11 @@ def test_kencarp5(benchmark, ensemble_size, lu_precision):
 )
 def test_diffrax_kvaerno5(benchmark, ensemble_size):
     """Diffrax Kvaerno5 benchmark with conservation validation."""
-    system = _make_robertson_system()
-    params = _make_params_batch(ensemble_size, seed=42)
+    params = robertson.make_params(ensemble_size, seed=42)
     results = benchmark.pedantic(
         lambda: diffrax_kvaerno5_solve(
-            system["ode_fn"],
-            y0=system["y0"],
+            robertson.ode_fn,
+            y0=robertson.Y0,
             t_span=_TIMES,
             params=params,
             first_step=1e-4,
@@ -213,20 +153,19 @@ def test_diffrax_kvaerno5(benchmark, ensemble_size):
     )
     results_np = np.asarray(results)
 
-    assert results.shape == (ensemble_size, len(_TIMES), system["n_vars"])
+    assert results.shape == (ensemble_size, len(_TIMES), robertson.N_VARS)
     np.testing.assert_allclose(results_np.sum(axis=2), 1.0, atol=1e-6)
 
 
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
 def test_diffrax_kencarp5(benchmark, ensemble_size):
     """Diffrax KenCarp5 benchmark with cached Diffrax validation on practical ensemble sizes."""
-    system = _make_robertson_system()
-    params = _make_params_batch(ensemble_size, seed=42)
+    params = robertson.make_params(ensemble_size, seed=42)
     results = benchmark.pedantic(
         lambda: diffrax_kencarp5_solve(
-            system["explicit_ode_fn"],
-            system["implicit_ode_fn"],
-            y0=system["y0"],
+            robertson.explicit_ode_fn,
+            robertson.implicit_ode_fn,
+            y0=robertson.Y0,
             t_span=_TIMES,
             params=params,
             first_step=1e-4,
@@ -238,13 +177,13 @@ def test_diffrax_kencarp5(benchmark, ensemble_size):
     )
     results_np = np.asarray(results)
 
-    assert results.shape == (ensemble_size, len(_TIMES), system["n_vars"])
+    assert results.shape == (ensemble_size, len(_TIMES), robertson.N_VARS)
     np.testing.assert_allclose(results_np.sum(axis=2), 1.0, atol=1e-6)
 
     if ensemble_size in _REFERENCE_ENSEMBLE_SIZES:
         y_ref = diffrax_kvaerno5_solve_cached(
-            system["ode_fn"],
-            y0=system["y0"],
+            robertson.ode_fn,
+            y0=robertson.Y0,
             t_span=_TIMES,
             params=params,
             first_step=1e-4,
@@ -262,10 +201,10 @@ def test_diffrax_kencarp5(benchmark, ensemble_size):
 )
 def test_julia_rodas5(benchmark, ensemble_size, ensemble_backend):
     """Julia Rodas5 benchmark with conservation validation."""
-    system, results_np = _run_julia_robertson(
+    results_np = _run_julia_robertson(
         benchmark, julia_rodas5_solve, ensemble_size, ensemble_backend
     )
-    assert results_np.shape == (ensemble_size, len(_TIMES), system["n_vars"])
+    assert results_np.shape == (ensemble_size, len(_TIMES), robertson.N_VARS)
     np.testing.assert_allclose(results_np.sum(axis=2), 1.0, atol=1e-6)
 
 
@@ -277,8 +216,8 @@ def test_julia_rodas5(benchmark, ensemble_size, ensemble_backend):
 )
 def test_julia_kencarp5(benchmark, ensemble_size, ensemble_backend):
     """Julia KenCarp5 benchmark with conservation validation."""
-    system, results_np = _run_julia_robertson(
+    results_np = _run_julia_robertson(
         benchmark, julia_kencarp5_solve, ensemble_size, ensemble_backend
     )
-    assert results_np.shape == (ensemble_size, len(_TIMES), system["n_vars"])
+    assert results_np.shape == (ensemble_size, len(_TIMES), robertson.N_VARS)
     np.testing.assert_allclose(results_np.sum(axis=2), 1.0, atol=1e-6)
