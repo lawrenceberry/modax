@@ -1,7 +1,7 @@
 """Solver scaling benchmark on the Lorenz system.
 
 Sweeps ensemble size from 1 to 100k on a log scale and records solve time for
-the local Tsit5 solver, Diffrax Tsit5, and Julia Tsit5/Rodas5 with both
+the local Tsit5 solver, Diffrax Tsit5, and Julia Tsit5 with both
 DiffEqGPU ensemble backends. Outputs a CSV and a log-log plot named after the
 GPU.
 
@@ -10,6 +10,7 @@ Usage:
 """
 
 import csv
+import json
 import subprocess
 import sys
 import time
@@ -24,7 +25,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
-from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
 from reference.systems.python import lorenz
 from solvers.tsit5 import solve as tsit5_solve
@@ -37,21 +37,21 @@ _N_RUNS = 10
 _JULIA_BACKENDS = ("EnsembleGPUArray", "EnsembleGPUKernel")
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+_CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
 # (key, label, color, marker, solve_fn)
 _JAX_SOLVER_DEFS = [
-    ("local_tsit5",   "my tsit5",      "#2b7be0", "o", tsit5_solve),
+    ("local_tsit5", "my tsit5", "#2b7be0", "o", tsit5_solve),
     ("diffrax_tsit5", "diffrax tsit5", "#2ba84a", "s", diffrax_tsit5_solve),
 ]
 # (key, label, solve_fn, color)
 _JULIA_SOLVER_DEFS = [
-    ("julia_tsit5",  "julia tsit5",  julia_tsit5_solve,  "#9b59b6"),
-    ("julia_rodas5", "julia rodas5", julia_rodas5_solve, "#e67e22"),
+    ("julia_tsit5", "julia tsit5", julia_tsit5_solve, "#9b59b6"),
 ]
 # backend -> (label_suffix, marker, linestyle)
 _JULIA_BACKEND_STYLES = {
-    "EnsembleGPUArray":  ("array",  "^", "-"),
+    "EnsembleGPUArray": ("array", "^", "-"),
     "EnsembleGPUKernel": ("kernel", "v", "--"),
 }
 
@@ -92,6 +92,16 @@ def get_gpu_name() -> str:
 
 def gpu_slug(name: str) -> str:
     return name.replace(" ", "_").replace("/", "-")
+
+
+def load_cache() -> dict:
+    if _CACHE_PATH.exists():
+        return json.loads(_CACHE_PATH.read_text())
+    return {}
+
+
+def save_cache(cache: dict) -> None:
+    _CACHE_PATH.write_text(json.dumps(cache, indent=2))
 
 
 def time_jax_solver(solve_fn, params) -> float:
@@ -146,7 +156,9 @@ def make_solver_specs() -> list[SolverSpec]:
                     color=color,
                     marker=marker,
                     linestyle=linestyle,
-                    timing_fn=lambda params, s=solve, b=backend: time_julia_solver(s, params, ensemble_backend=b),
+                    timing_fn=lambda params, s=solve, b=backend: time_julia_solver(
+                        s, params, ensemble_backend=b
+                    ),
                 )
             )
     return specs
@@ -170,20 +182,33 @@ def drop_none(
     rows: list[_Row],
     solver_key: str,
 ) -> tuple[list[int], list[float]]:
-    pairs = [(size, ms) for key, _, size, ms in rows if key == solver_key and ms is not None]
+    pairs = [
+        (size, ms) for key, _, size, ms in rows if key == solver_key and ms is not None
+    ]
     if not pairs:
         return [], []
     sizes, times = zip(*pairs)
     return list(sizes), list(times)
 
 
-def run_benchmarks(specs: list[SolverSpec]) -> list[_Row]:
+def run_benchmarks(
+    specs: list[SolverSpec], gpu_name: str, cache: dict
+) -> list[_Row]:
+    gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[_Row] = []
     for spec in specs:
         print(f"{spec.label}:")
+        solver_cache = gpu_cache.setdefault(spec.key, {})
         for size in _ENSEMBLE_SIZES:
-            params = lorenz.make_params(size)
-            ms = collect_timing(spec, size, params)
+            size_key = str(size)
+            if size_key in solver_cache:
+                ms = solver_cache[size_key]
+                print(f"  {spec.label:<20} n={size:>7} ... (cached) {f'{ms:.1f} ms' if ms is not None else 'FAILED'}")
+            else:
+                params = lorenz.make_params(size)
+                ms = collect_timing(spec, size, params)
+                solver_cache[size_key] = ms
+                save_cache(cache)
             rows.append((spec.key, spec.label, size, ms))
         print()
     return rows
@@ -197,17 +222,10 @@ def save_csv(rows: list[_Row], path: Path) -> None:
     print(f"Results saved to {path}")
 
 
-def load_csv(path: Path) -> list[_Row]:
-    rows: list[_Row] = []
-    with path.open(newline="") as f:
-        for row in csv.DictReader(f):
-            raw = row["solve_time_ms"]
-            ms = None if raw == "" else float(raw)
-            rows.append((row["solver_key"], row["solver"], int(row["ensemble_size"]), ms))
-    return rows
 
-
-def plot(rows: list[_Row], specs: list[SolverSpec], gpu_name: str, output_path: Path) -> None:
+def plot(
+    rows: list[_Row], specs: list[SolverSpec], gpu_name: str, output_path: Path
+) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
     for spec in specs:
         sizes, times_ms = drop_none(rows, spec.key)
@@ -235,23 +253,14 @@ def plot(rows: list[_Row], specs: list[SolverSpec], gpu_name: str, output_path: 
     print(f"Plot saved to {output_path}")
 
 
-def plot_from_csv(csv_path: Path) -> None:
-    # Infer GPU name from filename: "results-{slug}.csv" -> slug -> name
-    slug = csv_path.stem.removeprefix("results-")
-    gpu_name = slug.replace("_", " ")
-    rows = load_csv(csv_path)
-    specs = make_solver_specs()
-    plot_path = csv_path.with_name(f"plot-{slug}.png")
-    plot(rows, specs, gpu_name, plot_path)
-
-
 def main() -> None:
     gpu_name = get_gpu_name()
     slug = gpu_slug(gpu_name)
     print(f"GPU: {gpu_name}\n")
 
+    cache = load_cache()
     specs = make_solver_specs()
-    rows = run_benchmarks(specs)
+    rows = run_benchmarks(specs, gpu_name, cache)
 
     csv_path = _SCRIPT_DIR / f"results-{slug}.csv"
     save_csv(rows, csv_path)
@@ -261,18 +270,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--plot",
-        metavar="CSV",
-        type=Path,
-        help="Generate plot from an existing results CSV instead of running benchmarks.",
-    )
-    args = parser.parse_args()
-
-    if args.plot:
-        plot_from_csv(args.plot)
-    else:
-        main()
+    main()
