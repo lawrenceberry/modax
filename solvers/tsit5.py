@@ -230,7 +230,7 @@ def solve(
 
         def cond_fn(state):
             t, _, _, _, save_idx, n_steps, _, _, _, _ = state
-            active = save_idx < n_save
+            active = valid_batch & (save_idx < n_save)
             return (jnp.min(jnp.where(active, t, tf)) < tf) & (n_steps < max_steps)
 
         def body_fn(state):
@@ -246,7 +246,7 @@ def solve(
                 accepted_steps,
                 rejected_steps,
             ) = state
-            active = save_idx < n_save
+            active = valid_batch & (save_idx < n_save)
             next_target = times[save_idx]
             dt_use = jnp.where(
                 active,
@@ -328,12 +328,8 @@ def solve(
         ) = jax.lax.while_loop(cond_fn, body_fn, init)
         valid_count = jnp.sum(valid_batch.astype(jnp.int32))
         batch_stats = {
-            "accepted_steps": jnp.where(
-                valid_batch, accepted_steps, jnp.zeros_like(accepted_steps)
-            ),
-            "rejected_steps": jnp.where(
-                valid_batch, rejected_steps, jnp.zeros_like(rejected_steps)
-            ),
+            "accepted_steps": accepted_steps,
+            "rejected_steps": rejected_steps,
             "batch_loop_iterations": batch_steps,
             "valid_lanes": valid_count,
         }
