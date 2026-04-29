@@ -6,23 +6,32 @@ while-loop batch.
 
 Initial condition design
 ------------------------
-The Robertson system has three species (y1, y2, y3) with conservation law
-y1 + y2 + y3 = 1 and rate constants k1=0.04, k2=1e4, k3 (varied).  The
-dominant source of stiffness is the fast eigenvalue ~ -k3*y2: when y2 is
-large the solver must take tiny steps; when y2 = 0 the fast mode is absent
-and large steps are possible.
+ICs are parameterised by (alpha, epsilon):
 
-The hardest possible IC is therefore y = [0, 1, 0] with k3 = k3_max = 3e9:
-all mass sits in the fast species at the highest rate constant, so the solver
-faces eigenvalue magnitude ~3e9 from t=0.  This is set as _HARD_Y0 and used
-as the IC for the identical scenario, with k3=k3_max for every trajectory.
+    y(0) = [(1-eps)*alpha,  eps,  (1-eps)*(1-alpha)]
 
-The ic_large scenario generates ICs on the y2=0 edge of the simplex:
-y2=0, y1 ~ U(0, 1), y3 = 1 - y1. Starting with y2=0 means the fast
-eigenvalue is zero at t=0 regardless of k3, so every ic_large trajectory is
-analytically easier than the identical base without needing to run the solver
-to verify.  k3 is drawn log-uniformly over [3e4, 3e9], creating spread in how
-quickly y2 (and therefore stiffness) builds up during the integration.
+where eps controls how much of the intermediate species y2 is present at
+t=0 and alpha distributes the remaining mass between fuel (y1) and product
+(y3).
+
+  * eps > 0 forces the solver to resolve the fastest reaction timescale
+    immediately: dy3/dt = k3*eps^2 is large at t=0, so the first step must
+    be tiny and the Newton iteration may reject steps before settling onto
+    the slow manifold.  The standard [1,0,0] IC has eps=0 and a long
+    induction period where only the slow k1=0.04 rate is active.
+
+  * alpha controls how long the stiff phase lasts: high alpha means plenty
+    of y1 fuel to keep the reactions running, extending the hard region of
+    the trajectory.
+
+The identical scenario pins (alpha=0.9, eps=0.1) for every trajectory,
+giving the hardest representative IC.
+
+The ic_large scenario draws alpha ~ U(0, 0.9) with eps=0.1 fixed.  This
+creates a wide spread of step counts (low alpha is easy because there is
+little fuel left to sustain the reactions; high alpha approaches the
+identical hardest case) while guaranteeing no trajectory is harder than
+identical.
 
 Usage:
     uv run python scripts/4_rodas5_divergence/main.py
@@ -48,30 +57,24 @@ from solvers.rodas5 import solve as rodas5_solve
 
 jax.config.update("jax_enable_x64", True)
 
-_N_TRAJ = 100_000
+_N_TRAJ = 400_000
 _T_SPAN = robertson.TIMES
-_N_RUNS = 1
-_BATCH_SIZES = (10_000, 25_000, 50_000, 100_000)
+_N_RUNS = 5
+_BATCH_SIZES = (10_000, 25_000, 50_000, 100_000, 200_000, 400_000)
 _SOLVER_KWARGS = {
     "first_step": 1e-4,
     "rtol": 1e-6,
     "atol": 1e-8,
-    "lu_precision": "fp64",
+    "lu_precision": "fp32",
 }
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 
-_K3_MAX = 3e9
-_rng_params = np.random.default_rng(0)
-_k3_varied = np.exp(_rng_params.uniform(np.log(3e4), np.log(_K3_MAX), size=_N_TRAJ))
-
-_PARAMS_IDENTICAL = jnp.array(
-    np.column_stack([np.full(_N_TRAJ, 0.04), np.full(_N_TRAJ, 1e4), np.full(_N_TRAJ, _K3_MAX)]),
-    dtype=jnp.float64,
-)
-_PARAMS_IC_LARGE = jnp.array(
-    np.column_stack([np.full(_N_TRAJ, 0.04), np.full(_N_TRAJ, 1e4), _k3_varied]),
+_PARAMS = jnp.array(
+    np.column_stack(
+        [np.full(_N_TRAJ, 0.04), np.full(_N_TRAJ, 1e4), np.full(_N_TRAJ, 3e7)]
+    ),
     dtype=jnp.float64,
 )
 
@@ -92,11 +95,16 @@ class Grouping:
     marker: str
 
 
-_HARD_Y0 = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+_IC_ALPHA_HARD = 0.9
+_IC_EPS = 0.1
+_HARD_Y0 = np.array(
+    [(1 - _IC_EPS) * _IC_ALPHA_HARD, _IC_EPS, (1 - _IC_EPS) * (1 - _IC_ALPHA_HARD)],
+    dtype=np.float64,
+)
 
 _SCENARIOS = (
-    Scenario("identical", "identical", "#2b7be0", _PARAMS_IDENTICAL),
-    Scenario("ic_large", "large y0", "#e02b2b", _PARAMS_IC_LARGE),
+    Scenario("identical", "identical", "#2b7be0", _PARAMS),
+    Scenario("ic_large", "large y0", "#e02b2b", _PARAMS),
 )
 
 _GROUPINGS = (
@@ -161,9 +169,10 @@ def make_initial_conditions(
     if scenario.key == "identical":
         return np.broadcast_to(_HARD_Y0, (size, robertson.N_VARS)).copy()
     rng = np.random.default_rng(seed)
-    y1 = rng.uniform(0.0, 1.0, size)
-    y0 = np.column_stack([y1, np.zeros(size), 1.0 - y1])
-    return y0
+    alpha = rng.uniform(0.0, _IC_ALPHA_HARD, size)
+    return np.column_stack(
+        [(1 - _IC_EPS) * alpha, np.full(size, _IC_EPS), (1 - _IC_EPS) * (1 - alpha)]
+    )
 
 
 def summarize_stats(stats: dict) -> dict[str, float | int]:
