@@ -63,7 +63,7 @@ jax.config.update("jax_enable_x64", True)
 
 _N_TRAJ = 400_000
 _T_SPAN = robertson.TIMES
-_N_RUNS = 5
+_N_RUNS = 1
 _BATCH_SIZES = (10_000, 25_000, 50_000, 100_000, 200_000, 400_000)
 _SOLVER_KWARGS = {
     "first_step": 1e-4,
@@ -94,7 +94,7 @@ class Grouping:
     marker: str
 
 
-_IC_ALPHA_HARD = 0.9
+_IC_ALPHA_HARD = 0.99
 _IC_EPS = 0.1
 _HARD_Y0 = np.array(
     [(1 - _IC_EPS) * _IC_ALPHA_HARD, _IC_EPS, (1 - _IC_EPS) * (1 - _IC_ALPHA_HARD)],
