@@ -71,12 +71,7 @@ _SOLVER_KWARGS = {
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 
-_PARAMS = jnp.array(
-    np.column_stack(
-        [np.full(_N_TRAJ, 0.04), np.full(_N_TRAJ, 1e4), np.full(_N_TRAJ, 3e7)]
-    ),
-    dtype=jnp.float64,
-)
+_PARAMS = jnp.array([0.04, 1e4, 3e7], dtype=jnp.float64)
 
 
 @dataclass(frozen=True)

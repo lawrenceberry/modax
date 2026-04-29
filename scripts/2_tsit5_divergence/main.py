@@ -61,7 +61,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 
 _RHO = 0.5
-_PARAMS = jnp.full((_N_TRAJ, 1), _RHO, dtype=jnp.float64)
+_PARAMS = jnp.array([_RHO], dtype=jnp.float64)
 
 
 @dataclass(frozen=True)

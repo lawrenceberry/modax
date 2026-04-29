@@ -16,7 +16,6 @@ from typing import Literal
 
 import jax
 import jax.numpy as jnp
-from jax import lax
 
 # fmt: off
 # Rodas5 W-transformed coefficients
@@ -82,8 +81,9 @@ def solve(
         array supplies a distinct starting point for each trajectory.
     t_span : array-like, shape (n_save,)
         Strictly-increasing 1-D array of save times (including t0).
-    params : array, shape (N, ...)
-        Per-trajectory parameters.
+    params : array, shape (n_params,) or (N, n_params)
+        Parameters. A 1-D array is broadcast to all trajectories; a 2-D array
+        supplies distinct parameters for each trajectory.
     lu_precision :
         Precision for LU factorization and LU solve: ``"fp32"`` or ``"fp64"``.
     batch_size : int or None
@@ -116,13 +116,27 @@ def solve(
     params_arr = jnp.asarray(params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
 
-    N = params_arr.shape[0]
-    if y0_arr.ndim == 1:
+    if y0_arr.ndim == 1 and params_arr.ndim == 1:
+        N = 1
+        n_vars = y0_arr.shape[0]
+        y0_batched = jnp.broadcast_to(y0_arr, (N, n_vars))
+        params_arr = jnp.broadcast_to(params_arr, (N, params_arr.shape[0]))
+    elif y0_arr.ndim == 1:
+        N = params_arr.shape[0]
         n_vars = y0_arr.shape[0]
         y0_batched = jnp.broadcast_to(y0_arr, (N, n_vars))
     else:
+        N = y0_arr.shape[0]
         n_vars = y0_arr.shape[1]
         y0_batched = y0_arr
+        if params_arr.ndim == 1:
+            params_arr = jnp.broadcast_to(params_arr, (N, params_arr.shape[0]))
+        elif params_arr.shape[0] != N:
+            raise ValueError(
+                "params must have shape (n_params,) or (N, n_params) when y0 has "
+                f"shape (N, n_vars); got y0.shape={y0_arr.shape} and "
+                f"params.shape={params_arr.shape}"
+            )
     n_save = times.shape[0]
     tf = times[-1]
 
