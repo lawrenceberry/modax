@@ -19,18 +19,18 @@ while a correct solver keeps all trajectories within the known attractor
 extent (|x|, |y| < 40, 0 ≤ z < 65 for ρ ≈ 28) even after long integration.
 These bounds are the signature of a solver that stays on the manifold.
 
-Parameter perturbations are ±5% around ρ = 28.  All values land in [26.6, 29.4],
-well above the chaos onset, so every ensemble member is fully chaotic.
-
-Stiffness properties:
-The Lorenz system is nonstiff for ρ ≈ 28, so explicit methods are appropriate.
 """
 
 import jax.numpy as jnp
 import numpy as np
 
+TIMES = (0.0, 5.0)
+
+Y0 = jnp.array([1000.0, -500.0, 500.0], dtype=np.float64)
 N_VARS = 3
-Y0 = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float64)
+
+PARAMS = jnp.array([0.5], dtype=np.float64)
+N_PARAMS = 1
 
 
 def ode_fn(y, t, p):
@@ -48,9 +48,35 @@ def ode_fn(y, t, p):
 
 
 def make_params(size: int, seed: int = 42) -> jnp.ndarray:
-    """ρ values centred at 28 with ±5% uniform perturbation (all chaotic)."""
+    """ρ values centred at 0.5 with ±5% uniform perturbation (all chaotic)."""
     rng = np.random.default_rng(seed)
     return jnp.array(
-        28.0 * (1.0 + 0.05 * (2.0 * rng.random((size, 1)) - 1.0)),
+        0.5 * (1.0 + 0.05 * (2.0 * rng.random((size, 1)) - 1.0)),
         dtype=jnp.float64,
     )
+
+
+def make_initial_conditions(size: int, seed: int = 42) -> jnp.ndarray:
+    """The Lorenz system is run with rho=0.5, which places it below the pitchfork
+    bifurcation at rho=1. In this regime the origin is the unique globally stable
+    fixed point, so every trajectory decays exponentially toward (0, 0, 0) with
+    slowest eigenvalue lambda ~ -0.47.
+
+    Step count is therefore strictly monotone in distance from the origin: a
+    trajectory that starts far away must cross a large region of phase space with
+    significant ODE velocities before the state becomes small enough for Tsit5 to
+    take large steps.
+
+    The hard base IC, _HARD_Y0 = [1000, -500, 500], is fixed analytically as a
+    point far from the origin. The identical scenario places every trajectory
+    there, so all share the same (maximum) step count and the batch shows zero
+    divergence. The ic_large scenario scales each trajectory as _HARD_Y0 * (1-t)
+    for t ~ U(0, 1), moving it radially toward the origin. Because distance from
+    the origin is the sole driver of difficulty, this construction guarantees that
+    every ic_large trajectory is strictly easier than the identical base, and the
+    step counts span a continuous range from near-maximum (t -> 0) down to
+    near-zero (t -> 1).
+    """
+    rng = np.random.default_rng(seed)
+    t = rng.uniform(0.0, 1.0, size=(size, 1))
+    return Y0 * (1.0 - t)

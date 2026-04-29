@@ -5,28 +5,6 @@ trajectories with different adaptive step counts share a while-loop batch.
 Timing alone can stay fairly flat when fixed GPU/JAX overhead dominates, so
 the wasted lane-iteration ratio is recorded as the direct mechanism signal.
 
-Initial condition design
-------------------------
-The Lorenz system is run with rho=0.5, which places it below the pitchfork
-bifurcation at rho=1. In this regime the origin is the unique globally stable
-fixed point, so every trajectory decays exponentially toward (0, 0, 0) with
-slowest eigenvalue lambda ~ -0.47.
-
-Step count is therefore strictly monotone in distance from the origin: a
-trajectory that starts far away must cross a large region of phase space with
-significant ODE velocities before the state becomes small enough for Tsit5 to
-take large steps.
-
-The hard base IC, _HARD_Y0 = [1000, -500, 500], is fixed analytically as a
-point far from the origin. The identical scenario places every trajectory
-there, so all share the same (maximum) step count and the batch shows zero
-divergence. The ic_large scenario scales each trajectory as _HARD_Y0 * (1-t)
-for t ~ U(0, 1), moving it radially toward the origin. Because distance from
-the origin is the sole driver of difficulty, this construction guarantees that
-every ic_large trajectory is strictly easier than the identical base, and the
-step counts span a continuous range from near-maximum (t -> 0) down to
-near-zero (t -> 1).
-
 Usage:
     uv run python scripts/2_tsit5_divergence/main.py
 """
@@ -56,16 +34,12 @@ from solvers.tsit5 import solve as tsit5_solve
 jax.config.update("jax_enable_x64", True)
 
 _N_TRAJ = 400_000
-_T_SPAN = (0.0, 5.0)
 _N_RUNS = 5
 _BATCH_SIZES = (5_000, 10_000, 25_000, 50_000, 100_000, 200_000, 400_000)
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
-
-_RHO = 0.5
-_PARAMS = jnp.array([_RHO], dtype=jnp.float64)
 
 
 @dataclass(frozen=True)
@@ -106,17 +80,15 @@ _CSV_FIELDS = (
 )
 
 
-_HARD_Y0 = np.array([1000.0, -500.0, 500.0], dtype=np.float64)
-
-
-def make_initial_conditions(
-    scenario: Scenario, size: int, seed: int = 42
-) -> np.ndarray:
+def make_scenario_data(scenario: Scenario, size: int, seed: int = 42) -> np.ndarray:
     if scenario.key == "ic_identical":
-        return np.broadcast_to(_HARD_Y0, (size, 3)).copy()
-    rng = np.random.default_rng(seed)
-    t = rng.uniform(0.0, 1.0, size=(size, 1))
-    return _HARD_Y0 * (1.0 - t)
+        y0 = np.broadcast_to(lorenz.Y0, (size, 3)).copy()
+        params = np.broadcast_to(lorenz.PARAMS, (size, 1)).copy()
+    else:
+        y0 = lorenz.make_initial_conditions(size, seed)
+        params = lorenz.make_params(size, seed)
+
+    return y0, params
 
 
 def summarize_stats(stats: dict) -> dict[str, float | int]:
@@ -152,26 +124,28 @@ def format_stats(row: dict) -> str:
     )
 
 
-def solve_with_stats(y0: np.ndarray, batch_size: int | None):
+def solve_with_stats(y0: np.ndarray, params: np.ndarray, batch_size: int | None):
     return tsit5_solve(
         lorenz.ode_fn,
         y0=jnp.asarray(y0, dtype=jnp.float64),
-        t_span=_T_SPAN,
-        params=_PARAMS,
+        t_span=lorenz.TIMES,
+        params=jnp.asarray(params, dtype=jnp.float64),
         batch_size=batch_size,
         return_stats=True,
         **_SOLVER_KWARGS,
     )
 
 
-def time_solve_with_stats(y0: np.ndarray, batch_size: int | None) -> tuple[float, dict]:
-    ms, result = time_blocked(lambda: solve_with_stats(y0, batch_size), _N_RUNS)
+def time_solve_with_stats(
+    y0: np.ndarray, params: np.ndarray, batch_size: int | None
+) -> tuple[float, dict]:
+    ms, result = time_blocked(lambda: solve_with_stats(y0, params, batch_size), _N_RUNS)
     _, stats = result
     return ms, summarize_stats(stats)
 
 
-def active_attempt_order(y0: np.ndarray) -> np.ndarray:
-    _, stats = solve_with_stats(y0, batch_size=None)
+def active_attempt_order(y0: np.ndarray, params: np.ndarray) -> np.ndarray:
+    _, stats = solve_with_stats(y0, params, batch_size=None)
     jax.block_until_ready(stats)
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
     rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
@@ -179,14 +153,16 @@ def active_attempt_order(y0: np.ndarray) -> np.ndarray:
     return np.argsort(attempts, kind="stable")
 
 
-def order_initial_conditions(
-    y0: np.ndarray, scenario: Scenario, grouping: Grouping
-) -> np.ndarray:
+def order_scenario_data(
+    y0: np.ndarray, params: np.ndarray, scenario: Scenario, grouping: Grouping
+) -> tuple[np.ndarray, np.ndarray]:
     if grouping.key == "sorted":
-        return y0[active_attempt_order(y0)]
+        order = active_attempt_order(y0, params)
+        return y0[order], params[order]
     seed = sum(ord(c) for c in f"{scenario.key}:{grouping.key}")
     rng = np.random.default_rng(seed)
-    return y0[rng.permutation(y0.shape[0])]
+    perm = rng.permutation(y0.shape[0])
+    return y0[perm], params[perm]
 
 
 def is_complete_row(value) -> bool:
@@ -206,6 +182,7 @@ def collect_row(
     scenario: Scenario,
     grouping: Grouping,
     y0: np.ndarray,
+    params: np.ndarray,
     batch_size: int,
 ) -> dict | None:
     print(
@@ -214,7 +191,7 @@ def collect_row(
         flush=True,
     )
     try:
-        ms, stats = time_solve_with_stats(y0, batch_size)
+        ms, stats = time_solve_with_stats(y0, params, batch_size)
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
@@ -233,10 +210,10 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
     for scenario, grouping in iter_cases():
-        base_y0 = make_initial_conditions(scenario, _N_TRAJ)
+        base_y0, base_params = make_scenario_data(scenario, _N_TRAJ)
         case_key = f"{scenario.key}_{grouping.key}"
         case_cache = gpu_cache.setdefault(case_key, {})
-        y0 = order_initial_conditions(base_y0, scenario, grouping)
+        y0, params = order_scenario_data(base_y0, base_params, scenario, grouping)
         print(f"{scenario.label} / {grouping.label}:")
         for bs in _BATCH_SIZES:
             bs_key = str(int(bs))
@@ -249,7 +226,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                     f"{format_stats(row)}"
                 )
             else:
-                row = collect_row(gpu_name, scenario, grouping, y0, int(bs))
+                row = collect_row(gpu_name, scenario, grouping, y0, params, int(bs))
                 case_cache[bs_key] = row
                 save_cache(_CACHE_PATH, cache)
             if row is not None:
@@ -318,7 +295,7 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
     ax_time.set_ylabel("Solve time (ms)")
     ax_waste.set_ylabel("Wasted lane-iteration ratio")
     ax_waste.set_ylim(0.0, 1.0)
-    ax_time.set_title(f"Tsit5 divergence — Lorenz (rho={_RHO}) — {gpu_name}")
+    ax_time.set_title(f"Tsit5 divergence — {gpu_name}")
     ax_time.grid(True, which="both", linestyle="--", alpha=0.35)
     ax_time.set_xticks(_BATCH_SIZES)
     ax_time.set_xticklabels([str(bs) for bs in _BATCH_SIZES], rotation=45, ha="right")
