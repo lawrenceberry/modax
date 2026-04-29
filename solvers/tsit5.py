@@ -3,12 +3,10 @@
 Accepts an ``ode_fn(y, t, params) -> dy/dt`` and applies the Tsitouras 5/4
 explicit Runge-Kutta method with adaptive step sizing.
 
-Uses a single jax.lax.while_loop with the batch dimension inside the loop
-body instead of vmap-over-while-loop.
-
-The batch_size parameter controls how many trajectories share a while loop.
-batch_size=N (default) puts all trajectories in one loop; batch_size=1
-recovers the vmap-over-while-loop behaviour.
+Uses a per-trajectory ``jax.lax.while_loop``.  The ``batch_size`` parameter is
+passed to ``jax.lax.map`` so that JAX vmaps groups of trajectories together.
+``batch_size=N`` (default) batches all trajectories together; ``batch_size=1``
+maps them one at a time.
 """
 
 import functools
@@ -105,8 +103,11 @@ def solve(
         Parameters. A 1-D array is broadcast to all trajectories; a 2-D array
         supplies distinct parameters for each trajectory.
     batch_size : int or None
-        Number of trajectories per while-loop batch. ``None`` (default)
-        puts all trajectories in a single loop.
+        Number of trajectories batched by ``jax.lax.map``. ``None`` (default)
+        batches all trajectories together. Internally, ``batch_size`` makes
+        ``jax.lax.map`` apply a ``vmap`` over each batch, and JAX hoists the
+        per-trajectory ``while_loop`` into one loop spanning all trajectories
+        in that batch.
     rtol, atol : float
         Relative and absolute error tolerances.
     first_step : float or None
@@ -123,31 +124,29 @@ def solve(
         Solution at each save time for each trajectory. If ``return_stats`` is
         True, returns ``(solution, stats)``.
     """
-    ode_batched = jax.vmap(ode_fn)
-
-    y0_arr = jnp.asarray(y0, dtype=jnp.float64)
+    y0_in = jnp.asarray(y0, dtype=jnp.float64)
     params_arr = jnp.asarray(params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
 
-    if y0_arr.ndim == 1 and params_arr.ndim == 1:
+    if y0_in.ndim == 1 and params_arr.ndim == 1:
         N = 1
-        n_vars = y0_arr.shape[0]
-        y0_batched = jnp.broadcast_to(y0_arr, (N, n_vars))
+        n_vars = y0_in.shape[0]
+        y0_arr = jnp.broadcast_to(y0_in, (N, n_vars))
         params_arr = jnp.broadcast_to(params_arr, (N, params_arr.shape[0]))
-    elif y0_arr.ndim == 1:
+    elif y0_in.ndim == 1:
         N = params_arr.shape[0]
-        n_vars = y0_arr.shape[0]
-        y0_batched = jnp.broadcast_to(y0_arr, (N, n_vars))
+        n_vars = y0_in.shape[0]
+        y0_arr = jnp.broadcast_to(y0_in, (N, n_vars))
     else:
-        N = y0_arr.shape[0]
-        n_vars = y0_arr.shape[1]
-        y0_batched = y0_arr
+        N = y0_in.shape[0]
+        n_vars = y0_in.shape[1]
+        y0_arr = y0_in
         if params_arr.ndim == 1:
             params_arr = jnp.broadcast_to(params_arr, (N, params_arr.shape[0]))
         elif params_arr.shape[0] != N:
             raise ValueError(
                 "params must have shape (n_params,) or (N, n_params) when y0 has "
-                f"shape (N, n_vars); got y0.shape={y0_arr.shape} and "
+                f"shape (N, n_vars); got y0.shape={y0_in.shape} and "
                 f"params.shape={params_arr.shape}"
             )
     n_save = times.shape[0]
@@ -159,80 +158,52 @@ def solve(
 
     bs = N if batch_size is None else batch_size
     n_chunks = (N + bs - 1) // bs
-    n_padded = n_chunks * bs
 
-    if n_padded > N:
-        pad_rows = jnp.broadcast_to(
-            params_arr[-1:],
-            (n_padded - N,) + params_arr.shape[1:],
-        )
-        params_padded = jnp.concatenate([params_arr, pad_rows], axis=0)
-        y0_padded = jnp.concatenate(
-            [y0_batched, jnp.broadcast_to(y0_batched[-1:], (n_padded - N, n_vars))],
-            axis=0,
-        )
-    else:
-        params_padded = params_arr
-        y0_padded = y0_batched
-
-    params_batches = params_padded.reshape((n_chunks, bs) + params_arr.shape[1:])
-    y0_batches = y0_padded.reshape((n_chunks, bs, n_vars))
-    valid_mask = jnp.arange(n_padded) < N
-    valid_batches = valid_mask.reshape((n_chunks, bs))
-
-    def _solve_batch(params_batch, y0_batch, valid_batch):
-        y_init = y0_batch.copy()
+    def _solve_one(params_one, y0_one):
+        y_init = y0_one.copy()
         hist_init = (
-            jnp.zeros((bs, n_save, n_vars), dtype=jnp.float64).at[:, 0, :].set(y_init)
+            jnp.zeros((n_save, n_vars), dtype=jnp.float64).at[0, :].set(y_init)
         )
-        t_init = jnp.full((bs,), times[0], dtype=jnp.float64)
-        dt_init = jnp.full((bs,), dt0, dtype=jnp.float64)
-        save_idx_init = jnp.ones((bs,), dtype=jnp.int32)
-        k_fsal_init = jnp.zeros((bs, n_vars), dtype=jnp.float64)
-        has_fsal_init = jnp.zeros((bs,), dtype=jnp.bool_)
-        accepted_steps_init = jnp.zeros((bs,), dtype=jnp.int32)
-        rejected_steps_init = jnp.zeros((bs,), dtype=jnp.int32)
+        t_init = times[0]
+        dt_init = dt0
+        save_idx_init = jnp.int32(1)
+        k_fsal_init = jnp.zeros((n_vars,), dtype=jnp.float64)
+        has_fsal_init = jnp.bool_(False)
+        accepted_steps_init = jnp.int32(0)
+        rejected_steps_init = jnp.int32(0)
 
-        def _fresh_k1(y, t, params_batch, k_fsal, has_fsal):
-            def _pick_one(y_i, t_i, p_i, k_fsal_i, has_fsal_i):
-                return jax.lax.cond(
-                    has_fsal_i,
-                    lambda _: k_fsal_i,
-                    lambda _: ode_fn(y_i, t_i, p_i),
-                    operand=None,
-                )
+        def _fresh_k1(y, t, k_fsal, has_fsal):
+            return jax.lax.cond(
+                has_fsal,
+                lambda _: k_fsal,
+                lambda _: ode_fn(y, t, params_one),
+                operand=None,
+            )
 
-            return jax.vmap(_pick_one)(y, t, params_batch, k_fsal, has_fsal)
+        def _step_one(y, t, dt, k_fsal, has_fsal):
+            k1 = _fresh_k1(y, t, k_fsal, has_fsal)
 
-        def _step_batch(y, t, dt, k_fsal, has_fsal):
-            dt_col = dt[:, None]
+            u = y + dt * (_A21 * k1)
+            k2 = ode_fn(u, t + _C2 * dt, params_one)
 
-            def f_eval(u, t_stage):
-                return ode_batched(u, t_stage, params_batch)
+            u = y + dt * (_A31 * k1 + _A32 * k2)
+            k3 = ode_fn(u, t + _C3 * dt, params_one)
 
-            k1 = _fresh_k1(y, t, params_batch, k_fsal, has_fsal)
+            u = y + dt * (_A41 * k1 + _A42 * k2 + _A43 * k3)
+            k4 = ode_fn(u, t + _C4 * dt, params_one)
 
-            u = y + dt_col * (_A21 * k1)
-            k2 = f_eval(u, t + _C2 * dt)
+            u = y + dt * (_A51 * k1 + _A52 * k2 + _A53 * k3 + _A54 * k4)
+            k5 = ode_fn(u, t + _C5 * dt, params_one)
 
-            u = y + dt_col * (_A31 * k1 + _A32 * k2)
-            k3 = f_eval(u, t + _C3 * dt)
+            u = y + dt * (_A61 * k1 + _A62 * k2 + _A63 * k3 + _A64 * k4 + _A65 * k5)
+            k6 = ode_fn(u, t + _C6 * dt, params_one)
 
-            u = y + dt_col * (_A41 * k1 + _A42 * k2 + _A43 * k3)
-            k4 = f_eval(u, t + _C4 * dt)
-
-            u = y + dt_col * (_A51 * k1 + _A52 * k2 + _A53 * k3 + _A54 * k4)
-            k5 = f_eval(u, t + _C5 * dt)
-
-            u = y + dt_col * (_A61 * k1 + _A62 * k2 + _A63 * k3 + _A64 * k4 + _A65 * k5)
-            k6 = f_eval(u, t + _C6 * dt)
-
-            y_new = y + dt_col * (
+            y_new = y + dt * (
                 _B1 * k1 + _B2 * k2 + _B3 * k3 + _B4 * k4 + _B5 * k5 + _B6 * k6
             )
-            k7 = f_eval(y_new, t + _C7 * dt)
+            k7 = ode_fn(y_new, t + _C7 * dt, params_one)
 
-            err_est = dt_col * (
+            err_est = dt * (
                 _E1 * k1
                 + _E2 * k2
                 + _E3 * k3
@@ -245,8 +216,7 @@ def solve(
 
         def cond_fn(state):
             t, _, _, _, save_idx, n_steps, _, _, _, _ = state
-            active = valid_batch & (save_idx < n_save)
-            return (jnp.min(jnp.where(active, t, tf)) < tf) & (n_steps < max_steps)
+            return (save_idx < n_save) & (t < tf) & (n_steps < max_steps)
 
         def body_fn(state):
             (
@@ -261,31 +231,24 @@ def solve(
                 accepted_steps,
                 rejected_steps,
             ) = state
-            active = valid_batch & (save_idx < n_save)
             next_target = times[save_idx]
-            dt_use = jnp.where(
-                active,
-                jnp.maximum(jnp.minimum(dt, next_target - t), 1e-30),
-                1e-30,
-            )
+            dt_use = jnp.maximum(jnp.minimum(dt, next_target - t), 1e-30)
 
-            y_new, err_est, k7 = _step_batch(y, t, dt_use, k_fsal, has_fsal)
+            y_new, err_est, k7 = _step_one(y, t, dt_use, k_fsal, has_fsal)
 
             scale = atol + rtol * jnp.maximum(jnp.abs(y), jnp.abs(y_new))
-            err_norm = jnp.sqrt(jnp.mean((err_est / scale) ** 2, axis=1))
+            err_norm = jnp.sqrt(jnp.mean((err_est / scale) ** 2))
 
-            accept = active & (err_norm <= 1.0) & ~jnp.isnan(err_norm)
+            accept = (err_norm <= 1.0) & ~jnp.isnan(err_norm)
             t_new = jnp.where(accept, t + dt_use, t)
-            y_out = jnp.where(accept[:, None], y_new, y)
+            y_out = jnp.where(accept, y_new, y)
 
             reached = accept & (
                 jnp.abs(t_new - next_target)
                 <= 1e-12 * jnp.maximum(1.0, jnp.abs(next_target))
             )
-            slot_mask = (
-                jax.nn.one_hot(save_idx, n_save, dtype=jnp.bool_) & reached[:, None]
-            )
-            hist_new = jnp.where(slot_mask[:, :, None], y_out[:, None, :], hist)
+            slot_mask = jax.nn.one_hot(save_idx, n_save, dtype=jnp.bool_) & reached
+            hist_new = jnp.where(slot_mask[:, None], y_out[None, :], hist)
             save_idx_new = save_idx + reached.astype(jnp.int32)
 
             safe_err = jnp.where(
@@ -296,11 +259,11 @@ def solve(
             factor = jnp.clip(
                 _SAFETY * safe_err ** (-1.0 / 5.0), _FACTOR_MIN, _FACTOR_MAX
             )
-            dt_new = jnp.where(active, dt_use * factor, dt)
+            dt_new = dt_use * factor
 
-            k_fsal_new = jnp.where(accept[:, None], k7, jnp.zeros_like(k_fsal))
+            k_fsal_new = jnp.where(accept, k7, jnp.zeros_like(k_fsal))
             has_fsal_new = accept
-            rejected = active & ~accept
+            rejected = ~accept
             accepted_steps_new = accepted_steps + accept.astype(jnp.int32)
             rejected_steps_new = rejected_steps + rejected.astype(jnp.int32)
 
@@ -335,35 +298,43 @@ def solve(
             _,
             hist_final,
             _,
-            batch_steps,
+            loop_steps,
             _,
             _,
             accepted_steps,
             rejected_steps,
         ) = jax.lax.while_loop(cond_fn, body_fn, init)
-        valid_count = jnp.sum(valid_batch.astype(jnp.int32))
-        batch_stats = {
+        stats = {
             "accepted_steps": accepted_steps,
             "rejected_steps": rejected_steps,
-            "batch_loop_iterations": batch_steps,
-            "valid_lanes": valid_count,
+            "loop_steps": loop_steps,
         }
-        return hist_final, batch_stats
+        return hist_final, stats
 
-    results, batch_stats = jax.lax.map(
-        lambda xs: _solve_batch(*xs),
-        (params_batches, y0_batches, valid_batches),
+    results, trajectory_stats = jax.lax.map(
+        lambda xs: _solve_one(*xs),
+        (params_arr, y0_arr),
+        batch_size=bs,
     )
-    solution = results.reshape(n_padded, n_save, n_vars)[:N]
+    solution = results
     if not return_stats:
         return solution
 
-    accepted_steps = batch_stats["accepted_steps"].reshape(n_padded)[:N]
-    rejected_steps = batch_stats["rejected_steps"].reshape(n_padded)[:N]
+    accepted_steps = trajectory_stats["accepted_steps"].reshape(N)
+    rejected_steps = trajectory_stats["rejected_steps"].reshape(N)
+    n_padded = n_chunks * bs
+    pad_count = n_padded - N
+    loop_steps_padded = jnp.pad(trajectory_stats["loop_steps"], (0, pad_count))
+    loop_steps = loop_steps_padded.reshape(n_chunks, bs)
+    valid_batches = (jnp.arange(n_padded) < N).reshape(n_chunks, bs)
+    batch_loop_iterations = jnp.max(
+        jnp.where(valid_batches, loop_steps, jnp.int32(0)), axis=1
+    )
+    valid_lanes = jnp.sum(valid_batches.astype(jnp.int32), axis=1)
     stats = {
         "accepted_steps": accepted_steps,
         "rejected_steps": rejected_steps,
-        "batch_loop_iterations": batch_stats["batch_loop_iterations"],
-        "valid_lanes": batch_stats["valid_lanes"],
+        "batch_loop_iterations": batch_loop_iterations,
+        "valid_lanes": valid_lanes,
     }
     return solution, stats
