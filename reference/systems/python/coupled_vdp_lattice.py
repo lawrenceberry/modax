@@ -23,6 +23,23 @@ def ode_fn(y, t, p):
     return jnp.stack([dx, dv], axis=1).ravel()
 
 
+def make_system(n_osc: int):
+    """Return (ode_fn, y0) for a ring of n_osc coupled van der Pol oscillators."""
+    y0 = jnp.array([2.0, 0.0] * n_osc, dtype=jnp.float64)
+
+    def ode_fn(y, t, p):
+        del t
+        scale = p[0]
+        x = y[0::2]
+        v = y[1::2]
+        laplacian = jnp.roll(x, -1) - 2.0 * x + jnp.roll(x, 1)
+        dx = v
+        dv = scale * MU * (1.0 - x * x) * v - OMEGA**2 * x + D * laplacian
+        return jnp.stack([dx, dv], axis=1).ravel()
+
+    return ode_fn, y0
+
+
 def make_params(size: int) -> jnp.ndarray:
     """Return identical global damping-scale parameters."""
     return jnp.ones((size, 1), dtype=jnp.float64)

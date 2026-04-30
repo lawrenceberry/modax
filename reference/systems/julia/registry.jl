@@ -1,3 +1,4 @@
+include("coupled_vdp_lattice.jl")
 include("damped_rotation.jl")
 include("heat_equation.jl")
 include("bateman.jl")
@@ -11,7 +12,9 @@ include("kaps.jl")
 include("stiff_scalar.jl")
 
 function make_system_spec(system_name::String, config)
-    if system_name == "damped_rotation"
+    if system_name == "coupled_vdp_lattice"
+        return make_coupled_vdp_lattice_spec(config)
+    elseif system_name == "damped_rotation"
         return make_damped_rotation_spec(config)
     elseif system_name == "heat_equation"
         return make_heat_equation_spec(config)
