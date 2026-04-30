@@ -1,0 +1,56 @@
+solver_key,solver,ensemble_size,solve_time_ms
+local_rodas5_fp32_lu,my rodas5 fp32 LU,1,19.67484208289534
+local_rodas5_fp32_lu,my rodas5 fp32 LU,3,19.50435310136527
+local_rodas5_fp32_lu,my rodas5 fp32 LU,10,19.635409908369184
+local_rodas5_fp32_lu,my rodas5 fp32 LU,30,19.48379739187658
+local_rodas5_fp32_lu,my rodas5 fp32 LU,100,19.503957219421864
+local_rodas5_fp32_lu,my rodas5 fp32 LU,300,19.43938520271331
+local_rodas5_fp32_lu,my rodas5 fp32 LU,1000,19.74192359484732
+local_rodas5_fp32_lu,my rodas5 fp32 LU,3000,22.737238300032914
+local_rodas5_fp32_lu,my rodas5 fp32 LU,10000,31.49867481552064
+local_rodas5_fp32_lu,my rodas5 fp32 LU,30000,65.59058539569378
+local_rodas5_fp32_lu,my rodas5 fp32 LU,100000,168.7483143992722
+local_rodas5_fp64_lu,my rodas5 fp64 LU,1,19.451512210071087
+local_rodas5_fp64_lu,my rodas5 fp64 LU,3,19.4936852902174
+local_rodas5_fp64_lu,my rodas5 fp64 LU,10,19.53694559633732
+local_rodas5_fp64_lu,my rodas5 fp64 LU,30,19.60320679936558
+local_rodas5_fp64_lu,my rodas5 fp64 LU,100,20.256233890540898
+local_rodas5_fp64_lu,my rodas5 fp64 LU,300,20.29351780656725
+local_rodas5_fp64_lu,my rodas5 fp64 LU,1000,20.712347282096744
+local_rodas5_fp64_lu,my rodas5 fp64 LU,3000,24.976043798960745
+local_rodas5_fp64_lu,my rodas5 fp64 LU,10000,39.799874112941325
+local_rodas5_fp64_lu,my rodas5 fp64 LU,30000,87.41374951787293
+local_rodas5_fp64_lu,my rodas5 fp64 LU,100000,247.66058549284935
+diffrax_kvaerno5,diffrax kvaerno5,1,852.3601497989148
+diffrax_kvaerno5,diffrax kvaerno5,3,878.6939380923286
+diffrax_kvaerno5,diffrax kvaerno5,10,874.8774470994249
+diffrax_kvaerno5,diffrax kvaerno5,30,880.1078187068924
+diffrax_kvaerno5,diffrax kvaerno5,100,910.4733277112246
+diffrax_kvaerno5,diffrax kvaerno5,300,911.7466855794191
+diffrax_kvaerno5,diffrax kvaerno5,1000,924.0539412014186
+diffrax_kvaerno5,diffrax kvaerno5,3000,991.4707144955173
+diffrax_kvaerno5,diffrax kvaerno5,10000,1241.3532556965947
+diffrax_kvaerno5,diffrax kvaerno5,30000,1984.4159401021898
+diffrax_kvaerno5,diffrax kvaerno5,100000,4577.241622610018
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,1,0.321672
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,3,115.341679
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,10,115.773999
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,30,115.229865
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,100,123.61268100000001
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,300,135.443975
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,1000,223.39845499999998
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,3000,324.680758
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,10000,1187.48615
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,30000,3382.7423040000003
+julia_rodas5_EnsembleGPUArray,julia rodas5 array,100000,30735.286288
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,1,
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,3,4.246267
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,10,4.240017
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,30,4.288625
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,100,5.177416
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,300,4.812015000000001
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,1000,6.276236999999999
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,3000,10.63795
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,10000,29.657322999999998
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,30000,100.91865899999999
+julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,100000,657.392785

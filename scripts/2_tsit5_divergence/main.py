@@ -79,16 +79,6 @@ _CSV_FIELDS = (
 )
 
 
-def make_scenario_data(scenario: Scenario, size: int, seed: int = 42) -> np.ndarray:
-    if scenario.key == "identical":
-        y0 = np.broadcast_to(lorenz.Y0, (size, 3)).copy()
-        params = np.broadcast_to(lorenz.PARAMS, (size, 1)).copy()
-    else:
-        y0 = lorenz.make_initial_conditions(size, seed)
-        params = lorenz.make_params(size, seed)
-
-    return y0, params
-
 
 def summarize_stats(stats: dict) -> dict[str, float | int]:
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
@@ -209,7 +199,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
     for scenario, grouping in iter_cases():
-        base_y0, base_params = make_scenario_data(scenario, _N_TRAJ)
+        base_y0, base_params = lorenz.make_scenario(scenario.key, _N_TRAJ)
         case_key = f"{scenario.key}_{grouping.key}"
         case_cache = gpu_cache.setdefault(case_key, {})
         y0, params = order_scenario_data(base_y0, base_params, scenario, grouping)

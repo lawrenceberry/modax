@@ -96,18 +96,6 @@ _CSV_FIELDS = (
 )
 
 
-def make_scenario_data(
-    scenario: Scenario, size: int, seed: int = 42
-) -> tuple[np.ndarray, jnp.ndarray]:
-    if scenario.key == "identical":
-        y0 = np.broadcast_to(robertson.Y0, (size, robertson.N_VARS)).copy()
-        params = np.broadcast_to(robertson.PARAMS, (size, robertson.N_PARAMS)).copy()
-    else:
-        params = robertson.make_params(size, seed)
-        y0 = robertson.make_initial_conditions(size, seed)
-
-    return y0, params
-
 
 def summarize_stats(stats: dict) -> dict[str, float | int]:
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
@@ -142,7 +130,7 @@ def format_stats(row: dict) -> str:
     )
 
 
-def solve_with_stats(y0: np.ndarray, params: jnp.ndarray, batch_size: int | None):
+def solve_with_stats(y0: np.ndarray, params: np.ndarray, batch_size: int | None):
     return rodas5_solve(
         robertson.ode_fn,
         y0=jnp.asarray(y0, dtype=jnp.float64),
@@ -155,14 +143,14 @@ def solve_with_stats(y0: np.ndarray, params: jnp.ndarray, batch_size: int | None
 
 
 def time_solve_with_stats(
-    y0: np.ndarray, params: jnp.ndarray, batch_size: int | None
+    y0: np.ndarray, params: np.ndarray, batch_size: int | None
 ) -> tuple[float, dict]:
     ms, result = time_blocked(lambda: solve_with_stats(y0, params, batch_size), _N_RUNS)
     _, stats = result
     return ms, summarize_stats(stats)
 
 
-def active_attempt_order(y0: np.ndarray, params: jnp.ndarray) -> np.ndarray:
+def active_attempt_order(y0: np.ndarray, params: np.ndarray) -> np.ndarray:
     _, stats = solve_with_stats(y0, params, batch_size=None)
     jax.block_until_ready(stats)
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
@@ -172,8 +160,8 @@ def active_attempt_order(y0: np.ndarray, params: jnp.ndarray) -> np.ndarray:
 
 
 def order_scenario_data(
-    y0: np.ndarray, params: jnp.ndarray, scenario: Scenario, grouping: Grouping
-) -> tuple[np.ndarray, jnp.ndarray]:
+    y0: np.ndarray, params: np.ndarray, scenario: Scenario, grouping: Grouping
+) -> tuple[np.ndarray, np.ndarray]:
     if grouping.key == "sorted":
         order = active_attempt_order(y0, params)
         return y0[order], params[order]
@@ -200,7 +188,7 @@ def collect_row(
     scenario: Scenario,
     grouping: Grouping,
     y0: np.ndarray,
-    params: jnp.ndarray,
+    params: np.ndarray,
     batch_size: int,
 ) -> dict | None:
     print(
@@ -228,7 +216,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
     for scenario, grouping in iter_cases():
-        base_y0, base_params = make_scenario_data(scenario, _N_TRAJ)
+        base_y0, base_params = robertson.make_scenario(scenario.key, _N_TRAJ)
         case_key = f"{scenario.key}_{grouping.key}"
         case_cache = gpu_cache.setdefault(case_key, {})
         y0, params = order_scenario_data(base_y0, base_params, scenario, grouping)

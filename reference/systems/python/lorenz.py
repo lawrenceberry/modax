@@ -80,3 +80,20 @@ def make_initial_conditions(size: int, seed: int = 42) -> jnp.ndarray:
     rng = np.random.default_rng(seed)
     t = rng.uniform(0.0, 1.0, size=(size, 1))
     return Y0 * (1.0 - t)
+
+
+SCENARIOS = ("identical", "divergent")
+
+
+def make_scenario(
+    scenario: str, size: int, seed: int = 42
+) -> tuple[np.ndarray, np.ndarray]:
+    if scenario == "identical":
+        return (
+            np.broadcast_to(np.asarray(Y0), (size, N_VARS)).copy(),
+            np.broadcast_to(np.asarray(PARAMS), (size, N_PARAMS)).copy(),
+        )
+    return (
+        np.asarray(make_initial_conditions(size, seed)),
+        np.asarray(make_params(size, seed)),
+    )

@@ -2,8 +2,8 @@
 
 Sweeps ensemble size from 1 to 100k on a log scale and records solve time for
 the local Tsit5 solver, Diffrax Tsit5, and Julia Tsit5 with both
-DiffEqGPU ensemble backends. Outputs a CSV and a log-log plot named after the
-GPU.
+DiffEqGPU ensemble backends. Outputs a CSV and a log-log plot per scenario
+named after the GPU.
 
 Usage:
     uv run python scripts/1_tsit5_scaling/main.py
@@ -26,8 +26,8 @@ from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
 from reference.systems.python import lorenz
 from scripts.benchmark_common import (
     get_gpu_name,
+    gpu_slug,
     load_cache,
-    output_paths,
     save_cache,
     time_blocked,
 )
@@ -45,8 +45,10 @@ _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
 # (key, label, color, marker, solve_fn)
-_JAX_SOLVER_DEFS = [
+_LOCAL_JAX_SOLVER_DEFS = [
     ("local_tsit5", "my tsit5", "#2b7be0", "o", tsit5_solve),
+]
+_REFERENCE_JAX_SOLVER_DEFS = [
     ("diffrax_tsit5", "diffrax tsit5", "#2ba84a", "s", diffrax_tsit5_solve),
 ]
 # (key, label, solve_fn, color)
@@ -67,10 +69,24 @@ class SolverSpec:
     color: str
     marker: str
     linestyle: str
-    timing_fn: Callable[[object], float]
+    timing_fn: Callable[[object, object], float]
 
 
-def time_jax_solver(solve_fn, params) -> float:
+def time_local_jax_solver(solve_fn, y0, params) -> float:
+    def run():
+        return solve_fn(
+            lorenz.ode_fn,
+            y0=y0,
+            t_span=_T_SPAN,
+            params=params,
+            **_SOLVER_KWARGS,
+        )
+
+    ms, _ = time_blocked(run, _N_RUNS)
+    return ms
+
+
+def time_reference_jax_solver(solve_fn, _y0, params) -> float:
     def run():
         return solve_fn(
             lorenz.ode_fn,
@@ -84,7 +100,7 @@ def time_jax_solver(solve_fn, params) -> float:
     return ms
 
 
-def time_julia_solver(solve, params, *, ensemble_backend: str) -> float:
+def time_julia_solver(solve, _y0, params, *, ensemble_backend: str) -> float:
     """Return Julia's internal solve time in ms, excluding subprocess overhead."""
     result = solve._julia_solve_with_timing(
         "lorenz",
@@ -105,9 +121,20 @@ def make_solver_specs() -> list[SolverSpec]:
             color=color,
             marker=marker,
             linestyle="-",
-            timing_fn=lambda params, fn=fn: time_jax_solver(fn, params),
+            timing_fn=lambda y0, params, fn=fn: time_local_jax_solver(fn, y0, params),
         )
-        for key, label, color, marker, fn in _JAX_SOLVER_DEFS
+        for key, label, color, marker, fn in _LOCAL_JAX_SOLVER_DEFS
+    ]
+    specs += [
+        SolverSpec(
+            key=key,
+            label=label,
+            color=color,
+            marker=marker,
+            linestyle="-",
+            timing_fn=lambda y0, params, fn=fn: time_reference_jax_solver(fn, y0, params),
+        )
+        for key, label, color, marker, fn in _REFERENCE_JAX_SOLVER_DEFS
     ]
     for solver_key, label, solve, color in _JULIA_SOLVER_DEFS:
         for backend in _JULIA_BACKENDS:
@@ -119,18 +146,18 @@ def make_solver_specs() -> list[SolverSpec]:
                     color=color,
                     marker=marker,
                     linestyle=linestyle,
-                    timing_fn=lambda params, s=solve, b=backend: time_julia_solver(
-                        s, params, ensemble_backend=b
+                    timing_fn=lambda y0, params, s=solve, b=backend: time_julia_solver(
+                        s, y0, params, ensemble_backend=b
                     ),
                 )
             )
     return specs
 
 
-def collect_timing(spec: SolverSpec, size: int, params) -> float | None:
+def collect_timing(spec: SolverSpec, size: int, y0, params) -> float | None:
     print(f"  {spec.label:<20} n={size:>7} ...", end=" ", flush=True)
     try:
-        ms = spec.timing_fn(params)
+        ms = spec.timing_fn(y0, params)
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
@@ -154,27 +181,32 @@ def drop_none(
     return list(sizes), list(times)
 
 
-def run_benchmarks(specs: list[SolverSpec], gpu_name: str, cache: dict) -> list[_Row]:
+def run_benchmarks(
+    specs: list[SolverSpec], gpu_name: str, cache: dict
+) -> dict[str, list[_Row]]:
     gpu_cache = cache.setdefault(gpu_name, {})
-    rows: list[_Row] = []
-    for spec in specs:
-        print(f"{spec.label}:")
-        solver_cache = gpu_cache.setdefault(spec.key, {})
-        for size in _ENSEMBLE_SIZES:
-            size_key = str(size)
-            if size_key in solver_cache:
-                ms = solver_cache[size_key]
-                print(
-                    f"  {spec.label:<20} n={size:>7} ... (cached) {f'{ms:.1f} ms' if ms is not None else 'FAILED'}"
-                )
-            else:
-                params = lorenz.make_params(size)
-                ms = collect_timing(spec, size, params)
-                solver_cache[size_key] = ms
-                save_cache(_CACHE_PATH, cache)
-            rows.append((spec.key, spec.label, size, ms))
-        print()
-    return rows
+    rows_by_scenario: dict[str, list[_Row]] = {}
+    for scenario in lorenz.SCENARIOS:
+        print(f"\n=== {scenario} ===\n")
+        rows: list[_Row] = []
+        for spec in specs:
+            print(f"{spec.label}:")
+            solver_cache = gpu_cache.setdefault(f"{scenario}_{spec.key}", {})
+            for size in _ENSEMBLE_SIZES:
+                size_key = str(size)
+                if size_key in solver_cache:
+                    ms = solver_cache[size_key]
+                    ms_text = f"{ms:.1f} ms" if ms is not None else "FAILED"
+                    print(f"  {spec.label:<20} n={size:>7} ... (cached) {ms_text}")
+                else:
+                    y0, params = lorenz.make_scenario(scenario, size)
+                    ms = collect_timing(spec, size, y0, params)
+                    solver_cache[size_key] = ms
+                    save_cache(_CACHE_PATH, cache)
+                rows.append((spec.key, spec.label, size, ms))
+            print()
+        rows_by_scenario[scenario] = rows
+    return rows_by_scenario
 
 
 def save_csv(rows: list[_Row], path: Path) -> None:
@@ -186,7 +218,11 @@ def save_csv(rows: list[_Row], path: Path) -> None:
 
 
 def plot(
-    rows: list[_Row], specs: list[SolverSpec], gpu_name: str, output_path: Path
+    rows: list[_Row],
+    specs: list[SolverSpec],
+    gpu_name: str,
+    scenario: str,
+    output_path: Path,
 ) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
     for spec in specs:
@@ -205,7 +241,7 @@ def plot(
     ax.set_yscale("log")
     ax.set_xlabel("Ensemble size")
     ax.set_ylabel("Solve time (ms)")
-    ax.set_title(f"Tsit5 scaling — Lorenz — {gpu_name}")
+    ax.set_title(f"Tsit5 scaling — Lorenz ({scenario}) — {gpu_name}")
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_ENSEMBLE_SIZES)
     ax.set_xticklabels([str(n) for n in _ENSEMBLE_SIZES], rotation=45, ha="right")
@@ -221,11 +257,14 @@ def main() -> None:
 
     cache = load_cache(_CACHE_PATH)
     specs = make_solver_specs()
-    rows = run_benchmarks(specs, gpu_name, cache)
+    rows_by_scenario = run_benchmarks(specs, gpu_name, cache)
 
-    csv_path, plot_path = output_paths(_SCRIPT_DIR, gpu_name)
-    save_csv(rows, csv_path)
-    plot(rows, specs, gpu_name, plot_path)
+    slug = gpu_slug(gpu_name)
+    for scenario, rows in rows_by_scenario.items():
+        csv_path = _SCRIPT_DIR / f"results-{slug}-{scenario}.csv"
+        plot_path = _SCRIPT_DIR / f"plot-{slug}-{scenario}.png"
+        save_csv(rows, csv_path)
+        plot(rows, specs, gpu_name, scenario, plot_path)
 
 
 if __name__ == "__main__":
