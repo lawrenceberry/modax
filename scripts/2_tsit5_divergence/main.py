@@ -45,7 +45,6 @@ _CACHE_PATH = _SCRIPT_DIR / "results.json"
 @dataclass(frozen=True)
 class Scenario:
     key: str
-    label: str
     color: str
 
 
@@ -58,8 +57,8 @@ class Grouping:
 
 
 _SCENARIOS = (
-    Scenario("ic_identical", "identical y0", "#2b7be0"),
-    Scenario("ic_large", "large dy0", "#e02b2b"),
+    Scenario("identical", "#2b7be0"),
+    Scenario("divergent", "#e02b2b"),
 )
 
 _GROUPINGS = (
@@ -81,7 +80,7 @@ _CSV_FIELDS = (
 
 
 def make_scenario_data(scenario: Scenario, size: int, seed: int = 42) -> np.ndarray:
-    if scenario.key == "ic_identical":
+    if scenario.key == "identical":
         y0 = np.broadcast_to(lorenz.Y0, (size, 3)).copy()
         params = np.broadcast_to(lorenz.PARAMS, (size, 1)).copy()
     else:
@@ -172,7 +171,7 @@ def is_complete_row(value) -> bool:
 def iter_cases():
     for scenario in _SCENARIOS:
         for grouping in _GROUPINGS:
-            if scenario.key == "ic_identical" and grouping.key == "sorted":
+            if scenario.key == "identical" and grouping.key == "sorted":
                 continue
             yield scenario, grouping
 
@@ -186,7 +185,7 @@ def collect_row(
     batch_size: int,
 ) -> dict | None:
     print(
-        f"  {scenario.label:<18} {grouping.label:<6} batch_size={batch_size:>6} ...",
+        f"  {scenario.key:<18} {grouping.label:<6} batch_size={batch_size:>6} ...",
         end=" ",
         flush=True,
     )
@@ -214,14 +213,14 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
         case_key = f"{scenario.key}_{grouping.key}"
         case_cache = gpu_cache.setdefault(case_key, {})
         y0, params = order_scenario_data(base_y0, base_params, scenario, grouping)
-        print(f"{scenario.label} / {grouping.label}:")
+        print(f"{scenario.key} / {grouping.label}:")
         for bs in _BATCH_SIZES:
             bs_key = str(int(bs))
             cached = case_cache.get(bs_key)
             if is_complete_row(cached):
                 row = cached
                 print(
-                    f"  {scenario.label:<18} {grouping.label:<6} "
+                    f"  {scenario.key:<18} {grouping.label:<6} "
                     f"batch_size={bs:>6} ... (cached) "
                     f"{format_stats(row)}"
                 )
@@ -268,7 +267,7 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
         xs, times_ms, wasted = rows_for_case(rows, case_key)
         if not xs:
             continue
-        label = f"{scenario.label} / {grouping.label}"
+        label = f"{scenario.key} / {grouping.label}"
         (time_line,) = ax_time.plot(
             xs,
             times_ms,

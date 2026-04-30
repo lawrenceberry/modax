@@ -7,11 +7,10 @@ while-loop batch.
 Initial condition design
 ------------------------
 
-
 The identical scenario pins (alpha=0.9, eps=0.1) for every trajectory,
 giving the hardest representative IC.
 
-The ic_large scenario draws alpha ~ U(0, 0.9) with eps=0.1 fixed.  This
+The divergent scenario draws alpha ~ U(0, 0.9) with eps=0.1 fixed.  This
 creates a wide spread of step counts (low alpha is easy because there is
 little fuel left to sustain the reactions; high alpha approaches the
 identical hardest case) while guaranteeing no trajectory is harder than
@@ -63,7 +62,6 @@ _CACHE_PATH = _SCRIPT_DIR / "results.json"
 @dataclass(frozen=True)
 class Scenario:
     key: str
-    label: str
     color: str
 
 
@@ -76,8 +74,8 @@ class Grouping:
 
 
 _SCENARIOS = (
-    Scenario("identical", "identical", "#2b7be0"),
-    Scenario("ic_large", "large y0", "#e02b2b"),
+    Scenario("identical", "#2b7be0"),
+    Scenario("divergent", "#e02b2b"),
 )
 
 _GROUPINGS = (
@@ -206,7 +204,7 @@ def collect_row(
     batch_size: int,
 ) -> dict | None:
     print(
-        f"  {scenario.label:<12} {grouping.label:<6} batch_size={batch_size:>6} ...",
+        f"  {scenario.key:<12} {grouping.label:<6} batch_size={batch_size:>6} ...",
         end=" ",
         flush=True,
     )
@@ -234,14 +232,14 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
         case_key = f"{scenario.key}_{grouping.key}"
         case_cache = gpu_cache.setdefault(case_key, {})
         y0, params = order_scenario_data(base_y0, base_params, scenario, grouping)
-        print(f"{scenario.label} / {grouping.label}:")
+        print(f"{scenario.key} / {grouping.label}:")
         for bs in _BATCH_SIZES:
             bs_key = str(int(bs))
             cached = case_cache.get(bs_key)
             if is_complete_row(cached):
                 row = cached
                 print(
-                    f"  {scenario.label:<12} {grouping.label:<6} "
+                    f"  {scenario.key:<12} {grouping.label:<6} "
                     f"batch_size={bs:>6} ... (cached) "
                     f"{format_stats(row)}"
                 )
@@ -288,7 +286,7 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
         xs, times_ms, wasted = rows_for_case(rows, case_key)
         if not xs:
             continue
-        label = f"{scenario.label} / {grouping.label}"
+        label = f"{scenario.key} / {grouping.label}"
         (time_line,) = ax_time.plot(
             xs,
             times_ms,
