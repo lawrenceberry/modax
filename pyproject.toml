@@ -13,6 +13,7 @@ dependencies = [
     "numpy>=2.4.3",
     "scipy>=1.17.1",
     "triton>=3.6.0",
+    "warp-lang>=1.10.0",
 ]
 
 [project.optional-dependencies]

@@ -23,6 +23,13 @@ These bounds are the signature of a solver that stays on the manifold.
 
 import jax.numpy as jnp
 import numpy as np
+import warp as wp
+from numba import cuda
+
+
+def _zeros_like(x):
+    return x * 0.0
+
 
 TIMES = (0.0, 5.0)
 
@@ -45,6 +52,41 @@ def ode_fn(y, t, p):
             y[0] * y[1] - beta * y[2],
         ]
     )
+
+
+def ode_fn_pallas(y, t, p):
+    del t
+    sigma = 10.0
+    beta = 8.0 / 3.0
+    rho = p[:, 0]
+    dy0 = sigma * (y[:, 1] - y[:, 0])
+    dy1 = y[:, 0] * (rho - y[:, 2]) - y[:, 1]
+    dy2 = y[:, 0] * y[:, 1] - beta * y[:, 2]
+    return dy0, dy1, dy2, _zeros_like(dy0)
+
+
+@cuda.jit(device=True)
+def ode_fn_numba_cuda(y, t, p, dy, i):
+    sigma = 10.0
+    beta = 8.0 / 3.0
+    rho = p[i, 0]
+    dy[i, 0] = sigma * (y[i, 1] - y[i, 0])
+    dy[i, 1] = y[i, 0] * (rho - y[i, 2]) - y[i, 1]
+    dy[i, 2] = y[i, 0] * y[i, 1] - beta * y[i, 2]
+
+
+@wp.func
+def ode_fn_warp(
+    y: wp.array2d(dtype=wp.float64),
+    t: wp.float64,
+    p: wp.array2d(dtype=wp.float64),
+    dy: wp.array2d(dtype=wp.float64),
+    i: wp.int32,
+):
+    rho = p[i, 0]
+    dy[i, 0] = wp.float64(10.0) * (y[i, 1] - y[i, 0])
+    dy[i, 1] = y[i, 0] * (rho - y[i, 2]) - y[i, 1]
+    dy[i, 2] = y[i, 0] * y[i, 1] - (wp.float64(8.0) / wp.float64(3.0)) * y[i, 2]
 
 
 def make_params(size: int, seed: int = 42) -> jnp.ndarray:
