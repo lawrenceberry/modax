@@ -35,25 +35,14 @@ from scripts.benchmark_common import (
     save_cache,
 )
 from solvers.rodas5 import solve as rodas5_solve
+from solvers.rodas5ckn import (
+    prepare_solve as rodas5ckn_prepare_solve,
+)
+from solvers.rodas5ckn import (
+    run_prepared as rodas5ckn_run_prepared,
+)
+from solvers.rodas5ckn import solve as rodas5ckn_solve
 from solvers.rodas5ckno import solve as rodas5ckno_solve
-from solvers.rodas5cknp import (
-    prepare_solve as rodas5cknp_prepare_solve,
-)
-from solvers.rodas5cknp import (
-    run_prepared as rodas5cknp_run_prepared,
-)
-from solvers.rodas5cknp import (
-    solve as rodas5cknp_solve,
-)
-from solvers.rodas5ckns import (
-    prepare_solve as rodas5ckns_prepare_solve,
-)
-from solvers.rodas5ckns import (
-    run_prepared as rodas5ckns_run_prepared,
-)
-from solvers.rodas5ckns import (
-    solve as rodas5ckns_solve,
-)
 from solvers.rodas5ckp import solve as rodas5ckp_solve
 from solvers.rodas5ckw import solve as rodas5ckw_solve
 from solvers.rodas5skwp import solve as rodas5skwp_solve
@@ -74,8 +63,7 @@ _COLORS = {
     "rodas5ckw": "#e02b2b",
     "rodas5skwp": "#c94f7c",
     "rodas5ckno": "#7a8b99",
-    "rodas5cknp": "#2ba84a",
-    "rodas5ckns": "#f0a202",
+    "rodas5ckn": "#2ba84a",
 }
 
 _MU = 100.0
@@ -252,10 +240,7 @@ _SOLVERS = (
         "rodas5ckno", "numba-cuda original", rodas5ckno_solve, kind="custom_kernel"
     ),
     SolverSpec(
-        "rodas5cknp", "numba-cuda packed", rodas5cknp_solve, kind="custom_kernel"
-    ),
-    SolverSpec(
-        "rodas5ckns", "numba-cuda single", rodas5ckns_solve, kind="custom_kernel"
+        "rodas5ckn", "numba-cuda combined", rodas5ckn_solve, kind="custom_kernel"
     ),
 )
 
@@ -341,8 +326,8 @@ def collect_timing(
     try:
         ode_fn, jac_fn, y0, params = make_inputs(spec, dim)
 
-        if spec.key == "rodas5cknp":
-            prepared = rodas5cknp_prepare_solve(
+        if spec.key == "rodas5ckn":
+            prepared = rodas5ckn_prepare_solve(
                 ode_fn,
                 jac_fn,
                 y0=y0,
@@ -352,20 +337,7 @@ def collect_timing(
             )
 
             def run():
-                return rodas5cknp_run_prepared(prepared, copy_solution=False)
-
-        elif spec.key == "rodas5ckns":
-            prepared = rodas5ckns_prepare_solve(
-                ode_fn,
-                jac_fn,
-                y0=y0,
-                t_span=_T_SPAN,
-                params=params,
-                **_SOLVER_KWARGS,
-            )
-
-            def run():
-                return rodas5ckns_run_prepared(prepared, copy_solution=False)
+                return rodas5ckn_run_prepared(prepared, copy_solution=False)
 
         else:
 
