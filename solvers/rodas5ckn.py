@@ -437,10 +437,7 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
                 for j in range(lane, n_vars, batch_lanes):
                     smem_rhs[b_offset + j] = np.float32(
                         work_global[i, j]
-                        + (
-                            C31 * smem_k1[v_offset + j]
-                            + C32 * smem_k2[v_offset + j]
-                        )
+                        + (C31 * smem_k1[v_offset + j] + C32 * smem_k2[v_offset + j])
                         * smem_inv_dt[batch]
                     )
             cuda.syncthreads()

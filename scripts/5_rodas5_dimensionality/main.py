@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+from numba import cuda
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -29,13 +30,13 @@ from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from reference.systems.python import coupled_vdp_lattice
 from scripts.benchmark_common import (
     get_gpu_name,
-    gpu_slug,
     load_cache,
     output_paths,
     save_cache,
     time_blocked,
 )
 from solvers.rodas5 import solve as rodas5_solve
+from solvers.rodas5ckn import solve as rodas5ckn_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -60,6 +61,9 @@ _LOCAL_SOLVER_DEFS = [
 _JAX_SOLVER_DEFS = [
     ("diffrax_kvaerno5", "diffrax kvaerno5", "#2ba84a", "s", diffrax_kvaerno5_solve),
 ]
+_CUSTOM_KERNEL_SOLVER_DEFS = [
+    ("rodas5ckn", "numba-cuda rodas5", "#f0a202", "P", rodas5ckn_solve),
+]
 # (key, label, solve_fn, color)
 _JULIA_SOLVER_DEFS = [
     ("julia_rodas5", "julia rodas5", julia_rodas5_solve, "#9b59b6"),
@@ -81,6 +85,47 @@ class SolverSpec:
     timing_fn: Callable[[int], float]
 
 
+@cuda.jit(device=True)
+def ode_fn_vdp_numba(y, t, p, dy, i):
+    n_osc = int(p[i, 0])
+    scale = p[i, 1]
+    mu = 100.0
+    diffusion = 10.0
+    for k in range(n_osc):
+        kp1 = (k + 1) % n_osc
+        km1 = (k + n_osc - 1) % n_osc
+        xk = y[i, 2 * k]
+        vk = y[i, 2 * k + 1]
+        lap = y[i, 2 * kp1] - 2.0 * xk + y[i, 2 * km1]
+        dy[i, 2 * k] = vk
+        dy[i, 2 * k + 1] = scale * mu * (1.0 - xk * xk) * vk - xk + diffusion * lap
+
+
+@cuda.jit(device=True)
+def jac_fn_vdp_numba(y, t, p, jac, i):
+    n_osc = int(p[i, 0])
+    n_vars = 2 * n_osc
+    scale = p[i, 1]
+    mu = 100.0
+    diffusion = 10.0
+    for r in range(n_vars):
+        for c in range(n_vars):
+            jac[i, r, c] = 0.0
+    for k in range(n_osc):
+        kp1 = (k + 1) % n_osc
+        km1 = (k + n_osc - 1) % n_osc
+        xk = y[i, 2 * k]
+        vk = y[i, 2 * k + 1]
+        jac[i, 2 * k, 2 * k + 1] = 1.0
+        jac[i, 2 * k + 1, 2 * k] = scale * mu * (-2.0 * xk) * vk - 1.0 - 2.0 * diffusion
+        jac[i, 2 * k + 1, 2 * k + 1] = scale * mu * (1.0 - xk * xk)
+        if kp1 == km1:
+            jac[i, 2 * k + 1, 2 * kp1] = 2.0 * diffusion
+        else:
+            jac[i, 2 * k + 1, 2 * kp1] = diffusion
+            jac[i, 2 * k + 1, 2 * km1] = diffusion
+
+
 def time_local_rodas5(dim: int, *, lu_precision: str) -> float:
     n_osc = dim // 2
     ode_fn, y0 = coupled_vdp_lattice.make_system(n_osc)
@@ -94,6 +139,31 @@ def time_local_rodas5(dim: int, *, lu_precision: str) -> float:
             _T_SPAN,
             params,
             lu_precision=lu_precision,
+            **_SOLVER_KWARGS,
+        )
+
+    ms, _ = time_blocked(run, _N_RUNS)
+    return ms
+
+
+def time_custom_kernel_rodas5(dim: int, solve_fn) -> float:
+    n_osc = dim // 2
+    _, y0 = coupled_vdp_lattice.make_system(n_osc)
+    y0_batch = np.broadcast_to(np.asarray(y0), (_ENSEMBLE_SIZE, dim)).copy()
+    params = np.column_stack(
+        [
+            np.full(_ENSEMBLE_SIZE, float(n_osc), dtype=np.float64),
+            np.ones(_ENSEMBLE_SIZE, dtype=np.float64),
+        ]
+    )
+
+    def run():
+        return solve_fn(
+            ode_fn_vdp_numba,
+            jac_fn_vdp_numba,
+            y0=y0_batch,
+            t_span=_T_SPAN,
+            params=params,
             **_SOLVER_KWARGS,
         )
 
@@ -149,6 +219,17 @@ def make_solver_specs() -> list[SolverSpec]:
         )
         for key, label, color, marker, lu_precision in _LOCAL_SOLVER_DEFS
     ]
+    specs.extend(
+        SolverSpec(
+            key=key,
+            label=label,
+            color=color,
+            marker=marker,
+            linestyle="-",
+            timing_fn=lambda dim, fn=fn: time_custom_kernel_rodas5(dim, fn),
+        )
+        for key, label, color, marker, fn in _CUSTOM_KERNEL_SOLVER_DEFS
+    )
     specs.extend(
         SolverSpec(
             key=key,

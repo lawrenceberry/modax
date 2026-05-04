@@ -1,3 +1,0 @@
-gpu,solver_key,solver,solve_time_ms,result_type,error
-NVIDIA GeForce RTX 4070 SUPER,tsit5,JAX tsit5,42.36445270944387,ArrayImpl,
-NVIDIA GeForce RTX 4070 SUPER,tsit5ckn,numba-cuda,11.968835978768766,ndarray,

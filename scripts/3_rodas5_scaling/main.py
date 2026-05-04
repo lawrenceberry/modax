@@ -32,6 +32,7 @@ from scripts.benchmark_common import (
     time_blocked,
 )
 from solvers.rodas5 import solve as rodas5_solve
+from solvers.rodas5ckn import solve as rodas5ckn_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -48,6 +49,9 @@ _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 _LOCAL_SOLVER_DEFS = [
     ("local_rodas5_fp32_lu", "my rodas5 fp32 LU", "#2b7be0", "o", "fp32"),
     ("local_rodas5_fp64_lu", "my rodas5 fp64 LU", "#e02b2b", "D", "fp64"),
+]
+_CUSTOM_KERNEL_SOLVER_DEFS = [
+    ("rodas5ckn", "numba-cuda rodas5", "#f0a202", "P", rodas5ckn_solve),
 ]
 # (key, label, color, marker, solve_fn)
 _JAX_SOLVER_DEFS = [
@@ -82,6 +86,21 @@ def time_local_rodas5(y0, params, *, lu_precision: str) -> float:
             _T_SPAN,
             params,
             lu_precision=lu_precision,
+            **_SOLVER_KWARGS,
+        )
+
+    ms, _ = time_blocked(run, _N_RUNS)
+    return ms
+
+
+def time_custom_kernel_rodas5(y0, params, solve_fn) -> float:
+    def run():
+        return solve_fn(
+            robertson.ode_fn_numba_cuda,
+            robertson.jac_fn_numba_cuda,
+            y0=np.asarray(y0),
+            t_span=_T_SPAN,
+            params=np.asarray(params),
             **_SOLVER_KWARGS,
         )
 
@@ -130,6 +149,19 @@ def make_solver_specs() -> list[SolverSpec]:
         )
         for key, label, color, marker, lu_precision in _LOCAL_SOLVER_DEFS
     ]
+    specs.extend(
+        SolverSpec(
+            key=key,
+            label=label,
+            color=color,
+            marker=marker,
+            linestyle="-",
+            timing_fn=lambda y0, params, fn=fn: time_custom_kernel_rodas5(
+                y0, params, fn
+            ),
+        )
+        for key, label, color, marker, fn in _CUSTOM_KERNEL_SOLVER_DEFS
+    )
     specs.extend(
         SolverSpec(
             key=key,

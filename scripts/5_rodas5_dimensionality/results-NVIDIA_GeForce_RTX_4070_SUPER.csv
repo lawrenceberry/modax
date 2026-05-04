@@ -19,6 +19,16 @@ local_rodas5_fp64_lu,my rodas5 fp64 LU,16,11.9592942064628
 local_rodas5_fp64_lu,my rodas5 fp64 LU,32,50.0025250017643
 local_rodas5_fp64_lu,my rodas5 fp64 LU,64,124.21576131600887
 local_rodas5_fp64_lu,my rodas5 fp64 LU,128,342.8428332088515
+rodas5ckn,numba-cuda rodas5,2,10.984738310799003
+rodas5ckn,numba-cuda rodas5,4,1.3060224009677768
+rodas5ckn,numba-cuda rodas5,6,1.415028003975749
+rodas5ckn,numba-cuda rodas5,8,1.4593136962503195
+rodas5ckn,numba-cuda rodas5,10,1.9038447877392173
+rodas5ckn,numba-cuda rodas5,12,2.1524067036807537
+rodas5ckn,numba-cuda rodas5,16,2.5568499928340316
+rodas5ckn,numba-cuda rodas5,32,11.401002388447523
+rodas5ckn,numba-cuda rodas5,64,46.599339693784714
+rodas5ckn,numba-cuda rodas5,128,
 diffrax_kvaerno5,diffrax kvaerno5,2,19.322846503928304
 diffrax_kvaerno5,diffrax kvaerno5,4,19.567817822098732
 diffrax_kvaerno5,diffrax kvaerno5,6,21.92793961148709

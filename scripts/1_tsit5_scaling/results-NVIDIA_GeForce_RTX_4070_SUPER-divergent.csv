@@ -9,6 +9,16 @@ local_tsit5,my tsit5,3000,29.50489700306207
 local_tsit5,my tsit5,10000,41.39935630373657
 local_tsit5,my tsit5,30000,77.33144632074982
 local_tsit5,my tsit5,100000,197.3730314988643
+tsit5ckn,numba-cuda tsit5,3,2.880920609459281
+tsit5ckn,numba-cuda tsit5,10,4.001796897500753
+tsit5ckn,numba-cuda tsit5,30,4.178625717759132
+tsit5ckn,numba-cuda tsit5,100,6.182141602039337
+tsit5ckn,numba-cuda tsit5,300,6.233795592561364
+tsit5ckn,numba-cuda tsit5,1000,6.2776335049420595
+tsit5ckn,numba-cuda tsit5,3000,6.2923504039645195
+tsit5ckn,numba-cuda tsit5,10000,12.041429802775383
+tsit5ckn,numba-cuda tsit5,30000,29.348788200877607
+tsit5ckn,numba-cuda tsit5,100000,81.27662688493729
 diffrax_tsit5,diffrax tsit5,3,78.03656558971852
 diffrax_tsit5,diffrax tsit5,10,78.5457180114463
 diffrax_tsit5,diffrax tsit5,30,81.47325122263283

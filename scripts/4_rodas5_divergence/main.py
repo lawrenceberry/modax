@@ -41,6 +41,7 @@ from scripts.benchmark_common import (
     time_blocked,
 )
 from solvers.rodas5 import solve as rodas5_solve
+from solvers.rodas5ckn import solve as rodas5ckn_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -49,6 +50,11 @@ _T_SPAN = robertson.TIMES
 _N_RUNS = 1
 _BATCH_SIZES = (10_000, 25_000, 50_000, 100_000, 200_000, 400_000)
 _SOLVER_KWARGS = {
+    "first_step": 1e-4,
+    "rtol": 1e-6,
+    "atol": 1e-8,
+}
+_LOCAL_SOLVER_KWARGS = {
     "first_step": 1e-4,
     "rtol": 1e-6,
     "atol": 1e-8,
@@ -73,6 +79,14 @@ class Grouping:
     marker: str
 
 
+@dataclass(frozen=True)
+class SolverSpec:
+    key: str
+    label: str
+    solve_fn: object
+    color: str
+
+
 _SCENARIOS = (
     Scenario("identical", "#2b7be0"),
     Scenario("divergent", "#e02b2b"),
@@ -83,8 +97,15 @@ _GROUPINGS = (
     Grouping("sorted", "sorted", "--", "s"),
 )
 
+_SOLVERS = (
+    SolverSpec("rodas5", "my rodas5", rodas5_solve, "#2b7be0"),
+    SolverSpec("rodas5ckn", "numba-cuda rodas5", rodas5ckn_solve, "#f0a202"),
+)
+
 _CSV_FIELDS = (
     "gpu",
+    "solver_key",
+    "solver",
     "case_key",
     "batch_size",
     "solve_time_ms",
@@ -129,28 +150,43 @@ def format_stats(row: dict) -> str:
     )
 
 
-def solve_with_stats(y0: np.ndarray, params: np.ndarray, batch_size: int | None):
-    return rodas5_solve(
+def solve_with_stats(
+    solver: SolverSpec, y0: np.ndarray, params: np.ndarray, batch_size: int | None
+):
+    if solver.key == "rodas5ckn":
+        return solver.solve_fn(
+            robertson.ode_fn_numba_cuda,
+            robertson.jac_fn_numba_cuda,
+            y0=y0,
+            t_span=_T_SPAN,
+            params=params,
+            batch_size=batch_size,
+            return_stats=True,
+            **_SOLVER_KWARGS,
+        )
+    return solver.solve_fn(
         robertson.ode_fn,
         y0=jnp.asarray(y0, dtype=jnp.float64),
         t_span=_T_SPAN,
         params=params,
         batch_size=batch_size,
         return_stats=True,
-        **_SOLVER_KWARGS,
+        **_LOCAL_SOLVER_KWARGS,
     )
 
 
 def time_solve_with_stats(
-    y0: np.ndarray, params: np.ndarray, batch_size: int | None
+    solver: SolverSpec, y0: np.ndarray, params: np.ndarray, batch_size: int | None
 ) -> tuple[float, dict]:
-    ms, result = time_blocked(lambda: solve_with_stats(y0, params, batch_size), _N_RUNS)
+    ms, result = time_blocked(
+        lambda: solve_with_stats(solver, y0, params, batch_size), _N_RUNS
+    )
     _, stats = result
     return ms, summarize_stats(stats)
 
 
 def active_attempt_order(y0: np.ndarray, params: np.ndarray) -> np.ndarray:
-    _, stats = solve_with_stats(y0, params, batch_size=None)
+    _, stats = solve_with_stats(_SOLVERS[0], y0, params, batch_size=None)
     jax.block_until_ready(stats)
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
     rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
@@ -184,6 +220,7 @@ def iter_cases():
 
 def collect_row(
     gpu_name: str,
+    solver: SolverSpec,
     scenario: Scenario,
     grouping: Grouping,
     y0: np.ndarray,
@@ -191,17 +228,20 @@ def collect_row(
     batch_size: int,
 ) -> dict | None:
     print(
-        f"  {scenario.key:<12} {grouping.label:<6} batch_size={batch_size:>6} ...",
+        f"  {solver.label:<18} {scenario.key:<12} {grouping.label:<6} "
+        f"batch_size={batch_size:>6} ...",
         end=" ",
         flush=True,
     )
     try:
-        ms, stats = time_solve_with_stats(y0, params, batch_size)
+        ms, stats = time_solve_with_stats(solver, y0, params, batch_size)
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
     row = {
         "gpu": gpu_name,
+        "solver_key": solver.key,
+        "solver": solver.label,
         "case_key": f"{scenario.key}_{grouping.key}",
         "batch_size": int(batch_size),
         "solve_time_ms": float(ms),
@@ -217,26 +257,29 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     for scenario, grouping in iter_cases():
         base_y0, base_params = robertson.make_scenario(scenario.key, _N_TRAJ)
         case_key = f"{scenario.key}_{grouping.key}"
-        case_cache = gpu_cache.setdefault(case_key, {})
         y0, params = order_scenario_data(base_y0, base_params, scenario, grouping)
         print(f"{scenario.key} / {grouping.label}:")
-        for bs in _BATCH_SIZES:
-            bs_key = str(int(bs))
-            cached = case_cache.get(bs_key)
-            if is_complete_row(cached):
-                row = cached
-                print(
-                    f"  {scenario.key:<12} {grouping.label:<6} "
-                    f"batch_size={bs:>6} ... (cached) "
-                    f"{format_stats(row)}"
-                )
-            else:
-                row = collect_row(gpu_name, scenario, grouping, y0, params, int(bs))
-                case_cache[bs_key] = row
-                save_cache(_CACHE_PATH, cache)
-            if row is not None:
-                rows.append(row)
-        print()
+        for solver in _SOLVERS:
+            solver_cache = gpu_cache.setdefault(f"{case_key}_{solver.key}", {})
+            for bs in _BATCH_SIZES:
+                bs_key = str(int(bs))
+                cached = solver_cache.get(bs_key)
+                if is_complete_row(cached):
+                    row = cached
+                    print(
+                        f"  {solver.label:<18} {scenario.key:<12} "
+                        f"{grouping.label:<6} batch_size={bs:>6} ... (cached) "
+                        f"{format_stats(row)}"
+                    )
+                else:
+                    row = collect_row(
+                        gpu_name, solver, scenario, grouping, y0, params, int(bs)
+                    )
+                    solver_cache[bs_key] = row
+                    save_cache(_CACHE_PATH, cache)
+                if row is not None:
+                    rows.append(row)
+            print()
     return rows
 
 
@@ -249,10 +292,14 @@ def save_csv(rows: list[dict], path: Path) -> None:
 
 
 def rows_for_case(
-    rows: list[dict], case_key: str
+    rows: list[dict], solver_key: str, case_key: str
 ) -> tuple[list[int], list[float], list[float]]:
     case_rows = sorted(
-        (row for row in rows if row["case_key"] == case_key),
+        (
+            row
+            for row in rows
+            if row["solver_key"] == solver_key and row["case_key"] == case_key
+        ),
         key=lambda row: row["batch_size"],
     )
     return (
@@ -268,31 +315,32 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
 
     time_handles = []
     waste_handles = []
-    for scenario, grouping in iter_cases():
-        case_key = f"{scenario.key}_{grouping.key}"
-        xs, times_ms, wasted = rows_for_case(rows, case_key)
-        if not xs:
-            continue
-        label = f"{scenario.key} / {grouping.label}"
-        (time_line,) = ax_time.plot(
-            xs,
-            times_ms,
-            color=scenario.color,
-            linestyle=grouping.linestyle,
-            marker=grouping.marker,
-            label=f"time: {label}",
-        )
-        (waste_line,) = ax_waste.plot(
-            xs,
-            wasted,
-            color=scenario.color,
-            linestyle=":",
-            marker=grouping.marker,
-            alpha=0.85,
-            label=f"waste: {label}",
-        )
-        time_handles.append(time_line)
-        waste_handles.append(waste_line)
+    for solver in _SOLVERS:
+        for scenario, grouping in iter_cases():
+            case_key = f"{scenario.key}_{grouping.key}"
+            xs, times_ms, wasted = rows_for_case(rows, solver.key, case_key)
+            if not xs:
+                continue
+            label = f"{solver.label} / {scenario.key} / {grouping.label}"
+            (time_line,) = ax_time.plot(
+                xs,
+                times_ms,
+                color=solver.color,
+                linestyle=grouping.linestyle,
+                marker=grouping.marker,
+                label=f"time: {label}",
+            )
+            (waste_line,) = ax_waste.plot(
+                xs,
+                wasted,
+                color=solver.color,
+                linestyle=":",
+                marker=grouping.marker,
+                alpha=0.85,
+                label=f"waste: {label}",
+            )
+            time_handles.append(time_line)
+            waste_handles.append(waste_line)
 
     ax_time.set_xscale("log")
     ax_time.set_yscale("log")

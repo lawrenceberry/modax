@@ -32,6 +32,7 @@ from scripts.benchmark_common import (
     time_blocked,
 )
 from solvers.tsit5 import solve as tsit5_solve
+from solvers.tsit5ckn import solve as tsit5ckn_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -47,6 +48,9 @@ _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 # (key, label, color, marker, solve_fn)
 _LOCAL_JAX_SOLVER_DEFS = [
     ("local_tsit5", "my tsit5", "#2b7be0", "o", tsit5_solve),
+]
+_CUSTOM_KERNEL_SOLVER_DEFS = [
+    ("tsit5ckn", "numba-cuda tsit5", "#f0a202", "P", tsit5ckn_solve),
 ]
 _REFERENCE_JAX_SOLVER_DEFS = [
     ("diffrax_tsit5", "diffrax tsit5", "#2ba84a", "s", diffrax_tsit5_solve),
@@ -79,6 +83,20 @@ def time_local_jax_solver(solve_fn, y0, params) -> float:
             y0=y0,
             t_span=_T_SPAN,
             params=params,
+            **_SOLVER_KWARGS,
+        )
+
+    ms, _ = time_blocked(run, _N_RUNS)
+    return ms
+
+
+def time_custom_kernel_solver(solve_fn, y0, params) -> float:
+    def run():
+        return solve_fn(
+            lorenz.ode_fn_numba_cuda,
+            y0=np.asarray(y0),
+            t_span=_T_SPAN,
+            params=np.asarray(params),
             **_SOLVER_KWARGS,
         )
 
@@ -124,6 +142,19 @@ def make_solver_specs() -> list[SolverSpec]:
             timing_fn=lambda y0, params, fn=fn: time_local_jax_solver(fn, y0, params),
         )
         for key, label, color, marker, fn in _LOCAL_JAX_SOLVER_DEFS
+    ]
+    specs += [
+        SolverSpec(
+            key=key,
+            label=label,
+            color=color,
+            marker=marker,
+            linestyle="-",
+            timing_fn=lambda y0, params, fn=fn: time_custom_kernel_solver(
+                fn, y0, params
+            ),
+        )
+        for key, label, color, marker, fn in _CUSTOM_KERNEL_SOLVER_DEFS
     ]
     specs += [
         SolverSpec(

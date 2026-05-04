@@ -189,10 +189,7 @@ def _make_kernel(ode_fn, n_vars: int):
 
             for j in range(n_vars):
                 u[i, j] = y[i, j] + dt_use * (
-                    A51 * k1[i, j]
-                    + A52 * k2[i, j]
-                    + A53 * k3[i, j]
-                    + A54 * k4[i, j]
+                    A51 * k1[i, j] + A52 * k2[i, j] + A53 * k3[i, j] + A54 * k4[i, j]
                 )
             ode_fn(u, t + C5 * dt_use, params, k5, i)
 

@@ -1,3 +1,0 @@
-gpu,solver_key,solver,solve_time_ms,result_type,error
-NVIDIA GeForce RTX 4070 SUPER,rodas5,JAX rodas5,41.92723850719631,ArrayImpl,
-NVIDIA GeForce RTX 4070 SUPER,rodas5ckn,numba-cuda,7.429174520075321,ndarray,
