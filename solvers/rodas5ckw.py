@@ -36,7 +36,7 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
         k7: wp.array2d(dtype=wp.float64),
         k8: wp.array2d(dtype=wp.float64),
         jac: wp.array3d(dtype=wp.float64),
-        lu_mat: wp.array3d(dtype=wp.float64),
+        lu_mat: wp.array3d(dtype=wp.float32),
         piv_arr: wp.array2d(dtype=wp.int32),
     ):
         i = wp.tid()
@@ -76,9 +76,9 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
                 col = wp.int32(0)
                 while col < n_vars:
                     if row == col:
-                        lu_mat[i, row, col] = dtgamma_inv - jac[i, row, col]
+                        lu_mat[i, row, col] = wp.float32(dtgamma_inv - jac[i, row, col])
                     else:
-                        lu_mat[i, row, col] = -jac[i, row, col]
+                        lu_mat[i, row, col] = wp.float32(-jac[i, row, col])
                     col += wp.int32(1)
                 row += wp.int32(1)
 
@@ -97,9 +97,9 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
                 if piv_k != k_lu:
                     col = wp.int32(0)
                     while col < n_vars:
-                        tmp = lu_mat[i, k_lu, col]
+                        tmp_lu = lu_mat[i, k_lu, col]
                         lu_mat[i, k_lu, col] = lu_mat[i, piv_k, col]
-                        lu_mat[i, piv_k, col] = tmp
+                        lu_mat[i, piv_k, col] = tmp_lu
                         col += wp.int32(1)
                 m = k_lu + wp.int32(1)
                 while m < n_vars:
@@ -120,24 +120,27 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             while k_lu < n_vars:
                 piv_k = piv_arr[i, k_lu]
                 if piv_k != k_lu:
-                    tmp = k1[i, k_lu]
+                    tmp_k = k1[i, k_lu]
                     k1[i, k_lu] = k1[i, piv_k]
-                    k1[i, piv_k] = tmp
+                    k1[i, piv_k] = tmp_k
                 k_lu += wp.int32(1)
             k_lu = wp.int32(1)
             while k_lu < n_vars:
+                rhs_k = wp.float32(k1[i, k_lu])
                 col = wp.int32(0)
                 while col < k_lu:
-                    k1[i, k_lu] -= lu_mat[i, k_lu, col] * k1[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k1[i, col])
                     col += wp.int32(1)
+                k1[i, k_lu] = wp.float64(rhs_k)
                 k_lu += wp.int32(1)
             k_lu -= wp.int32(1)
             while k_lu >= wp.int32(0):
+                rhs_k = wp.float32(k1[i, k_lu])
                 col = k_lu + wp.int32(1)
                 while col < n_vars:
-                    k1[i, k_lu] -= lu_mat[i, k_lu, col] * k1[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k1[i, col])
                     col += wp.int32(1)
-                k1[i, k_lu] /= lu_mat[i, k_lu, k_lu]
+                k1[i, k_lu] = wp.float64(rhs_k / lu_mat[i, k_lu, k_lu])
                 k_lu -= wp.int32(1)
 
             # ---- Stage 2 ----
@@ -154,24 +157,27 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             while k_lu < n_vars:
                 piv_k = piv_arr[i, k_lu]
                 if piv_k != k_lu:
-                    tmp = k2[i, k_lu]
+                    tmp_k = k2[i, k_lu]
                     k2[i, k_lu] = k2[i, piv_k]
-                    k2[i, piv_k] = tmp
+                    k2[i, piv_k] = tmp_k
                 k_lu += wp.int32(1)
             k_lu = wp.int32(1)
             while k_lu < n_vars:
+                rhs_k = wp.float32(k2[i, k_lu])
                 col = wp.int32(0)
                 while col < k_lu:
-                    k2[i, k_lu] -= lu_mat[i, k_lu, col] * k2[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k2[i, col])
                     col += wp.int32(1)
+                k2[i, k_lu] = wp.float64(rhs_k)
                 k_lu += wp.int32(1)
             k_lu -= wp.int32(1)
             while k_lu >= wp.int32(0):
+                rhs_k = wp.float32(k2[i, k_lu])
                 col = k_lu + wp.int32(1)
                 while col < n_vars:
-                    k2[i, k_lu] -= lu_mat[i, k_lu, col] * k2[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k2[i, col])
                     col += wp.int32(1)
-                k2[i, k_lu] /= lu_mat[i, k_lu, k_lu]
+                k2[i, k_lu] = wp.float64(rhs_k / lu_mat[i, k_lu, k_lu])
                 k_lu -= wp.int32(1)
 
             # ---- Stage 3 ----
@@ -192,24 +198,27 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             while k_lu < n_vars:
                 piv_k = piv_arr[i, k_lu]
                 if piv_k != k_lu:
-                    tmp = k3[i, k_lu]
+                    tmp_k = k3[i, k_lu]
                     k3[i, k_lu] = k3[i, piv_k]
-                    k3[i, piv_k] = tmp
+                    k3[i, piv_k] = tmp_k
                 k_lu += wp.int32(1)
             k_lu = wp.int32(1)
             while k_lu < n_vars:
+                rhs_k = wp.float32(k3[i, k_lu])
                 col = wp.int32(0)
                 while col < k_lu:
-                    k3[i, k_lu] -= lu_mat[i, k_lu, col] * k3[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k3[i, col])
                     col += wp.int32(1)
+                k3[i, k_lu] = wp.float64(rhs_k)
                 k_lu += wp.int32(1)
             k_lu -= wp.int32(1)
             while k_lu >= wp.int32(0):
+                rhs_k = wp.float32(k3[i, k_lu])
                 col = k_lu + wp.int32(1)
                 while col < n_vars:
-                    k3[i, k_lu] -= lu_mat[i, k_lu, col] * k3[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k3[i, col])
                     col += wp.int32(1)
-                k3[i, k_lu] /= lu_mat[i, k_lu, k_lu]
+                k3[i, k_lu] = wp.float64(rhs_k / lu_mat[i, k_lu, k_lu])
                 k_lu -= wp.int32(1)
 
             # ---- Stage 4 ----
@@ -234,24 +243,27 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             while k_lu < n_vars:
                 piv_k = piv_arr[i, k_lu]
                 if piv_k != k_lu:
-                    tmp = k4[i, k_lu]
+                    tmp_k = k4[i, k_lu]
                     k4[i, k_lu] = k4[i, piv_k]
-                    k4[i, piv_k] = tmp
+                    k4[i, piv_k] = tmp_k
                 k_lu += wp.int32(1)
             k_lu = wp.int32(1)
             while k_lu < n_vars:
+                rhs_k = wp.float32(k4[i, k_lu])
                 col = wp.int32(0)
                 while col < k_lu:
-                    k4[i, k_lu] -= lu_mat[i, k_lu, col] * k4[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k4[i, col])
                     col += wp.int32(1)
+                k4[i, k_lu] = wp.float64(rhs_k)
                 k_lu += wp.int32(1)
             k_lu -= wp.int32(1)
             while k_lu >= wp.int32(0):
+                rhs_k = wp.float32(k4[i, k_lu])
                 col = k_lu + wp.int32(1)
                 while col < n_vars:
-                    k4[i, k_lu] -= lu_mat[i, k_lu, col] * k4[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k4[i, col])
                     col += wp.int32(1)
-                k4[i, k_lu] /= lu_mat[i, k_lu, k_lu]
+                k4[i, k_lu] = wp.float64(rhs_k / lu_mat[i, k_lu, k_lu])
                 k_lu -= wp.int32(1)
 
             # ---- Stage 5 ----
@@ -278,24 +290,27 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             while k_lu < n_vars:
                 piv_k = piv_arr[i, k_lu]
                 if piv_k != k_lu:
-                    tmp = k5[i, k_lu]
+                    tmp_k = k5[i, k_lu]
                     k5[i, k_lu] = k5[i, piv_k]
-                    k5[i, piv_k] = tmp
+                    k5[i, piv_k] = tmp_k
                 k_lu += wp.int32(1)
             k_lu = wp.int32(1)
             while k_lu < n_vars:
+                rhs_k = wp.float32(k5[i, k_lu])
                 col = wp.int32(0)
                 while col < k_lu:
-                    k5[i, k_lu] -= lu_mat[i, k_lu, col] * k5[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k5[i, col])
                     col += wp.int32(1)
+                k5[i, k_lu] = wp.float64(rhs_k)
                 k_lu += wp.int32(1)
             k_lu -= wp.int32(1)
             while k_lu >= wp.int32(0):
+                rhs_k = wp.float32(k5[i, k_lu])
                 col = k_lu + wp.int32(1)
                 while col < n_vars:
-                    k5[i, k_lu] -= lu_mat[i, k_lu, col] * k5[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k5[i, col])
                     col += wp.int32(1)
-                k5[i, k_lu] /= lu_mat[i, k_lu, k_lu]
+                k5[i, k_lu] = wp.float64(rhs_k / lu_mat[i, k_lu, k_lu])
                 k_lu -= wp.int32(1)
 
             # ---- Stage 6 ----
@@ -324,24 +339,27 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             while k_lu < n_vars:
                 piv_k = piv_arr[i, k_lu]
                 if piv_k != k_lu:
-                    tmp = k6[i, k_lu]
+                    tmp_k = k6[i, k_lu]
                     k6[i, k_lu] = k6[i, piv_k]
-                    k6[i, piv_k] = tmp
+                    k6[i, piv_k] = tmp_k
                 k_lu += wp.int32(1)
             k_lu = wp.int32(1)
             while k_lu < n_vars:
+                rhs_k = wp.float32(k6[i, k_lu])
                 col = wp.int32(0)
                 while col < k_lu:
-                    k6[i, k_lu] -= lu_mat[i, k_lu, col] * k6[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k6[i, col])
                     col += wp.int32(1)
+                k6[i, k_lu] = wp.float64(rhs_k)
                 k_lu += wp.int32(1)
             k_lu -= wp.int32(1)
             while k_lu >= wp.int32(0):
+                rhs_k = wp.float32(k6[i, k_lu])
                 col = k_lu + wp.int32(1)
                 while col < n_vars:
-                    k6[i, k_lu] -= lu_mat[i, k_lu, col] * k6[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k6[i, col])
                     col += wp.int32(1)
-                k6[i, k_lu] /= lu_mat[i, k_lu, k_lu]
+                k6[i, k_lu] = wp.float64(rhs_k / lu_mat[i, k_lu, k_lu])
                 k_lu -= wp.int32(1)
 
             # u = u6 + k6  (now u7)
@@ -367,24 +385,27 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             while k_lu < n_vars:
                 piv_k = piv_arr[i, k_lu]
                 if piv_k != k_lu:
-                    tmp = k7[i, k_lu]
+                    tmp_k = k7[i, k_lu]
                     k7[i, k_lu] = k7[i, piv_k]
-                    k7[i, piv_k] = tmp
+                    k7[i, piv_k] = tmp_k
                 k_lu += wp.int32(1)
             k_lu = wp.int32(1)
             while k_lu < n_vars:
+                rhs_k = wp.float32(k7[i, k_lu])
                 col = wp.int32(0)
                 while col < k_lu:
-                    k7[i, k_lu] -= lu_mat[i, k_lu, col] * k7[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k7[i, col])
                     col += wp.int32(1)
+                k7[i, k_lu] = wp.float64(rhs_k)
                 k_lu += wp.int32(1)
             k_lu -= wp.int32(1)
             while k_lu >= wp.int32(0):
+                rhs_k = wp.float32(k7[i, k_lu])
                 col = k_lu + wp.int32(1)
                 while col < n_vars:
-                    k7[i, k_lu] -= lu_mat[i, k_lu, col] * k7[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k7[i, col])
                     col += wp.int32(1)
-                k7[i, k_lu] /= lu_mat[i, k_lu, k_lu]
+                k7[i, k_lu] = wp.float64(rhs_k / lu_mat[i, k_lu, k_lu])
                 k_lu -= wp.int32(1)
 
             # u = u7 + k7  (now u8)
@@ -411,24 +432,27 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             while k_lu < n_vars:
                 piv_k = piv_arr[i, k_lu]
                 if piv_k != k_lu:
-                    tmp = k8[i, k_lu]
+                    tmp_k = k8[i, k_lu]
                     k8[i, k_lu] = k8[i, piv_k]
-                    k8[i, piv_k] = tmp
+                    k8[i, piv_k] = tmp_k
                 k_lu += wp.int32(1)
             k_lu = wp.int32(1)
             while k_lu < n_vars:
+                rhs_k = wp.float32(k8[i, k_lu])
                 col = wp.int32(0)
                 while col < k_lu:
-                    k8[i, k_lu] -= lu_mat[i, k_lu, col] * k8[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k8[i, col])
                     col += wp.int32(1)
+                k8[i, k_lu] = wp.float64(rhs_k)
                 k_lu += wp.int32(1)
             k_lu -= wp.int32(1)
             while k_lu >= wp.int32(0):
+                rhs_k = wp.float32(k8[i, k_lu])
                 col = k_lu + wp.int32(1)
                 while col < n_vars:
-                    k8[i, k_lu] -= lu_mat[i, k_lu, col] * k8[i, col]
+                    rhs_k -= lu_mat[i, k_lu, col] * wp.float32(k8[i, col])
                     col += wp.int32(1)
-                k8[i, k_lu] /= lu_mat[i, k_lu, k_lu]
+                k8[i, k_lu] = wp.float64(rhs_k / lu_mat[i, k_lu, k_lu])
                 k_lu -= wp.int32(1)
 
             # Error estimate = k8; y_new = u8 + k8
@@ -521,7 +545,7 @@ def solve(
         wp.empty((n, n_vars), dtype=wp.float64, device=device) for _ in range(10)
     ]
     jac_dev = wp.empty((n, n_vars, n_vars), dtype=wp.float64, device=device)
-    lu_dev = wp.empty((n, n_vars, n_vars), dtype=wp.float64, device=device)
+    lu_dev = wp.empty((n, n_vars, n_vars), dtype=wp.float32, device=device)
     piv_dev = wp.empty((n, n_vars), dtype=wp.int32, device=device)
 
     wp.launch(
