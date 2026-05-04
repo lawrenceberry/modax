@@ -56,6 +56,7 @@ from solvers.rodas5ckns import (
 )
 from solvers.rodas5ckp import solve as rodas5ckp_solve
 from solvers.rodas5ckw import solve as rodas5ckw_solve
+from solvers.rodas5skwp import solve as rodas5skwp_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -71,6 +72,7 @@ _COLORS = {
     "rodas5": "#7b3fb2",
     "rodas5ckp": "#2b7be0",
     "rodas5ckw": "#e02b2b",
+    "rodas5skwp": "#c94f7c",
     "rodas5ckno": "#7a8b99",
     "rodas5cknp": "#2ba84a",
     "rodas5ckns": "#f0a202",
@@ -244,6 +246,9 @@ _SOLVERS = (
     SolverSpec("rodas5ckp", "Pallas/Triton", rodas5ckp_solve, kind="pallas"),
     SolverSpec("rodas5ckw", "NVIDIA Warp", rodas5ckw_solve, kind="custom_kernel"),
     SolverSpec(
+        "rodas5skwp", "NVIDIA Warp tiled", rodas5skwp_solve, kind="custom_kernel"
+    ),
+    SolverSpec(
         "rodas5ckno", "numba-cuda original", rodas5ckno_solve, kind="custom_kernel"
     ),
     SolverSpec(
@@ -276,7 +281,7 @@ def make_inputs(spec: SolverSpec, dim: int):
             np.ones(_N_TRAJ, dtype=np.float64),
         ]
     )
-    if spec.key == "rodas5ckw":
+    if spec.key in ("rodas5ckw", "rodas5skwp"):
         return ode_fn_vdp_warp, jac_fn_vdp_warp, y0_np, params_np
     return ode_fn_vdp_numba, jac_fn_vdp_numba, y0_np, params_np
 
