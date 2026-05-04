@@ -2,8 +2,8 @@
 
 Sweeps ODE dimension from 4 to 64 (n_osc = 2 to 32) and records compilation
 time (first call) and solve time (mean of N_RUNS calls) for the pure JAX
-Rodas5 solver plus the Pallas and numba-cuda custom-kernel backends. Outputs a
-CSV and a two-panel log-log plot named after the GPU.
+Rodas5 solver plus the numba-cuda custom-kernel backend. Outputs a CSV and a
+two-panel log-log plot named after the GPU.
 
 Usage:
     uv run python scripts/8_rodas5ck_vdp_scaling/main.py
@@ -41,7 +41,6 @@ from solvers.rodas5ckn import (
     run_prepared as rodas5ckn_run_prepared,
 )
 from solvers.rodas5ckn import solve as rodas5ckn_solve
-from solvers.rodas5ckp import solve as rodas5ckp_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -55,46 +54,12 @@ _CACHE_PATH = _SCRIPT_DIR / "results.json"
 
 _COLORS = {
     "rodas5": "#7b3fb2",
-    "rodas5ckp": "#2b7be0",
     "rodas5ckn": "#2ba84a",
 }
 
 _MU = 100.0
 _D = 10.0
 _OMEGA = 1.0
-
-
-# ---------------------------------------------------------------------------
-# Pallas backend — factory that captures n_osc in a closure
-# ---------------------------------------------------------------------------
-
-
-def make_vdp_ode_fn_pallas(n_osc: int) -> Callable:
-    """Return a Pallas-compatible ode_fn for n_osc coupled VdP oscillators.
-
-    The returned function uses _PallasMatrix column indexing (y[:, j] gives a
-    1D block_size vector) and returns a tuple of 2*n_osc such vectors.
-    All test dimensions are powers of 2, so no padding is needed.
-    """
-    MU, D, OMEGA = _MU, _D, _OMEGA
-
-    def ode_fn(y, t, p):
-        del t
-        scale = p[:, 0]
-        xs = [y[:, 2 * k] for k in range(n_osc)]
-        vs = [y[:, 2 * k + 1] for k in range(n_osc)]
-        result = []
-        for k in range(n_osc):
-            kp1 = (k + 1) % n_osc
-            km1 = (k - 1) % n_osc
-            lap = xs[kp1] - 2.0 * xs[k] + xs[km1]
-            result.append(vs[k])
-            result.append(
-                scale * MU * (1.0 - xs[k] ** 2) * vs[k] - OMEGA**2 * xs[k] + D * lap
-            )
-        return tuple(result)
-
-    return ode_fn
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +123,6 @@ class SolverSpec:
 
 _SOLVERS = (
     SolverSpec("rodas5", "pure JAX rodas5.py", rodas5_solve, kind="jax"),
-    SolverSpec("rodas5ckp", "Pallas/Triton", rodas5ckp_solve, kind="pallas"),
     SolverSpec("rodas5ckn", "numba-cuda", rodas5ckn_solve, kind="custom_kernel"),
 )
 
@@ -173,11 +137,6 @@ def make_inputs(spec: SolverSpec, dim: int):
         params = jnp.ones((_N_TRAJ, 1), dtype=jnp.float64)
         return ode_fn, None, jnp.asarray(y0_np), params
 
-    if spec.kind == "pallas":
-        ode_fn = make_vdp_ode_fn_pallas(n_osc)
-        params = jnp.ones((_N_TRAJ, 1), dtype=jnp.float64)
-        return ode_fn, None, jnp.asarray(y0_np), params
-
     params_np = np.column_stack(
         [
             np.full(_N_TRAJ, float(n_osc), dtype=np.float64),
@@ -188,7 +147,7 @@ def make_inputs(spec: SolverSpec, dim: int):
 
 
 def run_solver(spec: SolverSpec, ode_fn, jac_fn, y0, params):
-    if spec.kind in ("jax", "pallas"):
+    if spec.kind == "jax":
         return spec.solve_fn(
             ode_fn, y0=y0, t_span=_T_SPAN, params=params, **_SOLVER_KWARGS
         )

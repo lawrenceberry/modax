@@ -6,7 +6,6 @@ from numba import cuda
 from reference.systems.python import lorenz
 from solvers.tsit5 import solve as tsit5_solve
 from solvers.tsit5ckn import solve as tsit5ckn_solve
-from solvers.tsit5ckp import solve as tsit5ckp_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -17,11 +16,6 @@ _KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 def _decay_jax(y, t, p):
     del t
     return jnp.array([-p[0] * y[0], -p[1] * y[1]], dtype=y.dtype)
-
-
-def _decay_pallas(y, t, p):
-    del t
-    return -p[:, 0] * y[:, 0], -p[:, 1] * y[:, 1]
 
 
 @cuda.jit(device=True)
@@ -41,18 +35,6 @@ def _baseline(y0, params):
     return np.asarray(out.block_until_ready())
 
 
-def test_tsit5ckp_matches_lorenz_baseline():
-    y0, params = lorenz.make_scenario("divergent", 4)
-    actual = tsit5ckp_solve(
-        lorenz.ode_fn_pallas,
-        y0=y0,
-        t_span=_T_SPAN,
-        params=params,
-        **_KWARGS,
-    )
-    np.testing.assert_allclose(np.asarray(actual), _baseline(y0, params), rtol=1e-10)
-
-
 def test_tsit5ckn_matches_lorenz_baseline():
     y0, params = lorenz.make_scenario("divergent", 4)
     actual = tsit5ckn_solve(
@@ -63,14 +45,6 @@ def test_tsit5ckn_matches_lorenz_baseline():
         **_KWARGS,
     )
     np.testing.assert_allclose(actual, _baseline(y0, params), rtol=1e-10)
-
-
-def test_tsit5ckp_supports_generic_jax_rhs():
-    y0 = jnp.array([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float64)
-    params = jnp.array([[0.4, 0.5], [0.6, 0.7]], dtype=jnp.float64)
-    expected = tsit5_solve(_decay_jax, y0, _T_SPAN, params, **_KWARGS)
-    actual = tsit5ckp_solve(_decay_pallas, y0, _T_SPAN, params, **_KWARGS)
-    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), rtol=1e-12)
 
 
 def test_tsit5ckn_supports_generic_device_rhs():

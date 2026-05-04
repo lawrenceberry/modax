@@ -26,14 +26,6 @@ def ode_fn(y, t, p):
     )
 
 
-def ode_fn_pallas(y, t, p):
-    del t
-    dy0 = -p[:, 0] * y[:, 0] + p[:, 1] * y[:, 1] * y[:, 2]
-    dy1 = p[:, 0] * y[:, 0] - p[:, 1] * y[:, 1] * y[:, 2] - p[:, 2] * y[:, 1] ** 2
-    dy2 = p[:, 2] * y[:, 1] ** 2
-    return dy0, dy1, dy2, dy0 * 0.0  # padded to n_vars_work=4
-
-
 @cuda.jit(device=True)
 def ode_fn_numba_cuda(y, t, p, dy, i):
     dy[i, 0] = -p[i, 0] * y[i, 0] + p[i, 1] * y[i, 1] * y[i, 2]

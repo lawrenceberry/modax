@@ -1,32 +1,5 @@
 {
   "NVIDIA GeForce RTX 4070 SUPER": {
-    "rodas5ckp": {
-      "4": {
-        "compile_ms": 888.6932281311601,
-        "solve_ms": 1.2590944999828935,
-        "error": ""
-      },
-      "8": {
-        "compile_ms": 8042.510099010542,
-        "solve_ms": 2.0790004869922996,
-        "error": ""
-      },
-      "16": {
-        "compile_ms": null,
-        "solve_ms": null,
-        "error": "Too slow"
-      },
-      "32": {
-        "compile_ms": null,
-        "solve_ms": null,
-        "error": "Too slow"
-      },
-      "64": {
-        "compile_ms": null,
-        "solve_ms": null,
-        "error": "Too slow"
-      }
-    },
     "rodas5": {
       "4": {
         "compile_ms": 501.34767685085535,

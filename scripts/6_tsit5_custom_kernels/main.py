@@ -23,7 +23,6 @@ from reference.systems.python import lorenz
 from scripts.benchmark_common import get_gpu_name, output_paths
 from solvers.tsit5 import solve as tsit5_solve
 from solvers.tsit5ckn import solve as tsit5ckn_solve
-from solvers.tsit5ckp import solve as tsit5ckp_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -43,7 +42,6 @@ class SolverSpec:
 
 _SOLVERS = (
     SolverSpec("tsit5", "JAX tsit5", tsit5_solve, lorenz.ode_fn),
-    SolverSpec("tsit5ckp", "Pallas/Triton", tsit5ckp_solve, lorenz.ode_fn_pallas),
     SolverSpec("tsit5ckn", "numba-cuda", tsit5ckn_solve, lorenz.ode_fn_numba_cuda),
 )
 

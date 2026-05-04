@@ -53,17 +53,6 @@ def ode_fn(y, t, p):
     )
 
 
-def ode_fn_pallas(y, t, p):
-    del t
-    sigma = 10.0
-    beta = 8.0 / 3.0
-    rho = p[:, 0]
-    dy0 = sigma * (y[:, 1] - y[:, 0])
-    dy1 = y[:, 0] * (rho - y[:, 2]) - y[:, 1]
-    dy2 = y[:, 0] * y[:, 1] - beta * y[:, 2]
-    return dy0, dy1, dy2, _zeros_like(dy0)
-
-
 @cuda.jit(device=True)
 def ode_fn_numba_cuda(y, t, p, dy, i):
     sigma = 10.0
