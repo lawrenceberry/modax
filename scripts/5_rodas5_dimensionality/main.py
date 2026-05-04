@@ -4,8 +4,9 @@ Sweeps ODE dimension from 2 to 128 (n_osc = 1 to 64) on a log scale with a
 fixed ensemble of 1000 trajectories and records solve time for the local Rodas5
 solver with fp32/fp64 LU precision, Diffrax Kvaerno5, and Julia Rodas5 with
 both DiffEqGPU ensemble backends. EnsembleGPUKernel failures (expected for
-large dimensions) are stored as null and omitted from the plot. Outputs a CSV
-and a log-log plot named after the GPU.
+large dimensions) are stored as null and omitted from the plot. Runs both
+"identical" and "divergent" scenarios; outputs a CSV and log-log plot per
+scenario, named after the GPU and scenario.
 
 Usage:
     uv run python scripts/5_rodas5_dimensionality/main.py
@@ -30,8 +31,8 @@ from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from reference.systems.python import coupled_vdp_lattice
 from scripts.benchmark_common import (
     get_gpu_name,
+    gpu_slug,
     load_cache,
-    output_paths,
     save_cache,
     time_blocked,
 )
@@ -126,11 +127,12 @@ def jac_fn_vdp_numba(y, t, p, jac, i):
             jac[i, 2 * k + 1, 2 * km1] = diffusion
 
 
-def time_local_rodas5(dim: int, *, lu_precision: str) -> float:
+def time_local_rodas5(dim: int, *, lu_precision: str, scenario: str) -> float:
     n_osc = dim // 2
-    ode_fn, y0 = coupled_vdp_lattice.make_system(n_osc)
-    y0_batch = jnp.broadcast_to(y0, (_ENSEMBLE_SIZE, dim))
-    params = jnp.ones((_ENSEMBLE_SIZE, 1), dtype=jnp.float64)
+    ode_fn, _ = coupled_vdp_lattice.make_system(n_osc)
+    y0_batch, params = coupled_vdp_lattice.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
+    y0_batch = jnp.asarray(y0_batch)
+    params = jnp.asarray(params)
 
     def run():
         return rodas5_solve(
@@ -146,14 +148,13 @@ def time_local_rodas5(dim: int, *, lu_precision: str) -> float:
     return ms
 
 
-def time_custom_kernel_rodas5(dim: int, solve_fn) -> float:
+def time_custom_kernel_rodas5(dim: int, solve_fn, *, scenario: str) -> float:
     n_osc = dim // 2
-    _, y0 = coupled_vdp_lattice.make_system(n_osc)
-    y0_batch = np.broadcast_to(np.asarray(y0), (_ENSEMBLE_SIZE, dim)).copy()
+    y0_batch, scale_params = coupled_vdp_lattice.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     params = np.column_stack(
         [
             np.full(_ENSEMBLE_SIZE, float(n_osc), dtype=np.float64),
-            np.ones(_ENSEMBLE_SIZE, dtype=np.float64),
+            scale_params[:, 0],
         ]
     )
 
@@ -171,15 +172,17 @@ def time_custom_kernel_rodas5(dim: int, solve_fn) -> float:
     return ms
 
 
-def time_diffrax(dim: int, solve_fn) -> float:
+def time_diffrax(dim: int, solve_fn, *, scenario: str) -> float:
     n_osc = dim // 2
-    ode_fn, y0 = coupled_vdp_lattice.make_system(n_osc)
-    params = jnp.ones((_ENSEMBLE_SIZE, 1), dtype=jnp.float64)
+    ode_fn, _ = coupled_vdp_lattice.make_system(n_osc)
+    y0_batch, params = coupled_vdp_lattice.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
+    y0_batch = jnp.asarray(y0_batch)
+    params = jnp.asarray(params)
 
     def run():
         return solve_fn(
             ode_fn,
-            y0=y0,
+            y0=y0_batch,
             t_span=_T_SPAN,
             params=params,
             **_SOLVER_KWARGS,
@@ -189,13 +192,12 @@ def time_diffrax(dim: int, solve_fn) -> float:
     return ms
 
 
-def time_julia_solver(dim: int, solve, *, ensemble_backend: str) -> float:
+def time_julia_solver(dim: int, solve, *, ensemble_backend: str, scenario: str) -> float:
     n_osc = dim // 2
-    _, y0 = coupled_vdp_lattice.make_system(n_osc)
-    params = np.ones((_ENSEMBLE_SIZE, 1), dtype=np.float64)
+    y0_batch, params = coupled_vdp_lattice.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     result = solve._julia_solve_with_timing(
         "coupled_vdp_lattice",
-        np.asarray(y0),
+        y0_batch,
         _T_SPAN,
         params,
         system_config={"n_osc": n_osc},
@@ -205,7 +207,7 @@ def time_julia_solver(dim: int, solve, *, ensemble_backend: str) -> float:
     return result.solve_time_s * 1000
 
 
-def make_solver_specs() -> list[SolverSpec]:
+def make_solver_specs(scenario: str) -> list[SolverSpec]:
     specs = [
         SolverSpec(
             key=key,
@@ -213,8 +215,8 @@ def make_solver_specs() -> list[SolverSpec]:
             color=color,
             marker=marker,
             linestyle="-",
-            timing_fn=lambda dim, precision=lu_precision: time_local_rodas5(
-                dim, lu_precision=precision
+            timing_fn=lambda dim, precision=lu_precision, sc=scenario: time_local_rodas5(
+                dim, lu_precision=precision, scenario=sc
             ),
         )
         for key, label, color, marker, lu_precision in _LOCAL_SOLVER_DEFS
@@ -226,7 +228,7 @@ def make_solver_specs() -> list[SolverSpec]:
             color=color,
             marker=marker,
             linestyle="-",
-            timing_fn=lambda dim, fn=fn: time_custom_kernel_rodas5(dim, fn),
+            timing_fn=lambda dim, fn=fn, sc=scenario: time_custom_kernel_rodas5(dim, fn, scenario=sc),
         )
         for key, label, color, marker, fn in _CUSTOM_KERNEL_SOLVER_DEFS
     )
@@ -237,7 +239,7 @@ def make_solver_specs() -> list[SolverSpec]:
             color=color,
             marker=marker,
             linestyle="-",
-            timing_fn=lambda dim, fn=fn: time_diffrax(dim, fn),
+            timing_fn=lambda dim, fn=fn, sc=scenario: time_diffrax(dim, fn, scenario=sc),
         )
         for key, label, color, marker, fn in _JAX_SOLVER_DEFS
     )
@@ -251,8 +253,8 @@ def make_solver_specs() -> list[SolverSpec]:
                     color=color,
                     marker=marker,
                     linestyle=linestyle,
-                    timing_fn=lambda dim, s=solve, b=backend: time_julia_solver(
-                        dim, s, ensemble_backend=b
+                    timing_fn=lambda dim, s=solve, b=backend, sc=scenario: time_julia_solver(
+                        dim, s, ensemble_backend=b, scenario=sc
                     ),
                 )
             )
@@ -283,12 +285,24 @@ def drop_none(rows: list[_Row], solver_key: str) -> tuple[list[int], list[float]
     return list(dims), list(times)
 
 
-def run_benchmarks(specs: list[SolverSpec], gpu_name: str, cache: dict) -> list[_Row]:
-    gpu_cache = cache.setdefault(gpu_name, {})
+def _migrate_cache(cache: dict) -> dict:
+    for gpu, gpu_data in cache.items():
+        first_val = next(iter(gpu_data.values()), None)
+        if isinstance(first_val, dict) and not any(
+            k in coupled_vdp_lattice.SCENARIOS for k in gpu_data
+        ):
+            cache[gpu] = {"identical": gpu_data}
+    return cache
+
+
+def run_benchmarks(
+    specs: list[SolverSpec], gpu_name: str, cache: dict, scenario: str
+) -> list[_Row]:
+    scenario_cache = cache.setdefault(gpu_name, {}).setdefault(scenario, {})
     rows: list[_Row] = []
     for spec in specs:
         print(f"\n{spec.label}:")
-        solver_cache = gpu_cache.setdefault(spec.key, {})
+        solver_cache = scenario_cache.setdefault(spec.key, {})
         for dim in _DIMENSIONS:
             dim_key = str(dim)
             if dim_key in solver_cache:
@@ -317,6 +331,7 @@ def plot(
     specs: list[SolverSpec],
     gpu_name: str,
     output_path: Path,
+    scenario: str,
 ) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
     for spec in specs:
@@ -335,7 +350,9 @@ def plot(
     ax.set_yscale("log")
     ax.set_xlabel("ODE dimension")
     ax.set_ylabel("Solve time (ms)")
-    ax.set_title(f"Rodas5 dimensionality — coupled VDP lattice — {gpu_name}")
+    ax.set_title(
+        f"Rodas5 dimensionality — {scenario} — coupled VDP lattice — {gpu_name}"
+    )
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_DIMENSIONS)
     ax.set_xticklabels([str(d) for d in _DIMENSIONS], rotation=45, ha="right")
@@ -345,17 +362,27 @@ def plot(
     print(f"Plot saved to {output_path}")
 
 
+def _scenario_output_paths(gpu_name: str, scenario: str) -> tuple[Path, Path]:
+    slug = gpu_slug(gpu_name)
+    return (
+        _SCRIPT_DIR / f"results-{slug}-{scenario}.csv",
+        _SCRIPT_DIR / f"plot-{slug}-{scenario}.png",
+    )
+
+
 def main() -> None:
     gpu_name = get_gpu_name()
     print(f"GPU: {gpu_name}\n")
 
-    cache = load_cache(_CACHE_PATH)
-    specs = make_solver_specs()
-    rows = run_benchmarks(specs, gpu_name, cache)
+    cache = _migrate_cache(load_cache(_CACHE_PATH))
 
-    csv_path, plot_path = output_paths(_SCRIPT_DIR, gpu_name)
-    save_csv(rows, csv_path)
-    plot(rows, specs, gpu_name, plot_path)
+    for scenario in coupled_vdp_lattice.SCENARIOS:
+        print(f"\n=== Scenario: {scenario} ===\n")
+        specs = make_solver_specs(scenario)
+        rows = run_benchmarks(specs, gpu_name, cache, scenario)
+        csv_path, plot_path = _scenario_output_paths(gpu_name, scenario)
+        save_csv(rows, csv_path)
+        plot(rows, specs, gpu_name, plot_path, scenario)
 
 
 if __name__ == "__main__":

@@ -5,11 +5,13 @@ import numpy as np
 
 N_OSC = 35
 N_VARS = 2 * N_OSC
+N_PARAMS = 1
 MU = 100.0
 D = 10.0
 OMEGA = 1.0
 TIMES = jnp.array((0.0, 0.25, 0.5, 0.75, 1.0), dtype=jnp.float64)
 Y0 = jnp.array([2.0, 0.0] * N_OSC, dtype=jnp.float64)
+PARAMS = jnp.array([1.0], dtype=jnp.float64)
 
 
 def ode_fn(y, t, p):
@@ -40,9 +42,33 @@ def make_system(n_osc: int):
     return ode_fn, y0
 
 
-def make_params(size: int) -> jnp.ndarray:
-    """Return identical global damping-scale parameters."""
-    return jnp.ones((size, 1), dtype=jnp.float64)
+def make_params(size: int, seed: int = 42) -> np.ndarray:
+    """Return damping-scale parameters with ±20% uniform perturbation."""
+    rng = np.random.default_rng(seed)
+    return np.array(1.0 + 0.2 * (2.0 * rng.random((size, 1)) - 1.0), dtype=np.float64)
+
+
+SCENARIOS = ("identical", "divergent")
+
+
+def make_scenario(
+    scenario: str, n_osc: int, size: int, seed: int = 42
+) -> tuple[np.ndarray, np.ndarray]:
+    n_vars = 2 * n_osc
+    if scenario == "identical":
+        y0 = np.broadcast_to(
+            np.array([2.0, 0.0] * n_osc, dtype=np.float64), (size, n_vars)
+        ).copy()
+        return y0, np.ones((size, N_PARAMS), dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    amplitudes = rng.uniform(0.25, 3.0, size=(size, n_osc))
+    signs = rng.choice(np.array([-1.0, 1.0]), size=(size, n_osc))
+    x = amplitudes * signs
+    v = rng.normal(0.0, 2.0, size=(size, n_osc))
+    y0 = np.empty((size, n_vars), dtype=np.float64)
+    y0[:, 0::2] = x
+    y0[:, 1::2] = v
+    return y0, make_params(size, seed)
 
 
 def make_initial_conditions(kind: str, size: int, seed: int = 42) -> np.ndarray:

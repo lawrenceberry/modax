@@ -232,7 +232,10 @@ def _solve_with_diffrax(
     tf = float(save_times[-1])
     dt0 = first_step if first_step is not None else (tf - t0) * 1e-6
 
-    def _solve_one(p):
+    if y0_arr.ndim == 1:
+        y0_arr = np.broadcast_to(y0_arr, (params_arr.shape[0], y0_arr.shape[0])).copy()
+
+    def _solve_one(y0_single, p):
         term = diffrax.ODETerm(lambda t, y, args: ode_fn(y, t, p))
         solver = diffrax.Kvaerno5()
         controller = diffrax.PIDController(rtol=rtol, atol=atol)
@@ -242,14 +245,14 @@ def _solve_with_diffrax(
             t0=t0,
             t1=tf,
             dt0=dt0,
-            y0=y0_arr,
+            y0=y0_single,
             stepsize_controller=controller,
             max_steps=max_steps,
             saveat=diffrax.SaveAt(ts=save_times),
         )
         return sol.ys
 
-    return jax.jit(jax.vmap(_solve_one), backend=backend)(params_arr)
+    return jax.jit(jax.vmap(_solve_one), backend=backend)(y0_arr, params_arr)
 
 
 @functools.partial(jax.jit, static_argnames=("ode_fn", "max_steps"))
@@ -270,8 +273,8 @@ def solve(
     ----------
     ode_fn : callable
         ODE right-hand side with signature ``ode_fn(y, t, params) -> dy/dt``.
-    y0 : array, shape [n_vars]
-        Shared initial state.
+    y0 : array, shape [n_vars] or [N, n_vars]
+        Shared initial state (broadcast to all trajectories) or per-trajectory.
     t_span : array-like, shape [n_save]
         Strictly increasing array of save times (len >= 2).
     params : array, shape [N, ...]
@@ -283,6 +286,8 @@ def solve(
     """
     y0_arr = jnp.asarray(y0, dtype=jnp.float64)
     params_arr = jnp.asarray(params)
+    if y0_arr.ndim == 1:
+        y0_arr = jnp.broadcast_to(y0_arr, (params_arr.shape[0], y0_arr.shape[0]))
     save_times = jnp.asarray(t_span, dtype=jnp.float64)
     dt0 = jnp.float64(
         first_step
@@ -292,7 +297,7 @@ def solve(
     t0 = save_times[0]
     tf = save_times[-1]
 
-    def _solve_one(p):
+    def _solve_one(y0_single, p):
         term = diffrax.ODETerm(lambda t, y, args: ode_fn(y, t, p))
         solver = diffrax.Kvaerno5()
         controller = diffrax.PIDController(rtol=rtol, atol=atol)
@@ -302,14 +307,14 @@ def solve(
             t0=t0,
             t1=tf,
             dt0=dt0,
-            y0=y0_arr,
+            y0=y0_single,
             stepsize_controller=controller,
             max_steps=max_steps,
             saveat=diffrax.SaveAt(ts=save_times),
         )
         return sol.ys
 
-    return jax.vmap(_solve_one)(params_arr)
+    return jax.vmap(_solve_one)(y0_arr, params_arr)
 
 
 def solve_cached(

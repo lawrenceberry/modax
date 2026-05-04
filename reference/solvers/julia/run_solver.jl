@@ -112,7 +112,9 @@ function main(args)
     CUDA.functional(true)
 
     system_config = parse_config(system_config_path)
-    y0 = vec(read_c_order_array(y0_bin, y0_meta))
+    y0_raw = read_c_order_array(y0_bin, y0_meta)
+    y0_batched = ndims(y0_raw) == 2
+    y0 = y0_batched ? vec(y0_raw[1, :]) : vec(y0_raw)
     params = read_c_order_array(params_bin, params_meta)
     t_span = vec(read_c_order_array(t_span_bin, t_span_meta))
     n_trajectories = size(params, 1)
@@ -125,6 +127,7 @@ function main(args)
         prob_func=(prob, i, repeat) -> SciMLBase.remake(
             prob,
             p=remake_param(params, i, ensemble_backend),
+            u0=y0_batched ? vec(y0_raw[i, :]) : prob.u0,
         ),
         safetycopy=false,
     )
