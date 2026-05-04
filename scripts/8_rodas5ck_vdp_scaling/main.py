@@ -42,7 +42,6 @@ from solvers.rodas5ckn import (
     run_prepared as rodas5ckn_run_prepared,
 )
 from solvers.rodas5ckn import solve as rodas5ckn_solve
-from solvers.rodas5ckno import solve as rodas5ckno_solve
 from solvers.rodas5ckp import solve as rodas5ckp_solve
 from solvers.rodas5ckw import solve as rodas5ckw_solve
 from solvers.rodas5skwp import solve as rodas5skwp_solve
@@ -62,7 +61,6 @@ _COLORS = {
     "rodas5ckp": "#2b7be0",
     "rodas5ckw": "#e02b2b",
     "rodas5skwp": "#c94f7c",
-    "rodas5ckno": "#7a8b99",
     "rodas5ckn": "#2ba84a",
 }
 
@@ -236,12 +234,7 @@ _SOLVERS = (
     SolverSpec(
         "rodas5skwp", "NVIDIA Warp tiled", rodas5skwp_solve, kind="custom_kernel"
     ),
-    SolverSpec(
-        "rodas5ckno", "numba-cuda original", rodas5ckno_solve, kind="custom_kernel"
-    ),
-    SolverSpec(
-        "rodas5ckn", "numba-cuda combined", rodas5ckn_solve, kind="custom_kernel"
-    ),
+    SolverSpec("rodas5ckn", "numba-cuda", rodas5ckn_solve, kind="custom_kernel"),
 )
 
 
