@@ -1,4 +1,4 @@
-"""Warp-divergence benchmark: Rodas5 on Robertson, varying batch_size.
+"""SIMT-divergence benchmark: Rodas5 on Robertson, varying batch_size.
 
 This benchmark measures wall time and wasted lane work when Robertson
 trajectories with increasingly varied initial conditions share a Rodas5

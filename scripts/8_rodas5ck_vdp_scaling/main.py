@@ -2,8 +2,8 @@
 
 Sweeps ODE dimension from 4 to 64 (n_osc = 2 to 32) and records compilation
 time (first call) and solve time (mean of N_RUNS calls) for the pure JAX
-Rodas5 solver plus the Pallas, NVIDIA Warp, and numba-cuda custom-kernel
-backends. Outputs a CSV and a two-panel log-log plot named after the GPU.
+Rodas5 solver plus the Pallas and numba-cuda custom-kernel backends. Outputs a
+CSV and a two-panel log-log plot named after the GPU.
 
 Usage:
     uv run python scripts/8_rodas5ck_vdp_scaling/main.py
@@ -22,7 +22,6 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-import warp as wp
 from numba import cuda
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -43,8 +42,6 @@ from solvers.rodas5ckn import (
 )
 from solvers.rodas5ckn import solve as rodas5ckn_solve
 from solvers.rodas5ckp import solve as rodas5ckp_solve
-from solvers.rodas5ckw import solve as rodas5ckw_solve
-from solvers.rodas5skwp import solve as rodas5skwp_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -59,8 +56,6 @@ _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _COLORS = {
     "rodas5": "#7b3fb2",
     "rodas5ckp": "#2b7be0",
-    "rodas5ckw": "#e02b2b",
-    "rodas5skwp": "#c94f7c",
     "rodas5ckn": "#2ba84a",
 }
 
@@ -100,72 +95,6 @@ def make_vdp_ode_fn_pallas(n_osc: int) -> Callable:
         return tuple(result)
 
     return ode_fn
-
-
-# ---------------------------------------------------------------------------
-# Warp backend — module-level @wp.func; n_osc read from params[:, 0]
-# ---------------------------------------------------------------------------
-
-
-@wp.func
-def ode_fn_vdp_warp(
-    y: wp.array2d(dtype=wp.float64),
-    t: wp.float64,
-    p: wp.array2d(dtype=wp.float64),
-    dy: wp.array2d(dtype=wp.float64),
-    i: wp.int32,
-):
-    n_osc = wp.int32(p[i, 0])
-    scale = p[i, 1]
-    MU = wp.float64(100.0)
-    D = wp.float64(10.0)
-    for k in range(n_osc):
-        kp1 = (k + 1) % n_osc
-        km1 = (k + n_osc - 1) % n_osc
-        xk = y[i, 2 * k]
-        vk = y[i, 2 * k + 1]
-        lap = y[i, 2 * kp1] - wp.float64(2.0) * xk + y[i, 2 * km1]
-        dy[i, 2 * k] = vk
-        dy[i, 2 * k + 1] = scale * MU * (wp.float64(1.0) - xk * xk) * vk - xk + D * lap
-
-
-@wp.func
-def jac_fn_vdp_warp(
-    y: wp.array2d(dtype=wp.float64),
-    t: wp.float64,
-    p: wp.array2d(dtype=wp.float64),
-    jac: wp.array3d(dtype=wp.float64),
-    i: wp.int32,
-):
-    n_osc = wp.int32(p[i, 0])
-    n_vars = wp.int32(2) * n_osc
-    scale = p[i, 1]
-    MU = wp.float64(100.0)
-    D = wp.float64(10.0)
-    for r in range(n_vars):
-        for c in range(n_vars):
-            jac[i, r, c] = wp.float64(0.0)
-    for k in range(n_osc):
-        kp1 = (k + 1) % n_osc
-        km1 = (k + n_osc - 1) % n_osc
-        xk = y[i, 2 * k]
-        vk = y[i, 2 * k + 1]
-        # dx_k/dt = v_k
-        jac[i, 2 * k, 2 * k + 1] = wp.float64(1.0)
-        # dv_k/dt w.r.t. x_k: scale*MU*(-2*xk)*vk - OMEGA^2 - 2*D
-        jac[i, 2 * k + 1, 2 * k] = (
-            scale * MU * (wp.float64(-2.0) * xk) * vk
-            - wp.float64(1.0)
-            - wp.float64(2.0) * D
-        )
-        # dv_k/dt w.r.t. v_k: scale*MU*(1 - xk^2)
-        jac[i, 2 * k + 1, 2 * k + 1] = scale * MU * (wp.float64(1.0) - xk * xk)
-        # coupling from laplacian: D at x_{k+1} and x_{k-1}
-        if kp1 == km1:  # n_osc == 2 edge case: both neighbours are the same
-            jac[i, 2 * k + 1, 2 * kp1] = wp.float64(2.0) * D
-        else:
-            jac[i, 2 * k + 1, 2 * kp1] = D
-            jac[i, 2 * k + 1, 2 * km1] = D
 
 
 # ---------------------------------------------------------------------------
@@ -230,10 +159,6 @@ class SolverSpec:
 _SOLVERS = (
     SolverSpec("rodas5", "pure JAX rodas5.py", rodas5_solve, kind="jax"),
     SolverSpec("rodas5ckp", "Pallas/Triton", rodas5ckp_solve, kind="pallas"),
-    SolverSpec("rodas5ckw", "NVIDIA Warp", rodas5ckw_solve, kind="custom_kernel"),
-    SolverSpec(
-        "rodas5skwp", "NVIDIA Warp tiled", rodas5skwp_solve, kind="custom_kernel"
-    ),
     SolverSpec("rodas5ckn", "numba-cuda", rodas5ckn_solve, kind="custom_kernel"),
 )
 
@@ -259,8 +184,6 @@ def make_inputs(spec: SolverSpec, dim: int):
             np.ones(_N_TRAJ, dtype=np.float64),
         ]
     )
-    if spec.key in ("rodas5ckw", "rodas5skwp"):
-        return ode_fn_vdp_warp, jac_fn_vdp_warp, y0_np, params_np
     return ode_fn_vdp_numba, jac_fn_vdp_numba, y0_np, params_np
 
 
@@ -288,7 +211,7 @@ def block_until_ready(value) -> None:
     elif isinstance(value, dict):
         for item in value.values():
             block_until_ready(item)
-    # numpy arrays (warp/numba) are already synchronised on return
+    # numpy arrays from custom kernels are already synchronised on return
 
 
 def time_with_compile(run_fn: Callable, n_runs: int) -> tuple[float, float]:

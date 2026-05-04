@@ -1,4 +1,4 @@
-"""Warp-divergence benchmark: Tsit5 on Lorenz, varying batch_size.
+"""SIMT-divergence benchmark: Tsit5 on Lorenz, varying batch_size.
 
 This benchmark measures both wall time and the lane work wasted when
 trajectories with different adaptive step counts share a while-loop batch.

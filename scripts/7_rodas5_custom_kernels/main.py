@@ -24,7 +24,6 @@ from scripts.benchmark_common import get_gpu_name, output_paths
 from solvers.rodas5 import solve as rodas5_solve
 from solvers.rodas5ckn import solve as rodas5ckn_solve
 from solvers.rodas5ckp import solve as rodas5ckp_solve
-from solvers.rodas5ckw import solve as rodas5ckw_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -46,13 +45,6 @@ class SolverSpec:
 _SOLVERS = (
     SolverSpec("rodas5", "JAX rodas5", rodas5_solve, robertson.ode_fn),
     SolverSpec("rodas5ckp", "Pallas/Triton", rodas5ckp_solve, robertson.ode_fn_pallas),
-    SolverSpec(
-        "rodas5ckw",
-        "NVIDIA Warp",
-        rodas5ckw_solve,
-        robertson.ode_fn_warp,
-        robertson.jac_fn_warp,
-    ),
     SolverSpec(
         "rodas5ckn",
         "numba-cuda",

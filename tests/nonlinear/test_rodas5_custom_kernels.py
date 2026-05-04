@@ -6,7 +6,6 @@ from reference.systems.python import robertson
 from solvers.rodas5 import solve as rodas5_solve
 from solvers.rodas5ckn import solve as rodas5ckn_solve
 from solvers.rodas5ckp import solve as rodas5ckp_solve
-from solvers.rodas5ckw import solve as rodas5ckw_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -38,19 +37,6 @@ def test_rodas5ckp_matches_robertson_baseline():
     np.testing.assert_allclose(
         np.asarray(actual), _baseline(y0, params), **_CUSTOM_KERNEL_ASSERT
     )
-
-
-def test_rodas5ckw_matches_robertson_baseline():
-    y0, params = robertson.make_scenario("divergent", 4)
-    actual = rodas5ckw_solve(
-        robertson.ode_fn_warp,
-        robertson.jac_fn_warp,
-        y0=y0,
-        t_span=_T_SPAN,
-        params=params,
-        **_KWARGS,
-    )
-    np.testing.assert_allclose(actual, _baseline(y0, params), **_CUSTOM_KERNEL_ASSERT)
 
 
 def test_rodas5ckn_matches_robertson_baseline():
