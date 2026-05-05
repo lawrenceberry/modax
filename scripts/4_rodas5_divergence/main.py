@@ -1,23 +1,12 @@
-"""SIMT-divergence benchmark: Rodas5 on Robertson, varying batch_size.
+"""Robertson divergence-CV benchmark for Rodas5 solvers.
 
-This benchmark measures wall time and wasted lane work when Robertson
-trajectories with increasingly varied initial conditions share a Rodas5
-while-loop batch.
-
-Initial condition design
-------------------------
-
-The identical scenario pins (alpha=0.9, eps=0.1) for every trajectory,
-giving the hardest representative IC.
-
-The divergent scenario draws alpha ~ U(0, 0.9) with eps=0.1 fixed.  This
-creates a wide spread of step counts (low alpha is easy because there is
-little fuel left to sustain the reactions; high alpha approaches the
-identical hardest case) while guaranteeing no trajectory is harder than
-identical.
+Runs the Robertson system with 400,000 trajectories while sweeping the
+``make_scenario(..., divergence=...)`` knob. For each solver and divergence
+value, the benchmark records solve time and the actual distribution of accepted
+plus rejected Rodas5 steps.
 
 Usage:
-    uv run python scripts/4_rodas5_divergence/main.py
+    uv run python scripts/4_5_rodas5_robertson_divergence/main.py
 """
 
 import csv
@@ -32,6 +21,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
+from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from reference.systems.python import robertson
 from scripts.benchmark_common import (
     get_gpu_name,
@@ -45,15 +36,32 @@ from solvers.rodas5ckn import solve as rodas5ckn_solve
 
 jax.config.update("jax_enable_x64", True)
 
-_N_TRAJ = 400_000
+_N_TRAJ = 1_000
+_N_RUNS = 5
+_DIM = robertson.N_VARS
 _T_SPAN = robertson.TIMES
-_N_RUNS = 1
-_BATCH_SIZES = (10_000, 25_000, 50_000, 100_000, 200_000, 400_000)
-_SOLVER_KWARGS = {
-    "first_step": 1e-4,
-    "rtol": 1e-6,
-    "atol": 1e-8,
-}
+_DIVERGENCES = (
+    0.0,
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+    1.0,
+    1.25,
+    1.5,
+    2.0,
+    3.0,
+    4.0,
+    6.0,
+    8.0,
+)
+_SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
+_DIFFRAX_SOLVER_KWARGS = {**_SOLVER_KWARGS, "max_steps": 1_000_000}
 _LOCAL_SOLVER_KWARGS = {
     "first_step": 1e-4,
     "rtol": 1e-6,
@@ -64,222 +72,288 @@ _LOCAL_SOLVER_KWARGS = {
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 
-
-@dataclass(frozen=True)
-class Scenario:
-    key: str
-    color: str
-
-
-@dataclass(frozen=True)
-class Grouping:
-    key: str
-    label: str
-    linestyle: str
-    marker: str
+_CSV_FIELDS = (
+    "gpu",
+    "solver_key",
+    "solver",
+    "divergence",
+    "dim",
+    "ensemble_size",
+    "solve_time_ms",
+    "mean_steps",
+    "step_std",
+    "step_cv",
+    "normalized_solve_time_ms_per_step",
+    "step_variance",
+    "min_steps",
+    "max_steps",
+    "rejected_steps_mean",
+)
 
 
 @dataclass(frozen=True)
 class SolverSpec:
     key: str
     label: str
-    solve_fn: object
     color: str
+    marker: str
+    mode: str
+    ensemble_backend: str | None = None
+    sort_by_steps: bool = False
+    max_divergence: float | None = None
 
-
-_SCENARIOS = (
-    Scenario("identical", "#2b7be0"),
-    Scenario("divergent", "#e02b2b"),
-)
-
-_GROUPINGS = (
-    Grouping("random", "random", "-", "o"),
-    Grouping("sorted", "sorted", "--", "s"),
-)
 
 _SOLVERS = (
-    SolverSpec("rodas5", "my rodas5", rodas5_solve, "#2b7be0"),
-    SolverSpec("rodas5ckn", "numba-cuda rodas5", rodas5ckn_solve, "#f0a202"),
+    SolverSpec("rodas5_fp32_lu", "JAX Rodas5 fp32 LU", "#2b7be0", "o", "stats"),
+    SolverSpec("rodas5ckn", "numba-cuda Rodas5", "#f0a202", "s", "stats"),
+    SolverSpec(
+        "rodas5ckn_sorted",
+        "numba-cuda Rodas5 sorted",
+        "#f0a202",
+        "P",
+        "stats",
+        sort_by_steps=True,
+    ),
+    SolverSpec(
+        "diffrax_kvaerno5",
+        "Diffrax Kvaerno5",
+        "#2ba84a",
+        "^",
+        "timing",
+        max_divergence=1.5,
+    ),
+    SolverSpec(
+        "julia_rodas5_EnsembleGPUArray",
+        "Julia Rodas5 GPUArray",
+        "#9b59b6",
+        "D",
+        "julia",
+        "EnsembleGPUArray",
+    ),
+    SolverSpec(
+        "julia_rodas5_EnsembleGPUKernel",
+        "Julia Rodas5 GPUKernel",
+        "#d35400",
+        "v",
+        "julia",
+        "EnsembleGPUKernel",
+    ),
+    SolverSpec(
+        "julia_rodas5_EnsembleGPUKernel_sorted",
+        "Julia Rodas5 GPUKernel sorted",
+        "#d35400",
+        "X",
+        "julia",
+        "EnsembleGPUKernel",
+        True,
+        None,
+    ),
 )
 
-_CSV_FIELDS = (
-    "gpu",
-    "solver_key",
-    "solver",
-    "case_key",
-    "batch_size",
-    "solve_time_ms",
-    "total_lane_iterations",
-    "wasted_lane_iterations",
-    "min_batch_loop_iterations",
-    "max_batch_loop_iterations",
-    "wasted_lane_iteration_ratio",
-)
 
-
-def summarize_stats(stats: dict) -> dict[str, float | int]:
-    accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
-    rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
-    batch_loop_iterations = np.asarray(jax.device_get(stats["batch_loop_iterations"]))
-    valid_lanes = np.asarray(jax.device_get(stats["valid_lanes"]))
-    active_lane_iterations = int(np.sum(accepted_steps + rejected_steps))
-    total_lane_iterations = int(np.sum(batch_loop_iterations * valid_lanes))
-    wasted_lane_iterations = total_lane_iterations - active_lane_iterations
-    wasted_lane_iteration_ratio = (
-        wasted_lane_iterations / total_lane_iterations
-        if total_lane_iterations > 0
-        else 0.0
-    )
-    return {
-        "total_lane_iterations": total_lane_iterations,
-        "wasted_lane_iterations": int(wasted_lane_iterations),
-        "min_batch_loop_iterations": int(np.min(batch_loop_iterations)),
-        "max_batch_loop_iterations": int(np.max(batch_loop_iterations)),
-        "wasted_lane_iteration_ratio": float(wasted_lane_iteration_ratio),
-    }
-
-
-def format_stats(row: dict) -> str:
-    return (
-        f"{row['solve_time_ms']:.1f} ms, "
-        f"lanes={row['total_lane_iterations']}, "
-        f"wasted_lanes={row['wasted_lane_iterations']}, "
-        f"min_batch_steps={row['min_batch_loop_iterations']}, "
-        f"max_batch_steps={row['max_batch_loop_iterations']}, "
-        f"wasted={row['wasted_lane_iteration_ratio']:.3f}"
+def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
+    return robertson.make_scenario(
+        "divergent",
+        _N_TRAJ,
+        seed=42,
+        divergence=divergence,
     )
 
 
-def solve_with_stats(
-    solver: SolverSpec, y0: np.ndarray, params: np.ndarray, batch_size: int | None
-):
-    if solver.key == "rodas5ckn":
-        return solver.solve_fn(
+def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
+    if solver.key.startswith("rodas5ckn"):
+        return rodas5ckn_solve(
             robertson.ode_fn_numba_cuda,
             robertson.jac_fn_numba_cuda,
             y0=y0,
             t_span=_T_SPAN,
             params=params,
-            batch_size=batch_size,
             return_stats=True,
             **_SOLVER_KWARGS,
         )
-    return solver.solve_fn(
+
+    return rodas5_solve(
         robertson.ode_fn,
         y0=jnp.asarray(y0, dtype=jnp.float64),
         t_span=_T_SPAN,
-        params=params,
-        batch_size=batch_size,
+        params=jnp.asarray(params, dtype=jnp.float64),
         return_stats=True,
         **_LOCAL_SOLVER_KWARGS,
     )
 
 
-def time_solve_with_stats(
-    solver: SolverSpec, y0: np.ndarray, params: np.ndarray, batch_size: int | None
-) -> tuple[float, dict]:
-    ms, result = time_blocked(
-        lambda: solve_with_stats(solver, y0, params, batch_size), _N_RUNS
-    )
+def solve_timing_only(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
+    if solver.key == "diffrax_kvaerno5":
+        return diffrax_kvaerno5_solve(
+            robertson.ode_fn,
+            y0=jnp.asarray(y0, dtype=jnp.float64),
+            t_span=_T_SPAN,
+            params=jnp.asarray(params, dtype=jnp.float64),
+            **_DIFFRAX_SOLVER_KWARGS,
+        )
+    raise ValueError(f"unsupported timing-only solver: {solver.key}")
+
+
+def time_solve(
+    solver: SolverSpec, y0: np.ndarray, params: np.ndarray
+) -> tuple[float, dict | None]:
+    if solver.mode == "julia":
+        result = julia_rodas5_solve._julia_solve_with_timing(
+            "robertson",
+            y0,
+            _T_SPAN,
+            params,
+            ensemble_backend=solver.ensemble_backend,
+            **_SOLVER_KWARGS,
+        )
+        return result.solve_time_s * 1000, None
+    if solver.mode == "timing":
+        ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
+        return ms, None
+
+    ms, result = time_blocked(lambda: solve_with_stats(solver, y0, params), _N_RUNS)
     _, stats = result
-    return ms, summarize_stats(stats)
+    return ms, stats
 
 
-def active_attempt_order(y0: np.ndarray, params: np.ndarray) -> np.ndarray:
-    _, stats = solve_with_stats(_SOLVERS[0], y0, params, batch_size=None)
+def summarize_stats(stats: dict) -> dict[str, float | int]:
+    accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
+    rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
+    total_steps = accepted_steps + rejected_steps
+    mean_steps = float(np.mean(total_steps))
+    ddof = 1 if total_steps.size > 1 else 0
+    step_variance = float(np.var(total_steps, ddof=ddof))
+    step_std = float(np.sqrt(step_variance))
+    step_cv = step_std / mean_steps if mean_steps else 0.0
+    return {
+        "mean_steps": mean_steps,
+        "step_std": step_std,
+        "step_cv": float(step_cv),
+        "step_variance": step_variance,
+        "min_steps": int(np.min(total_steps)),
+        "max_steps": int(np.max(total_steps)),
+        "rejected_steps_mean": float(np.mean(rejected_steps)),
+    }
+
+
+def sort_by_attempted_steps(
+    y0: np.ndarray, params: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, dict[str, float | int]]:
+    _, stats = solve_with_stats(_SOLVERS[0], y0, params)
     jax.block_until_ready(stats)
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
     rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
     attempts = accepted_steps + rejected_steps
-    return np.argsort(attempts, kind="stable")
+    order = np.argsort(attempts, kind="stable")
+    return y0[order], params[order], summarize_stats(stats)
 
 
-def order_scenario_data(
-    y0: np.ndarray, params: np.ndarray, scenario: Scenario, grouping: Grouping
-) -> tuple[np.ndarray, np.ndarray]:
-    if grouping.key == "sorted":
-        order = active_attempt_order(y0, params)
-        return y0[order], params[order]
-    seed = sum(ord(c) for c in f"{scenario.key}:{grouping.key}")
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(y0.shape[0])
-    return y0[perm], params[perm]
+def stats_from_row(row: dict) -> dict[str, float | int]:
+    return {
+        "mean_steps": row["mean_steps"],
+        "step_std": row["step_std"],
+        "step_cv": row["step_cv"],
+        "step_variance": row["step_variance"],
+        "min_steps": row["min_steps"],
+        "max_steps": row["max_steps"],
+        "rejected_steps_mean": row["rejected_steps_mean"],
+    }
+
+
+def format_row(row: dict) -> str:
+    return (
+        f"{row['solve_time_ms']:.1f} ms, "
+        f"mean_steps={row['mean_steps']:.1f}, "
+        f"step_cv={row['step_cv']:.3f}, "
+        f"norm={row['normalized_solve_time_ms_per_step']:.4f} ms/step"
+    )
 
 
 def is_complete_row(value) -> bool:
     return isinstance(value, dict) and all(field in value for field in _CSV_FIELDS)
 
 
-def iter_cases():
-    for scenario in _SCENARIOS:
-        for grouping in _GROUPINGS:
-            if scenario.key == "identical" and grouping.key == "sorted":
-                continue
-            yield scenario, grouping
-
-
 def collect_row(
     gpu_name: str,
     solver: SolverSpec,
-    scenario: Scenario,
-    grouping: Grouping,
-    y0: np.ndarray,
-    params: np.ndarray,
-    batch_size: int,
+    divergence: float,
+    stats_summary: dict | None = None,
 ) -> dict | None:
     print(
-        f"  {solver.label:<18} {scenario.key:<12} {grouping.label:<6} "
-        f"batch_size={batch_size:>6} ...",
+        f"  {solver.label:<20} divergence={divergence:>4.2f} ...",
         end=" ",
         flush=True,
     )
+    y0, params = make_data(divergence)
+    if solver.sort_by_steps:
+        y0, params, sorted_stats_summary = sort_by_attempted_steps(y0, params)
+        if stats_summary is None:
+            stats_summary = sorted_stats_summary
     try:
-        ms, stats = time_solve_with_stats(solver, y0, params, batch_size)
+        ms, stats = time_solve(solver, y0, params)
     except Exception as exc:
-        print(f"FAILED ({exc})")
+        print(f"FAILED ({exc})", flush=True)
         return None
+
+    if stats is not None:
+        stats_summary = summarize_stats(stats)
+    elif stats_summary is None:
+        _, stats = solve_with_stats(_SOLVERS[0], y0, params)
+        jax.block_until_ready(stats)
+        stats_summary = summarize_stats(stats)
+
+    normalized = (
+        ms / stats_summary["mean_steps"] if stats_summary["mean_steps"] else 0.0
+    )
     row = {
         "gpu": gpu_name,
         "solver_key": solver.key,
         "solver": solver.label,
-        "case_key": f"{scenario.key}_{grouping.key}",
-        "batch_size": int(batch_size),
+        "divergence": float(divergence),
+        "dim": _DIM,
+        "ensemble_size": _N_TRAJ,
         "solve_time_ms": float(ms),
-        **stats,
+        **stats_summary,
+        "normalized_solve_time_ms_per_step": float(normalized),
     }
-    print(format_stats(row), flush=True)
+    print(format_row(row), flush=True)
     return row
 
 
 def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
-    for scenario, grouping in iter_cases():
-        base_y0, base_params = robertson.make_scenario(scenario.key, _N_TRAJ)
-        case_key = f"{scenario.key}_{grouping.key}"
-        y0, params = order_scenario_data(base_y0, base_params, scenario, grouping)
-        print(f"{scenario.key} / {grouping.label}:")
-        for solver in _SOLVERS:
-            solver_cache = gpu_cache.setdefault(f"{case_key}_{solver.key}", {})
-            for bs in _BATCH_SIZES:
-                bs_key = str(int(bs))
-                cached = solver_cache.get(bs_key)
-                if is_complete_row(cached):
-                    row = cached
-                    print(
-                        f"  {solver.label:<18} {scenario.key:<12} "
-                        f"{grouping.label:<6} batch_size={bs:>6} ... (cached) "
-                        f"{format_stats(row)}"
-                    )
-                else:
-                    row = collect_row(
-                        gpu_name, solver, scenario, grouping, y0, params, int(bs)
-                    )
-                    solver_cache[bs_key] = row
-                    save_cache(_CACHE_PATH, cache)
-                if row is not None:
-                    rows.append(row)
-            print()
+    for solver in _SOLVERS:
+        print(f"\n{solver.label}:")
+        solver_cache = gpu_cache.setdefault(solver.key, {})
+        for divergence in _DIVERGENCES:
+            divergence_key = f"{divergence:.6g}"
+            if solver.max_divergence is not None and divergence > solver.max_divergence:
+                print(
+                    f"  {solver.label:<20} divergence={divergence:>4.2f} ... "
+                    f"SKIPPED (divergence > {solver.max_divergence:g})",
+                    flush=True,
+                )
+                solver_cache.setdefault(divergence_key, None)
+                continue
+            cached = solver_cache.get(divergence_key)
+            if is_complete_row(cached):
+                row = cached
+                print(
+                    f"  {solver.label:<20} divergence={divergence:>4.2f} ... "
+                    f"(cached) {format_row(row)}",
+                    flush=True,
+                )
+            else:
+                local_row = gpu_cache.get("rodas5_fp32_lu", {}).get(divergence_key)
+                stats_summary = (
+                    stats_from_row(local_row) if is_complete_row(local_row) else None
+                )
+                row = collect_row(gpu_name, solver, divergence, stats_summary)
+                solver_cache[divergence_key] = row
+                save_cache(_CACHE_PATH, cache)
+            if row is not None:
+                rows.append(row)
     return rows
 
 
@@ -291,72 +365,36 @@ def save_csv(rows: list[dict], path: Path) -> None:
     print(f"Results saved to {path}")
 
 
-def rows_for_case(
-    rows: list[dict], solver_key: str, case_key: str
-) -> tuple[list[int], list[float], list[float]]:
-    case_rows = sorted(
-        (
-            row
-            for row in rows
-            if row["solver_key"] == solver_key and row["case_key"] == case_key
-        ),
-        key=lambda row: row["batch_size"],
-    )
-    return (
-        [row["batch_size"] for row in case_rows],
-        [row["solve_time_ms"] for row in case_rows],
-        [row["wasted_lane_iteration_ratio"] for row in case_rows],
+def rows_for_solver(rows: list[dict], solver_key: str) -> list[dict]:
+    return sorted(
+        (row for row in rows if row["solver_key"] == solver_key),
+        key=lambda row: row["divergence"],
     )
 
 
 def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
-    fig, ax_time = plt.subplots(figsize=(11, 6))
-    ax_waste = ax_time.twinx()
-
-    time_handles = []
-    waste_handles = []
+    fig, ax = plt.subplots(figsize=(8, 5.5))
     for solver in _SOLVERS:
-        for scenario, grouping in iter_cases():
-            case_key = f"{scenario.key}_{grouping.key}"
-            xs, times_ms, wasted = rows_for_case(rows, solver.key, case_key)
-            if not xs:
-                continue
-            label = f"{solver.label} / {scenario.key} / {grouping.label}"
-            (time_line,) = ax_time.plot(
-                xs,
-                times_ms,
-                color=solver.color,
-                linestyle=grouping.linestyle,
-                marker=grouping.marker,
-                label=f"time: {label}",
-            )
-            (waste_line,) = ax_waste.plot(
-                xs,
-                wasted,
-                color=solver.color,
-                linestyle=":",
-                marker=grouping.marker,
-                alpha=0.85,
-                label=f"waste: {label}",
-            )
-            time_handles.append(time_line)
-            waste_handles.append(waste_line)
+        solver_rows = rows_for_solver(rows, solver.key)
+        if not solver_rows:
+            continue
+        xs = [row["step_cv"] for row in solver_rows]
+        ys = [row["normalized_solve_time_ms_per_step"] for row in solver_rows]
+        ax.scatter(
+            xs,
+            ys,
+            color=solver.color,
+            marker=solver.marker,
+            s=42,
+            label=solver.label,
+        )
 
-    ax_time.set_xscale("log")
-    ax_time.set_yscale("log")
-    ax_time.set_xlabel("Batch size")
-    ax_time.set_ylabel("Solve time (ms)")
-    ax_waste.set_ylabel("Wasted lane-iteration ratio")
-    ax_waste.set_ylim(0.0, 1.0)
-    ax_time.set_title(
-        f"Rodas5 divergence - Robertson y0 + params variation - {gpu_name}"
-    )
-    ax_time.grid(True, which="both", linestyle="--", alpha=0.35)
-    ax_time.set_xticks(_BATCH_SIZES)
-    ax_time.set_xticklabels([str(bs) for bs in _BATCH_SIZES], rotation=45, ha="right")
-    handles = time_handles + waste_handles
-    labels = [handle.get_label() for handle in handles]
-    ax_time.legend(handles, labels, loc="upper left", fontsize=8, ncols=2)
+    ax.set_xlabel("Normalized standard deviation of attempted steps")
+    ax.set_ylabel("Solve time / mean attempted steps (ms)")
+    ax.set_yscale("log")
+    ax.set_title(f"Robertson Rodas5 divergence — {_N_TRAJ} trajectories — {gpu_name}")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {output_path}")
@@ -364,11 +402,11 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
 
 def main() -> None:
     gpu_name = get_gpu_name()
-    print(f"GPU: {gpu_name}\n")
+    print(f"GPU: {gpu_name}")
+    print(f"System: {_DIM}D Robertson, {_N_TRAJ} trajectories\n")
 
     cache = load_cache(_CACHE_PATH)
     rows = run_benchmarks(gpu_name, cache)
-
     csv_path, plot_path = output_paths(_SCRIPT_DIR, gpu_name)
     save_csv(rows, csv_path)
     plot(rows, gpu_name, plot_path)
