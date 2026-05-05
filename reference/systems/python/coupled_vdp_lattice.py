@@ -52,23 +52,48 @@ SCENARIOS = ("identical", "divergent")
 
 
 def make_scenario(
-    scenario: str, n_osc: int, size: int, seed: int = 42
+    scenario: str,
+    n_osc: int,
+    size: int,
+    seed: int = 42,
+    *,
+    divergence: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Return initial conditions and parameters for a named lattice scenario.
+
+    For ``"divergent"``, ``divergence`` controls how far each trajectory is
+    moved away from the synchronized baseline. ``0.0`` gives the identical
+    state, ``1.0`` gives the original divergent initial-condition distribution,
+    and larger values increase velocity spread and damping-scale variation.
+    """
     n_vars = 2 * n_osc
+    if not np.isfinite(divergence) or divergence < 0.0:
+        raise ValueError("divergence must be finite and non-negative")
+
     if scenario == "identical":
         y0 = np.broadcast_to(
             np.array([2.0, 0.0] * n_osc, dtype=np.float64), (size, n_vars)
         ).copy()
         return y0, np.ones((size, N_PARAMS), dtype=np.float64)
+    if scenario != "divergent":
+        raise ValueError(f"unknown scenario: {scenario}")
     rng = np.random.default_rng(seed)
     amplitudes = rng.uniform(0.25, 3.0, size=(size, n_osc))
     signs = rng.choice(np.array([-1.0, 1.0]), size=(size, n_osc))
-    x = amplitudes * signs
-    v = rng.normal(0.0, 2.0, size=(size, n_osc))
+    target_x = amplitudes * signs
+    position_divergence = min(divergence, 1.0)
+    x = 2.0 + position_divergence * (target_x - 2.0)
+    v = rng.normal(0.0, 2.0 * divergence, size=(size, n_osc))
     y0 = np.empty((size, n_vars), dtype=np.float64)
     y0[:, 0::2] = x
     y0[:, 1::2] = v
-    return y0, make_params(size, seed)
+
+    base_params = make_params(size, seed)
+    param_center = max(divergence, 1.0)
+    params = np.maximum(
+        param_center + divergence * (base_params - 1.0), 1e-6
+    ).astype(np.float64)
+    return y0, params
 
 
 def make_initial_conditions(kind: str, size: int, seed: int = 42) -> np.ndarray:
