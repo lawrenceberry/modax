@@ -21,6 +21,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
+from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from reference.systems.python import robertson
 from scripts.benchmark_common import (
     get_gpu_name,
@@ -59,6 +61,7 @@ _DIVERGENCES = (
     8.0,
 )
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
+_DIFFRAX_SOLVER_KWARGS = {**_SOLVER_KWARGS, "max_steps": 1_000_000}
 _LOCAL_SOLVER_KWARGS = {
     "first_step": 1e-4,
     "rtol": 1e-6,
@@ -94,11 +97,30 @@ class SolverSpec:
     label: str
     color: str
     marker: str
+    mode: str
+    ensemble_backend: str | None = None
 
 
 _SOLVERS = (
-    SolverSpec("rodas5_fp32_lu", "JAX Rodas5 fp32 LU", "#2b7be0", "o"),
-    SolverSpec("rodas5ckn", "numba-cuda Rodas5", "#f0a202", "s"),
+    SolverSpec("rodas5_fp32_lu", "JAX Rodas5 fp32 LU", "#2b7be0", "o", "stats"),
+    SolverSpec("rodas5ckn", "numba-cuda Rodas5", "#f0a202", "s", "stats"),
+    SolverSpec("diffrax_kvaerno5", "Diffrax Kvaerno5", "#2ba84a", "^", "timing"),
+    SolverSpec(
+        "julia_rodas5_EnsembleGPUArray",
+        "Julia Rodas5 GPUArray",
+        "#9b59b6",
+        "D",
+        "julia",
+        "EnsembleGPUArray",
+    ),
+    SolverSpec(
+        "julia_rodas5_EnsembleGPUKernel",
+        "Julia Rodas5 GPUKernel",
+        "#d35400",
+        "v",
+        "julia",
+        "EnsembleGPUKernel",
+    ),
 )
 
 
@@ -133,6 +155,40 @@ def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
     )
 
 
+def solve_timing_only(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
+    if solver.key == "diffrax_kvaerno5":
+        return diffrax_kvaerno5_solve(
+            robertson.ode_fn,
+            y0=jnp.asarray(y0, dtype=jnp.float64),
+            t_span=_T_SPAN,
+            params=jnp.asarray(params, dtype=jnp.float64),
+            **_DIFFRAX_SOLVER_KWARGS,
+        )
+    raise ValueError(f"unsupported timing-only solver: {solver.key}")
+
+
+def time_solve(
+    solver: SolverSpec, y0: np.ndarray, params: np.ndarray
+) -> tuple[float, dict | None]:
+    if solver.mode == "julia":
+        result = julia_rodas5_solve._julia_solve_with_timing(
+            "robertson",
+            y0,
+            _T_SPAN,
+            params,
+            ensemble_backend=solver.ensemble_backend,
+            **_SOLVER_KWARGS,
+        )
+        return result.solve_time_s * 1000, None
+    if solver.mode == "timing":
+        ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
+        return ms, None
+
+    ms, result = time_blocked(lambda: solve_with_stats(solver, y0, params), _N_RUNS)
+    _, stats = result
+    return ms, stats
+
+
 def summarize_stats(stats: dict) -> dict[str, float | int]:
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
     rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
@@ -153,6 +209,18 @@ def summarize_stats(stats: dict) -> dict[str, float | int]:
     }
 
 
+def stats_from_row(row: dict) -> dict[str, float | int]:
+    return {
+        "mean_steps": row["mean_steps"],
+        "step_std": row["step_std"],
+        "step_cv": row["step_cv"],
+        "step_variance": row["step_variance"],
+        "min_steps": row["min_steps"],
+        "max_steps": row["max_steps"],
+        "rejected_steps_mean": row["rejected_steps_mean"],
+    }
+
+
 def format_row(row: dict) -> str:
     return (
         f"{row['solve_time_ms']:.1f} ms, "
@@ -166,7 +234,12 @@ def is_complete_row(value) -> bool:
     return isinstance(value, dict) and all(field in value for field in _CSV_FIELDS)
 
 
-def collect_row(gpu_name: str, solver: SolverSpec, divergence: float) -> dict | None:
+def collect_row(
+    gpu_name: str,
+    solver: SolverSpec,
+    divergence: float,
+    stats_summary: dict | None = None,
+) -> dict | None:
     print(
         f"  {solver.label:<20} divergence={divergence:>4.2f} ...",
         end=" ",
@@ -174,13 +247,18 @@ def collect_row(gpu_name: str, solver: SolverSpec, divergence: float) -> dict | 
     )
     y0, params = make_data(divergence)
     try:
-        ms, result = time_blocked(lambda: solve_with_stats(solver, y0, params), _N_RUNS)
+        ms, stats = time_solve(solver, y0, params)
     except Exception as exc:
         print(f"FAILED ({exc})", flush=True)
         return None
 
-    _, stats = result
-    stats_summary = summarize_stats(stats)
+    if stats is not None:
+        stats_summary = summarize_stats(stats)
+    elif stats_summary is None:
+        _, stats = solve_with_stats(_SOLVERS[0], y0, params)
+        jax.block_until_ready(stats)
+        stats_summary = summarize_stats(stats)
+
     normalized = (
         ms / stats_summary["mean_steps"] if stats_summary["mean_steps"] else 0.0
     )
@@ -216,7 +294,11 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                     flush=True,
                 )
             else:
-                row = collect_row(gpu_name, solver, divergence)
+                local_row = gpu_cache.get("rodas5_fp32_lu", {}).get(divergence_key)
+                stats_summary = (
+                    stats_from_row(local_row) if is_complete_row(local_row) else None
+                )
+                row = collect_row(gpu_name, solver, divergence, stats_summary)
                 solver_cache[divergence_key] = row
                 save_cache(_CACHE_PATH, cache)
             if row is not None:
@@ -258,6 +340,7 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
 
     ax.set_xlabel("Normalized standard deviation of attempted steps")
     ax.set_ylabel("Solve time / mean attempted steps (ms)")
+    ax.set_yscale("log")
     ax.set_title(f"Robertson Rodas5 divergence — {_N_TRAJ} trajectories — {gpu_name}")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
