@@ -72,7 +72,15 @@ def make_params(size: int, seed: int = 42) -> jnp.ndarray:
     )
 
 
-def make_initial_conditions(size: int, seed: int = 42) -> jnp.ndarray:
+def _validate_divergence(divergence: float) -> float:
+    if not np.isfinite(divergence) or divergence < 0.0:
+        raise ValueError("divergence must be finite and non-negative")
+    return float(divergence)
+
+
+def make_initial_conditions(
+    size: int, seed: int = 42, *, divergence: float = 1.0
+) -> jnp.ndarray:
     """The Lorenz system is run with rho=0.5, which places it below the pitchfork
     bifurcation at rho=1. In this regime the origin is the unique globally stable
     fixed point, so every trajectory decays exponentially toward (0, 0, 0) with
@@ -87,14 +95,15 @@ def make_initial_conditions(size: int, seed: int = 42) -> jnp.ndarray:
     point far from the origin. The identical scenario places every trajectory
     there, so all share the same (maximum) step count and the batch shows zero
     divergence. The ic_large scenario scales each trajectory as _HARD_Y0 * (1-t)
-    for t ~ U(0, 1), moving it radially toward the origin. Because distance from
-    the origin is the sole driver of difficulty, this construction guarantees that
-    every ic_large trajectory is strictly easier than the identical base, and the
-    step counts span a continuous range from near-maximum (t -> 0) down to
-    near-zero (t -> 1).
+    for t ~ U(0, divergence), moving it radially toward and then, for
+    divergence > 1, past the origin. Because distance from the origin is the
+    main driver of difficulty, values up to 1 span from near-maximum
+    (t -> 0) down to near-zero (t -> 1), while larger divergence values add
+    trajectories that start far away on the opposite radial branch.
     """
+    divergence = _validate_divergence(divergence)
     rng = np.random.default_rng(seed)
-    t = rng.uniform(0.0, 1.0, size=(size, 1))
+    t = rng.uniform(0.0, divergence, size=(size, 1))
     return Y0 * (1.0 - t)
 
 
@@ -102,14 +111,20 @@ SCENARIOS = ("identical", "divergent")
 
 
 def make_scenario(
-    scenario: str, size: int, seed: int = 42
+    scenario: str, size: int, seed: int = 42, *, divergence: float = 1.0
 ) -> tuple[np.ndarray, np.ndarray]:
+    divergence = _validate_divergence(divergence)
     if scenario == "identical":
         return (
             np.broadcast_to(np.asarray(Y0), (size, N_VARS)).copy(),
             np.broadcast_to(np.asarray(PARAMS), (size, N_PARAMS)).copy(),
         )
+    if scenario != "divergent":
+        raise ValueError(f"unknown scenario: {scenario}")
+    params = np.asarray(PARAMS) + divergence * (
+        np.asarray(make_params(size, seed)) - np.asarray(PARAMS)
+    )
     return (
-        np.asarray(make_initial_conditions(size, seed)),
-        np.asarray(make_params(size, seed)),
+        np.asarray(make_initial_conditions(size, seed, divergence=divergence)),
+        params,
     )

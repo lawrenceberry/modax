@@ -55,7 +55,15 @@ def make_params(size: int, seed: int = 42) -> jnp.ndarray:
     )
 
 
-def make_initial_conditions(size: int, seed: int = 42) -> jnp.ndarray:
+def _validate_divergence(divergence: float) -> float:
+    if not np.isfinite(divergence) or divergence < 0.0:
+        raise ValueError("divergence must be finite and non-negative")
+    return float(divergence)
+
+
+def make_initial_conditions(
+    size: int, seed: int = 42, *, divergence: float = 1.0
+) -> jnp.ndarray:
     """ICs are parameterised by (alpha, epsilon):
 
         y(0) = [(1-eps)*alpha,  eps,  (1-eps)*(1-alpha)]
@@ -74,8 +82,11 @@ def make_initial_conditions(size: int, seed: int = 42) -> jnp.ndarray:
         of y1 fuel to keep the reactions running, extending the hard region of
         the trajectory.
     """
+    divergence = _validate_divergence(divergence)
     rng = np.random.default_rng(seed)
-    alpha = rng.uniform(0.0, ALPHA, size)
+    alpha = ALPHA * (
+        (1.0 - divergence) + divergence * rng.uniform(0.0, 1.0, size)
+    )
     y0 = np.column_stack(
         [
             (1 - EPS) * alpha,
@@ -90,11 +101,17 @@ SCENARIOS = ("identical", "divergent")
 
 
 def make_scenario(
-    scenario: str, size: int, seed: int = 42
+    scenario: str, size: int, seed: int = 42, *, divergence: float = 1.0
 ) -> tuple[np.ndarray, np.ndarray]:
+    divergence = _validate_divergence(divergence)
     if scenario == "identical":
         return (
             np.broadcast_to(np.asarray(Y0), (size, N_VARS)).copy(),
             np.broadcast_to(np.asarray(PARAMS), (size, N_PARAMS)).copy(),
         )
-    return make_initial_conditions(size, seed), np.asarray(make_params(size, seed))
+    if scenario != "divergent":
+        raise ValueError(f"unknown scenario: {scenario}")
+    params = np.asarray(PARAMS) + divergence * (
+        np.asarray(make_params(size, seed)) - np.asarray(PARAMS)
+    )
+    return make_initial_conditions(size, seed, divergence=divergence), params
