@@ -48,6 +48,8 @@ _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 
+_ODE_FN, _ = coupled_vdp_lattice.make_system(_N_OSC)
+
 _CSV_FIELDS = (
     "gpu",
     "solver_key",
@@ -171,9 +173,8 @@ def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
             **_SOLVER_KWARGS,
         )
 
-    ode_fn, _ = coupled_vdp_lattice.make_system(_N_OSC)
     return rodas5_solve(
-        ode_fn,
+        _ODE_FN,
         y0=jnp.asarray(y0, dtype=jnp.float64),
         t_span=_T_SPAN,
         params=jnp.asarray(params),
@@ -184,10 +185,9 @@ def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
 
 
 def solve_timing_only(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
-    ode_fn, _ = coupled_vdp_lattice.make_system(_N_OSC)
     if solver.key == "diffrax_kvaerno5":
         return diffrax_kvaerno5_solve(
-            ode_fn,
+            _ODE_FN,
             y0=jnp.asarray(y0, dtype=jnp.float64),
             t_span=_T_SPAN,
             params=jnp.asarray(params),
@@ -324,7 +324,27 @@ def collect_row(
     return row
 
 
+def _jax_warmup() -> None:
+    y0, params = make_data(_DIVERGENCES[0])
+    jy0 = jnp.asarray(y0, dtype=jnp.float64)
+    jparams = jnp.asarray(params)
+    for _ in range(2):
+        result = rodas5_solve(
+            _ODE_FN,
+            y0=jy0,
+            t_span=_T_SPAN,
+            params=jparams,
+            lu_precision="fp32",
+            return_stats=True,
+            **_SOLVER_KWARGS,
+        )
+        jax.block_until_ready(result)
+
+
 def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
+    print("Warming up JAX solver...", end=" ", flush=True)
+    _jax_warmup()
+    print("done.", flush=True)
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
     for solver in _SOLVERS:
