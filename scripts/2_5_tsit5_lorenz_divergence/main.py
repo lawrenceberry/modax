@@ -96,11 +96,20 @@ class SolverSpec:
     marker: str
     mode: str
     ensemble_backend: str | None = None
+    sort_by_steps: bool = False
 
 
 _SOLVERS = (
     SolverSpec("tsit5", "JAX Tsit5", "#2b7be0", "o", "stats"),
     SolverSpec("tsit5ckn", "numba-cuda Tsit5", "#f0a202", "s", "stats"),
+    SolverSpec(
+        "tsit5ckn_sorted",
+        "numba-cuda Tsit5 sorted",
+        "#f0a202",
+        "P",
+        "stats",
+        sort_by_steps=True,
+    ),
     SolverSpec("diffrax_tsit5", "Diffrax Tsit5", "#2ba84a", "^", "timing"),
     SolverSpec(
         "julia_tsit5_EnsembleGPUArray",
@@ -118,6 +127,15 @@ _SOLVERS = (
         "julia",
         "EnsembleGPUKernel",
     ),
+    SolverSpec(
+        "julia_tsit5_EnsembleGPUKernel_sorted",
+        "Julia Tsit5 GPUKernel sorted",
+        "#d35400",
+        "X",
+        "julia",
+        "EnsembleGPUKernel",
+        True,
+    ),
 )
 
 
@@ -131,7 +149,7 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
-    if solver.key == "tsit5ckn":
+    if solver.key.startswith("tsit5ckn"):
         return tsit5ckn_solve(
             lorenz.ode_fn_numba_cuda,
             y0=y0,
@@ -205,6 +223,18 @@ def summarize_stats(stats: dict) -> dict[str, float | int]:
     }
 
 
+def sort_by_attempted_steps(
+    y0: np.ndarray, params: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, dict[str, float | int]]:
+    _, stats = solve_with_stats(_SOLVERS[0], y0, params)
+    jax.block_until_ready(stats)
+    accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
+    rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
+    attempts = accepted_steps + rejected_steps
+    order = np.argsort(attempts, kind="stable")
+    return y0[order], params[order], summarize_stats(stats)
+
+
 def stats_from_row(row: dict) -> dict[str, float | int]:
     return {
         "mean_steps": row["mean_steps"],
@@ -242,6 +272,10 @@ def collect_row(
         flush=True,
     )
     y0, params = make_data(divergence)
+    if solver.sort_by_steps:
+        y0, params, sorted_stats_summary = sort_by_attempted_steps(y0, params)
+        if stats_summary is None:
+            stats_summary = sorted_stats_summary
     try:
         ms, stats = time_solve(solver, y0, params)
     except Exception as exc:

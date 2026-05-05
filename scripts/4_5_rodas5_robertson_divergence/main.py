@@ -99,12 +99,29 @@ class SolverSpec:
     marker: str
     mode: str
     ensemble_backend: str | None = None
+    sort_by_steps: bool = False
+    max_divergence: float | None = None
 
 
 _SOLVERS = (
     SolverSpec("rodas5_fp32_lu", "JAX Rodas5 fp32 LU", "#2b7be0", "o", "stats"),
     SolverSpec("rodas5ckn", "numba-cuda Rodas5", "#f0a202", "s", "stats"),
-    SolverSpec("diffrax_kvaerno5", "Diffrax Kvaerno5", "#2ba84a", "^", "timing"),
+    SolverSpec(
+        "rodas5ckn_sorted",
+        "numba-cuda Rodas5 sorted",
+        "#f0a202",
+        "P",
+        "stats",
+        sort_by_steps=True,
+    ),
+    SolverSpec(
+        "diffrax_kvaerno5",
+        "Diffrax Kvaerno5",
+        "#2ba84a",
+        "^",
+        "timing",
+        max_divergence=1.5,
+    ),
     SolverSpec(
         "julia_rodas5_EnsembleGPUArray",
         "Julia Rodas5 GPUArray",
@@ -121,6 +138,16 @@ _SOLVERS = (
         "julia",
         "EnsembleGPUKernel",
     ),
+    SolverSpec(
+        "julia_rodas5_EnsembleGPUKernel_sorted",
+        "Julia Rodas5 GPUKernel sorted",
+        "#d35400",
+        "X",
+        "julia",
+        "EnsembleGPUKernel",
+        True,
+        None,
+    ),
 )
 
 
@@ -134,7 +161,7 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
-    if solver.key == "rodas5ckn":
+    if solver.key.startswith("rodas5ckn"):
         return rodas5ckn_solve(
             robertson.ode_fn_numba_cuda,
             robertson.jac_fn_numba_cuda,
@@ -209,6 +236,18 @@ def summarize_stats(stats: dict) -> dict[str, float | int]:
     }
 
 
+def sort_by_attempted_steps(
+    y0: np.ndarray, params: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, dict[str, float | int]]:
+    _, stats = solve_with_stats(_SOLVERS[0], y0, params)
+    jax.block_until_ready(stats)
+    accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
+    rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
+    attempts = accepted_steps + rejected_steps
+    order = np.argsort(attempts, kind="stable")
+    return y0[order], params[order], summarize_stats(stats)
+
+
 def stats_from_row(row: dict) -> dict[str, float | int]:
     return {
         "mean_steps": row["mean_steps"],
@@ -246,6 +285,10 @@ def collect_row(
         flush=True,
     )
     y0, params = make_data(divergence)
+    if solver.sort_by_steps:
+        y0, params, sorted_stats_summary = sort_by_attempted_steps(y0, params)
+        if stats_summary is None:
+            stats_summary = sorted_stats_summary
     try:
         ms, stats = time_solve(solver, y0, params)
     except Exception as exc:
@@ -285,6 +328,14 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
         solver_cache = gpu_cache.setdefault(solver.key, {})
         for divergence in _DIVERGENCES:
             divergence_key = f"{divergence:.6g}"
+            if solver.max_divergence is not None and divergence > solver.max_divergence:
+                print(
+                    f"  {solver.label:<20} divergence={divergence:>4.2f} ... "
+                    f"SKIPPED (divergence > {solver.max_divergence:g})",
+                    flush=True,
+                )
+                solver_cache.setdefault(divergence_key, None)
+                continue
             cached = solver_cache.get(divergence_key)
             if is_complete_row(cached):
                 row = cached
