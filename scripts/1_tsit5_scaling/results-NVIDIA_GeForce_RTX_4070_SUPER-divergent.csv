@@ -48,4 +48,4 @@ julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,1000,8.119125
 julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,3000,13.378018
 julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,10000,925.590557
 julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,30000,1016.4236740000001
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,100000,358.79312400000003
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,100000,420.620677

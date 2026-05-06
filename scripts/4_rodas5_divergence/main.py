@@ -66,6 +66,7 @@ _LOCAL_SOLVER_KWARGS = {
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
+_JULIA_CACHE_VERSION = 3
 
 _CSV_FIELDS = (
     "gpu",
@@ -193,9 +194,10 @@ def time_solve(
     solver: SolverSpec, y0: np.ndarray, params: np.ndarray
 ) -> tuple[float, dict | None]:
     if solver.mode == "julia":
+        julia_y0 = y0[0] if y0.ndim == 2 and np.all(y0 == y0[0]) else y0
         result = julia_rodas5_solve._julia_solve_with_timing(
             "robertson",
-            y0,
+            julia_y0,
             _T_SPAN,
             params,
             ensemble_backend=solver.ensemble_backend,
@@ -287,6 +289,14 @@ def is_complete_row(value) -> bool:
     return isinstance(value, dict) and all(field in value for field in _CSV_FIELDS)
 
 
+def is_current_cached_row(value, solver: SolverSpec) -> bool:
+    if not is_complete_row(value):
+        return False
+    if solver.mode == "julia":
+        return value.get("julia_cache_version") == _JULIA_CACHE_VERSION
+    return True
+
+
 def collect_row(
     gpu_name: str,
     solver: SolverSpec,
@@ -330,6 +340,8 @@ def collect_row(
         **stats_summary,
         "normalized_solve_time_ms_per_step": float(normalized),
     }
+    if solver.mode == "julia":
+        row["julia_cache_version"] = _JULIA_CACHE_VERSION
     print(format_row(row), flush=True)
     return row
 
@@ -351,7 +363,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                 solver_cache.setdefault(divergence_key, None)
                 continue
             cached = solver_cache.get(divergence_key)
-            if is_complete_row(cached):
+            if is_current_cached_row(cached, solver):
                 row = cached
                 print(
                     f"  {solver.label:<20} divergence={divergence:>4.2f} ... "
@@ -373,7 +385,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
 
 def save_csv(rows: list[dict], path: Path) -> None:
     with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS)
+        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     print(f"Results saved to {path}")

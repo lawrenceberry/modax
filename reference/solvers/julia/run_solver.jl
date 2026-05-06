@@ -51,6 +51,9 @@ function solve_ensemble(ensemble_prob, alg, ensemble_alg, solve_kwargs, first_st
     return SciMLBase.solve(ensemble_prob, alg, ensemble_alg; solve_kwargs..., dt=first_step)
 end
 
+const SOLVE_WARMUP_RUNS = 2
+const SOLVE_TIMED_RUNS = 3
+
 function make_problem(spec::ReferenceSystemSpec, solver_name::String, ensemble_backend::String, y0, tspan, p0)
     if ensemble_backend == "EnsembleGPUArray"
         if solver_name == "kencarp5"
@@ -69,6 +72,13 @@ function remake_param(params, row_idx::Int, ensemble_backend::String)
         return matrix_row_to_svector(params, row_idx)
     end
     return copy(vec(params[row_idx, :]))
+end
+
+function remake_u0(y0_raw, row_idx::Int, ensemble_backend::String)
+    if ensemble_backend == "EnsembleGPUKernel"
+        return matrix_row_to_svector(y0_raw, row_idx)
+    end
+    return copy(vec(y0_raw[row_idx, :]))
 end
 
 function collect_solution(sol, n_trajectories::Int, n_times::Int, n_vars::Int)
@@ -127,7 +137,7 @@ function main(args)
         prob_func=(prob, i, repeat) -> SciMLBase.remake(
             prob,
             p=remake_param(params, i, ensemble_backend),
-            u0=y0_batched ? vec(y0_raw[i, :]) : prob.u0,
+            u0=y0_batched ? remake_u0(y0_raw, i, ensemble_backend) : prob.u0,
         ),
         safetycopy=false,
     )
@@ -143,13 +153,22 @@ function main(args)
     ensemble_alg = make_ensemble_algorithm(ensemble_backend)
 
     # Burn startup/JIT/first-launch overhead before timing the actual solve.
-    warmup_sol = solve_ensemble(ensemble_prob, alg, ensemble_alg, solve_kwargs, first_step)
-    CUDA.synchronize()
+    for _ in 1:SOLVE_WARMUP_RUNS
+        warmup_sol = solve_ensemble(
+            ensemble_prob, alg, ensemble_alg, solve_kwargs, first_step
+        )
+        CUDA.synchronize()
+    end
 
-    solve_start_ns = time_ns()
-    sol = solve_ensemble(ensemble_prob, alg, ensemble_alg, solve_kwargs, first_step)
-    CUDA.synchronize()
-    solve_time_s = (time_ns() - solve_start_ns) / 1e9
+    solve_time_samples_s = Float64[]
+    sol = nothing
+    for _ in 1:SOLVE_TIMED_RUNS
+        solve_start_ns = time_ns()
+        sol = solve_ensemble(ensemble_prob, alg, ensemble_alg, solve_kwargs, first_step)
+        CUDA.synchronize()
+        push!(solve_time_samples_s, (time_ns() - solve_start_ns) / 1e9)
+    end
+    solve_time_s = minimum(solve_time_samples_s)
 
     ys = collect_solution(sol, n_trajectories, length(t_span), length(y0))
     write_c_order_array(ys_bin, ys_meta, ys)
@@ -162,6 +181,7 @@ function main(args)
             "system" => system_name,
             "backend" => ensemble_backend,
             "solve_time_s" => solve_time_s,
+            "solve_time_samples_s" => solve_time_samples_s,
         ),
     )
     return nothing

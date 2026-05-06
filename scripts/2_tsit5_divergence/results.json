@@ -946,23 +946,6 @@
       }
     },
     "julia_tsit5_EnsembleGPUKernel": {
-      "0": {
-        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "julia_tsit5_EnsembleGPUKernel",
-        "solver": "Julia Tsit5 GPUKernel",
-        "divergence": 0.0,
-        "dim": 3,
-        "ensemble_size": 100000,
-        "solve_time_ms": 829.910338,
-        "mean_steps": 712.0,
-        "step_std": 0.0,
-        "step_cv": 0.0,
-        "step_variance": 0.0,
-        "min_steps": 712,
-        "max_steps": 712,
-        "rejected_steps_mean": 99.0,
-        "normalized_solve_time_ms_per_step": 1.165604407303371
-      },
       "0.1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
         "solver_key": "julia_tsit5_EnsembleGPUKernel",
@@ -970,7 +953,7 @@
         "divergence": 0.1,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1782.779512,
+        "solve_time_ms": 1383.5680180000002,
         "mean_steps": 693.26382,
         "step_std": 16.771475541272995,
         "step_cv": 0.024192053670524728,
@@ -978,7 +961,8 @@
         "min_steps": 658,
         "max_steps": 725,
         "rejected_steps_mean": 100.36731,
-        "normalized_solve_time_ms_per_step": 2.5715744289093294
+        "normalized_solve_time_ms_per_step": 1.9957308864033898,
+        "julia_cache_version": 3
       },
       "0.2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -987,7 +971,7 @@
         "divergence": 0.2,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1920.375523,
+        "solve_time_ms": 1514.881964,
         "mean_steps": 662.96624,
         "step_std": 34.735211034500075,
         "step_cv": 0.05239363475657535,
@@ -995,7 +979,8 @@
         "min_steps": 583,
         "max_steps": 725,
         "rejected_steps_mean": 94.92779,
-        "normalized_solve_time_ms_per_step": 2.8966414986681674
+        "normalized_solve_time_ms_per_step": 2.2850061927738583,
+        "julia_cache_version": 3
       },
       "0.3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1004,7 +989,7 @@
         "divergence": 0.3,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1914.562583,
+        "solve_time_ms": 1490.866792,
         "mean_steps": 632.86606,
         "step_std": 52.140974932284,
         "step_cv": 0.08238864149593361,
@@ -1012,7 +997,8 @@
         "min_steps": 536,
         "max_steps": 725,
         "rejected_steps_mean": 89.63117,
-        "normalized_solve_time_ms_per_step": 3.025225563526033
+        "normalized_solve_time_ms_per_step": 2.355738261584134,
+        "julia_cache_version": 3
       },
       "0.4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1021,7 +1007,7 @@
         "divergence": 0.4,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1887.494554,
+        "solve_time_ms": 1478.081011,
         "mean_steps": 602.58304,
         "step_std": 69.72337311006962,
         "step_cv": 0.11570749337729389,
@@ -1029,7 +1015,8 @@
         "min_steps": 463,
         "max_steps": 725,
         "rejected_steps_mean": 84.47841,
-        "normalized_solve_time_ms_per_step": 3.1323393270411333
+        "normalized_solve_time_ms_per_step": 2.452908417402521,
+        "julia_cache_version": 3
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1038,7 +1025,7 @@
         "divergence": 0.5,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1865.820203,
+        "solve_time_ms": 1455.614492,
         "mean_steps": 572.01148,
         "step_std": 87.6396468231505,
         "step_cv": 0.1532130907987205,
@@ -1046,7 +1033,8 @@
         "min_steps": 419,
         "max_steps": 725,
         "rejected_steps_mean": 79.22195,
-        "normalized_solve_time_ms_per_step": 3.261857966556895
+        "normalized_solve_time_ms_per_step": 2.54472950787631,
+        "julia_cache_version": 3
       },
       "0.6": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1055,7 +1043,7 @@
         "divergence": 0.6,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1830.822405,
+        "solve_time_ms": 1434.6696350000002,
         "mean_steps": 540.86359,
         "step_std": 106.28224019777582,
         "step_cv": 0.19650470499923245,
@@ -1063,7 +1051,8 @@
         "min_steps": 343,
         "max_steps": 725,
         "rejected_steps_mean": 73.7933,
-        "normalized_solve_time_ms_per_step": 3.38499843370858
+        "normalized_solve_time_ms_per_step": 2.652553548668344,
+        "julia_cache_version": 3
       },
       "0.7": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1072,7 +1061,7 @@
         "divergence": 0.7,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1765.757181,
+        "solve_time_ms": 1362.9542800000002,
         "mean_steps": 510.01694,
         "step_std": 124.23946614295264,
         "step_cv": 0.2435987050605665,
@@ -1080,7 +1069,8 @@
         "min_steps": 289,
         "max_steps": 725,
         "rejected_steps_mean": 68.93309,
-        "normalized_solve_time_ms_per_step": 3.462153984532357
+        "normalized_solve_time_ms_per_step": 2.672370607925298,
+        "julia_cache_version": 3
       },
       "0.8": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1089,7 +1079,7 @@
         "divergence": 0.8,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1693.338395,
+        "solve_time_ms": 1301.620028,
         "mean_steps": 478.26333,
         "step_std": 143.4806928976977,
         "step_cv": 0.3000035417678744,
@@ -1097,7 +1087,8 @@
         "min_steps": 218,
         "max_steps": 725,
         "rejected_steps_mean": 63.77138,
-        "normalized_solve_time_ms_per_step": 3.5405984293213533
+        "normalized_solve_time_ms_per_step": 2.721555148290378,
+        "julia_cache_version": 3
       },
       "0.9": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1106,7 +1097,7 @@
         "divergence": 0.9,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1624.781581,
+        "solve_time_ms": 1229.573446,
         "mean_steps": 445.98804,
         "step_std": 163.23024480189503,
         "step_cv": 0.3659969105940487,
@@ -1114,7 +1105,8 @@
         "min_steps": 153,
         "max_steps": 726,
         "rejected_steps_mean": 58.73573,
-        "normalized_solve_time_ms_per_step": 3.6431057231938326
+        "normalized_solve_time_ms_per_step": 2.7569650656999682,
+        "julia_cache_version": 3
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1123,7 +1115,7 @@
         "divergence": 1.0,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1548.425686,
+        "solve_time_ms": 1136.674483,
         "mean_steps": 412.19504,
         "step_std": 185.24408361160562,
         "step_cv": 0.4494088129047007,
@@ -1131,7 +1123,26 @@
         "min_steps": 35,
         "max_steps": 725,
         "rejected_steps_mean": 53.73997,
-        "normalized_solve_time_ms_per_step": 3.756536434790676
+        "normalized_solve_time_ms_per_step": 2.757613199324281,
+        "julia_cache_version": 3
+      },
+      "0": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "solver_key": "julia_tsit5_EnsembleGPUKernel",
+        "solver": "Julia Tsit5 GPUKernel",
+        "divergence": 0.0,
+        "dim": 3,
+        "ensemble_size": 100000,
+        "solve_time_ms": 307.308896,
+        "mean_steps": 712.0,
+        "step_std": 0.0,
+        "step_cv": 0.0,
+        "step_variance": 0.0,
+        "min_steps": 712,
+        "max_steps": 712,
+        "rejected_steps_mean": 99.0,
+        "normalized_solve_time_ms_per_step": 0.4316136179775281,
+        "julia_cache_version": 3
       }
     },
     "julia_tsit5_EnsembleGPUKernel_sorted": {
@@ -1142,7 +1153,7 @@
         "divergence": 0.0,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 786.027666,
+        "solve_time_ms": 307.98408,
         "mean_steps": 712.0,
         "step_std": 0.0,
         "step_cv": 0.0,
@@ -1150,7 +1161,8 @@
         "min_steps": 712,
         "max_steps": 712,
         "rejected_steps_mean": 99.0,
-        "normalized_solve_time_ms_per_step": 1.1039714410112358
+        "normalized_solve_time_ms_per_step": 0.43256191011235956,
+        "julia_cache_version": 3
       },
       "0.1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1159,7 +1171,7 @@
         "divergence": 0.1,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1240.40427,
+        "solve_time_ms": 834.25551,
         "mean_steps": 693.26382,
         "step_std": 16.771475541272995,
         "step_cv": 0.024192053670524728,
@@ -1167,7 +1179,8 @@
         "min_steps": 658,
         "max_steps": 725,
         "rejected_steps_mean": 100.36731,
-        "normalized_solve_time_ms_per_step": 1.7892240071030967
+        "normalized_solve_time_ms_per_step": 1.2033737892163476,
+        "julia_cache_version": 3
       },
       "0.2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1176,7 +1189,7 @@
         "divergence": 0.2,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 934.503968,
+        "solve_time_ms": 817.786911,
         "mean_steps": 662.96624,
         "step_std": 34.735211034500075,
         "step_cv": 0.05239363475657535,
@@ -1184,7 +1197,8 @@
         "min_steps": 583,
         "max_steps": 725,
         "rejected_steps_mean": 94.92779,
-        "normalized_solve_time_ms_per_step": 1.4095800232603097
+        "normalized_solve_time_ms_per_step": 1.233527232095559,
+        "julia_cache_version": 3
       },
       "0.3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1193,7 +1207,7 @@
         "divergence": 0.3,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1174.664989,
+        "solve_time_ms": 769.306374,
         "mean_steps": 632.86606,
         "step_std": 52.140974932284,
         "step_cv": 0.08238864149593361,
@@ -1201,7 +1215,8 @@
         "min_steps": 536,
         "max_steps": 725,
         "rejected_steps_mean": 89.63117,
-        "normalized_solve_time_ms_per_step": 1.856103626413463
+        "normalized_solve_time_ms_per_step": 1.2155911378783688,
+        "julia_cache_version": 3
       },
       "0.4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1210,7 +1225,7 @@
         "divergence": 0.4,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1170.594804,
+        "solve_time_ms": 765.734198,
         "mean_steps": 602.58304,
         "step_std": 69.72337311006962,
         "step_cv": 0.11570749337729389,
@@ -1218,7 +1233,8 @@
         "min_steps": 463,
         "max_steps": 725,
         "rejected_steps_mean": 84.47841,
-        "normalized_solve_time_ms_per_step": 1.9426281961072123
+        "normalized_solve_time_ms_per_step": 1.2707529870074008,
+        "julia_cache_version": 3
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1227,7 +1243,7 @@
         "divergence": 0.5,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1137.3458309999999,
+        "solve_time_ms": 732.1913030000001,
         "mean_steps": 572.01148,
         "step_std": 87.6396468231505,
         "step_cv": 0.1532130907987205,
@@ -1235,7 +1251,8 @@
         "min_steps": 419,
         "max_steps": 725,
         "rejected_steps_mean": 79.22195,
-        "normalized_solve_time_ms_per_step": 1.9883269318301091
+        "normalized_solve_time_ms_per_step": 1.2800290354312471,
+        "julia_cache_version": 3
       },
       "0.6": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1244,7 +1261,7 @@
         "divergence": 0.6,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 826.516868,
+        "solve_time_ms": 711.26724,
         "mean_steps": 540.86359,
         "step_std": 106.28224019777582,
         "step_cv": 0.19650470499923245,
@@ -1252,7 +1269,8 @@
         "min_steps": 343,
         "max_steps": 725,
         "rejected_steps_mean": 73.7933,
-        "normalized_solve_time_ms_per_step": 1.5281429241705842
+        "normalized_solve_time_ms_per_step": 1.3150584604890856,
+        "julia_cache_version": 3
       },
       "0.7": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1261,7 +1279,7 @@
         "divergence": 0.7,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1049.122589,
+        "solve_time_ms": 693.904462,
         "mean_steps": 510.01694,
         "step_std": 124.23946614295264,
         "step_cv": 0.2435987050605665,
@@ -1269,7 +1287,8 @@
         "min_steps": 289,
         "max_steps": 725,
         "rejected_steps_mean": 68.93309,
-        "normalized_solve_time_ms_per_step": 2.057034789864039
+        "normalized_solve_time_ms_per_step": 1.3605517926522206,
+        "julia_cache_version": 3
       },
       "0.8": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1278,7 +1297,7 @@
         "divergence": 0.8,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1057.5214150000002,
+        "solve_time_ms": 649.626351,
         "mean_steps": 478.26333,
         "step_std": 143.4806928976977,
         "step_cv": 0.3000035417678744,
@@ -1286,7 +1305,8 @@
         "min_steps": 218,
         "max_steps": 725,
         "rejected_steps_mean": 63.77138,
-        "normalized_solve_time_ms_per_step": 2.211169764991182
+        "normalized_solve_time_ms_per_step": 1.3583026551502495,
+        "julia_cache_version": 3
       },
       "0.9": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1295,7 +1315,7 @@
         "divergence": 0.9,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1039.335876,
+        "solve_time_ms": 627.956348,
         "mean_steps": 445.98804,
         "step_std": 163.23024480189503,
         "step_cv": 0.3659969105940487,
@@ -1303,7 +1323,8 @@
         "min_steps": 153,
         "max_steps": 726,
         "rejected_steps_mean": 58.73573,
-        "normalized_solve_time_ms_per_step": 2.330411990420192
+        "normalized_solve_time_ms_per_step": 1.408011631881429,
+        "julia_cache_version": 3
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -1312,7 +1333,7 @@
         "divergence": 1.0,
         "dim": 3,
         "ensemble_size": 100000,
-        "solve_time_ms": 1006.6190829999999,
+        "solve_time_ms": 615.742633,
         "mean_steps": 412.19504,
         "step_std": 185.24408361160562,
         "step_cv": 0.4494088129047007,
@@ -1320,7 +1341,8 @@
         "min_steps": 35,
         "max_steps": 725,
         "rejected_steps_mean": 53.73997,
-        "normalized_solve_time_ms_per_step": 2.442094118842381
+        "normalized_solve_time_ms_per_step": 1.4938137853381253,
+        "julia_cache_version": 3
       }
     }
   }
