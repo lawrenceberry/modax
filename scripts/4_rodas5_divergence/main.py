@@ -32,6 +32,8 @@ from scripts.benchmark_common import (
     time_blocked,
 )
 from solvers.rodas5 import solve as rodas5_solve
+from solvers.rodas5ckn import prepare_solve as rodas5ckn_prepare_solve
+from solvers.rodas5ckn import run_prepared as rodas5ckn_run_prepared
 from solvers.rodas5ckn import solve as rodas5ckn_solve
 
 jax.config.update("jax_enable_x64", True)
@@ -210,6 +212,25 @@ def time_solve(
     if solver.mode == "timing":
         ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
         return ms, None
+    if solver.key.startswith("rodas5ckn"):
+        prepared = rodas5ckn_prepare_solve(
+            robertson.ode_fn_numba_cuda,
+            robertson.jac_fn_numba_cuda,
+            y0=y0,
+            t_span=_T_SPAN,
+            params=params,
+            **_SOLVER_KWARGS,
+        )
+        ms, result = time_blocked(
+            lambda: rodas5ckn_run_prepared(
+                prepared,
+                return_stats=True,
+                copy_solution=False,
+            ),
+            _N_RUNS,
+        )
+        _, stats = result
+        return ms, stats
 
     ms, result = time_blocked(lambda: solve_with_stats(solver, y0, params), _N_RUNS)
     _, stats = result
@@ -244,7 +265,7 @@ def sort_by_attempted_steps(
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
     rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
     attempts = accepted_steps + rejected_steps
-    order = np.argsort(attempts, kind="stable")
+    order = np.argsort(-attempts, kind="stable")
     return y0[order], params[order], summarize_stats(stats)
 
 

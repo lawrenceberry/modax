@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import functools
 import math
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numba import cuda
@@ -63,6 +65,8 @@ SAFETY = 0.9
 FACTOR_MIN = 0.2
 FACTOR_MAX = 10.0
 
+_WORKSPACE_CACHE: dict[tuple[int, int, int, int], object] = {}
+
 
 def normalize_inputs(y0, t_span, params, first_step):
     y0_in = np.asarray(y0, dtype=np.float64)
@@ -113,6 +117,52 @@ def numpy_stats(accepted_steps, rejected_steps, loop_steps):
         "batch_loop_iterations": loop_steps,
         "valid_lanes": np.ones_like(loop_steps, dtype=np.int32),
     }
+
+
+@dataclass
+class Workspace:
+    y0_dev: Any
+    times_dev: Any
+    params_dev: Any
+    hist_dev: Any
+    accepted_dev: Any
+    rejected_dev: Any
+    loop_dev: Any
+    work: list[Any]
+
+
+@dataclass(frozen=True)
+class PreparedSolve:
+    kernel: Any
+    workspace: Workspace
+    dt0: np.float64
+    rtol: np.float64
+    atol: np.float64
+    max_steps: np.int32
+    blocks: int
+    threads: int
+
+
+def get_workspace(
+    cache: dict, n: int, n_vars: int, n_save: int, n_params: int
+) -> Workspace:
+    key = (n, n_vars, n_save, n_params)
+    workspace = cache.get(key)
+    if workspace is not None:
+        return workspace
+
+    workspace = Workspace(
+        y0_dev=cuda.device_array((n, n_vars), dtype=np.float64),
+        times_dev=cuda.device_array(n_save, dtype=np.float64),
+        params_dev=cuda.device_array((n, n_params), dtype=np.float64),
+        hist_dev=cuda.device_array((n, n_save, n_vars), dtype=np.float64),
+        accepted_dev=cuda.device_array(n, dtype=np.int32),
+        rejected_dev=cuda.device_array(n, dtype=np.int32),
+        loop_dev=cuda.device_array(n, dtype=np.int32),
+        work=[cuda.device_array((n, n_vars), dtype=np.float64) for _ in range(9)],
+    )
+    cache[key] = workspace
+    return workspace
 
 
 @functools.cache
@@ -274,6 +324,72 @@ def _make_kernel(ode_fn, n_vars: int):
     return kernel
 
 
+def prepare_solve(
+    ode_fn,
+    y0,
+    t_span,
+    params,
+    *,
+    batch_size=None,
+    rtol=1e-8,
+    atol=1e-10,
+    first_step=None,
+    max_steps=100000,
+):
+    del batch_size
+    y0_arr, times, params_arr, dt0 = normalize_inputs(y0, t_span, params, first_step)
+    n, n_vars = y0_arr.shape
+    n_save = times.shape[0]
+    n_params = params_arr.shape[1]
+
+    workspace = get_workspace(_WORKSPACE_CACHE, n, n_vars, n_save, n_params)
+    workspace.y0_dev.copy_to_device(y0_arr)
+    workspace.times_dev.copy_to_device(times)
+    workspace.params_dev.copy_to_device(params_arr)
+
+    threads = 128
+    blocks = (n + threads - 1) // threads
+    return PreparedSolve(
+        kernel=_make_kernel(ode_fn, n_vars),
+        workspace=workspace,
+        dt0=np.float64(dt0),
+        rtol=np.float64(rtol),
+        atol=np.float64(atol),
+        max_steps=np.int32(max_steps),
+        blocks=blocks,
+        threads=threads,
+    )
+
+
+def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=True):
+    workspace = prepared.workspace
+    prepared.kernel[prepared.blocks, prepared.threads](
+        workspace.y0_dev,
+        workspace.times_dev,
+        workspace.params_dev,
+        prepared.dt0,
+        prepared.rtol,
+        prepared.atol,
+        prepared.max_steps,
+        workspace.hist_dev,
+        workspace.accepted_dev,
+        workspace.rejected_dev,
+        workspace.loop_dev,
+        *workspace.work,
+    )
+    cuda.synchronize()
+
+    solution = (
+        workspace.hist_dev.copy_to_host() if copy_solution else workspace.hist_dev
+    )
+    if not return_stats:
+        return solution
+    accepted_steps = workspace.accepted_dev.copy_to_host()
+    rejected_steps = workspace.rejected_dev.copy_to_host()
+    loop_steps = workspace.loop_dev.copy_to_host()
+    return solution, numpy_stats(accepted_steps, rejected_steps, loop_steps)
+
+
 def solve(
     ode_fn,
     y0,
@@ -287,37 +403,15 @@ def solve(
     max_steps=100000,
     return_stats=False,
 ):
-    del batch_size
-    y0_arr, times, params_arr, dt0 = normalize_inputs(y0, t_span, params, first_step)
-    n, n_vars = y0_arr.shape
-    hist_dev = cuda.device_array((n, times.shape[0], n_vars), dtype=np.float64)
-    accepted_dev = cuda.device_array(n, dtype=np.int32)
-    rejected_dev = cuda.device_array(n, dtype=np.int32)
-    loop_dev = cuda.device_array(n, dtype=np.int32)
-    work = [cuda.device_array((n, n_vars), dtype=np.float64) for _ in range(9)]
-
-    threads = 128
-    blocks = (n + threads - 1) // threads
-    _make_kernel(ode_fn, n_vars)[blocks, threads](
-        cuda.to_device(y0_arr),
-        cuda.to_device(times),
-        cuda.to_device(params_arr),
-        np.float64(dt0),
-        np.float64(rtol),
-        np.float64(atol),
-        np.int32(max_steps),
-        hist_dev,
-        accepted_dev,
-        rejected_dev,
-        loop_dev,
-        *work,
+    prepared = prepare_solve(
+        ode_fn,
+        y0,
+        t_span,
+        params,
+        batch_size=batch_size,
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
     )
-    cuda.synchronize()
-
-    solution = hist_dev.copy_to_host()
-    if not return_stats:
-        return solution
-    accepted_steps = accepted_dev.copy_to_host()
-    rejected_steps = rejected_dev.copy_to_host()
-    loop_steps = loop_dev.copy_to_host()
-    return solution, numpy_stats(accepted_steps, rejected_steps, loop_steps)
+    return run_prepared(prepared, return_stats=return_stats, copy_solution=True)

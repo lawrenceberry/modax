@@ -32,7 +32,8 @@ from scripts.benchmark_common import (
     time_blocked,
 )
 from solvers.tsit5 import solve as tsit5_solve
-from solvers.tsit5ckn import solve as tsit5ckn_solve
+from solvers.tsit5ckn import prepare_solve as tsit5ckn_prepare_solve
+from solvers.tsit5ckn import run_prepared as tsit5ckn_run_prepared
 
 jax.config.update("jax_enable_x64", True)
 
@@ -150,13 +151,17 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
     if solver.key.startswith("tsit5ckn"):
-        return tsit5ckn_solve(
+        prepared = tsit5ckn_prepare_solve(
             lorenz.ode_fn_numba_cuda,
             y0=y0,
             t_span=lorenz.TIMES,
             params=params,
-            return_stats=True,
             **_SOLVER_KWARGS,
+        )
+        return tsit5ckn_run_prepared(
+            prepared,
+            return_stats=True,
+            copy_solution=False,
         )
 
     return tsit5_solve(
@@ -197,6 +202,24 @@ def time_solve(
     if solver.mode == "timing":
         ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
         return ms, None
+    if solver.key.startswith("tsit5ckn"):
+        prepared = tsit5ckn_prepare_solve(
+            lorenz.ode_fn_numba_cuda,
+            y0=y0,
+            t_span=lorenz.TIMES,
+            params=params,
+            **_SOLVER_KWARGS,
+        )
+        ms, result = time_blocked(
+            lambda: tsit5ckn_run_prepared(
+                prepared,
+                return_stats=True,
+                copy_solution=False,
+            ),
+            _N_RUNS,
+        )
+        _, stats = result
+        return ms, stats
 
     ms, result = time_blocked(lambda: solve_with_stats(solver, y0, params), _N_RUNS)
     _, stats = result
@@ -231,7 +254,7 @@ def sort_by_attempted_steps(
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
     rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
     attempts = accepted_steps + rejected_steps
-    order = np.argsort(attempts, kind="stable")
+    order = np.argsort(-attempts, kind="stable")
     return y0[order], params[order], summarize_stats(stats)
 
 
