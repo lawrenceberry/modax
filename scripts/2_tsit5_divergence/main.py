@@ -37,8 +37,8 @@ from solvers.tsit5ckn import run_prepared as tsit5ckn_run_prepared
 
 jax.config.update("jax_enable_x64", True)
 
-_N_TRAJ = 1_000
-_N_RUNS = 5
+_N_TRAJ = 100_000
+_N_RUNS = 1
 _DIM = lorenz.N_VARS
 _DIVERGENCES = (
     0.0,
@@ -52,18 +52,6 @@ _DIVERGENCES = (
     0.8,
     0.9,
     1.0,
-    1.25,
-    1.5,
-    2.0,
-    3.0,
-    4.0,
-    6.0,
-    8.0,
-    10.0,
-    12.0,
-    16.0,
-    24.0,
-    32.0,
 )
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
@@ -111,15 +99,15 @@ _SOLVERS = (
         "stats",
         sort_by_steps=True,
     ),
-    SolverSpec("diffrax_tsit5", "Diffrax Tsit5", "#2ba84a", "^", "timing"),
-    SolverSpec(
-        "julia_tsit5_EnsembleGPUArray",
-        "Julia Tsit5 GPUArray",
-        "#9b59b6",
-        "D",
-        "julia",
-        "EnsembleGPUArray",
-    ),
+    # SolverSpec("diffrax_tsit5", "Diffrax Tsit5", "#2ba84a", "^", "timing"),
+    # SolverSpec(
+    #     "julia_tsit5_EnsembleGPUArray",
+    #     "Julia Tsit5 GPUArray",
+    #     "#9b59b6",
+    #     "D",
+    #     "julia",
+    #     "EnsembleGPUArray",
+    # ),
     SolverSpec(
         "julia_tsit5_EnsembleGPUKernel",
         "Julia Tsit5 GPUKernel",

@@ -38,8 +38,8 @@ from solvers.rodas5ckn import solve as rodas5ckn_solve
 
 jax.config.update("jax_enable_x64", True)
 
-_N_TRAJ = 1_000
-_N_RUNS = 5
+_N_TRAJ = 30_000
+_N_RUNS = 1
 _DIM = robertson.N_VARS
 _T_SPAN = robertson.TIMES
 _DIVERGENCES = (
@@ -54,13 +54,6 @@ _DIVERGENCES = (
     0.8,
     0.9,
     1.0,
-    1.25,
-    1.5,
-    2.0,
-    3.0,
-    4.0,
-    6.0,
-    8.0,
 )
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 _DIFFRAX_SOLVER_KWARGS = {**_SOLVER_KWARGS, "max_steps": 1_000_000}
@@ -116,22 +109,22 @@ _SOLVERS = (
         "stats",
         sort_by_steps=True,
     ),
-    SolverSpec(
-        "diffrax_kvaerno5",
-        "Diffrax Kvaerno5",
-        "#2ba84a",
-        "^",
-        "timing",
-        max_divergence=1.5,
-    ),
-    SolverSpec(
-        "julia_rodas5_EnsembleGPUArray",
-        "Julia Rodas5 GPUArray",
-        "#9b59b6",
-        "D",
-        "julia",
-        "EnsembleGPUArray",
-    ),
+    # SolverSpec(
+    #     "diffrax_kvaerno5",
+    #     "Diffrax Kvaerno5",
+    #     "#2ba84a",
+    #     "^",
+    #     "timing",
+    #     max_divergence=1.5,
+    # ),
+    # SolverSpec(
+    #     "julia_rodas5_EnsembleGPUArray",
+    #     "Julia Rodas5 GPUArray",
+    #     "#9b59b6",
+    #     "D",
+    #     "julia",
+    #     "EnsembleGPUArray",
+    # ),
     SolverSpec(
         "julia_rodas5_EnsembleGPUKernel",
         "Julia Rodas5 GPUKernel",
