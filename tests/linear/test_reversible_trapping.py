@@ -56,9 +56,6 @@ from reference.solvers.python.julia_kencarp5 import solve as julia_kencarp5_solv
 from reference.solvers.python.julia_kvaerno5 import solve as julia_kvaerno5_solve
 from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from solvers.kencarp5 import solve as kencarp5_solve
-from solvers.kencarpgersh5 import (
-    make_solver as make_kencarpgersh5,
-)
 from solvers.rodas5 import solve as rodas5_solve
 
 _DIFFUSION_COEFF = 2e-2
@@ -69,8 +66,6 @@ _TIMES = jnp.array((0.0, 1e-4, 1e-3, 1e-2, 5e-1), dtype=jnp.float64)
 _SYSTEM_DIMS = [30, 50, 70]
 _ENSEMBLE_SIZES = [2, 100, 1000]
 _REFERENCE_ENSEMBLE_SIZES = [2]
-_GERSH_MASS_ATOL = 5e-5
-_GERSH_REF_RTOL = 1e-3
 
 
 def _make_neumann_laplacian(n_cells, dx):
@@ -270,96 +265,6 @@ def test_kencarp5(benchmark, reversible_trapping_system, ensemble_size, lu_preci
             atol=1e-10,
         ).block_until_ready()
         np.testing.assert_allclose(results_np, np.asarray(y_ref), rtol=2e-4, atol=3e-8)
-
-
-@pytest.mark.parametrize(
-    "reversible_trapping_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id
-)
-@pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
-@pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarpgersh5(
-    benchmark, reversible_trapping_system, ensemble_size, lu_precision
-):
-    """Dynamic Gershgorin KenCarp5 nonlinear benchmark on reversible trapping."""
-    system = reversible_trapping_system
-    params = _make_params_batch(ensemble_size, seed=42)
-    solve = make_kencarpgersh5(
-        ode_fn=system["ode_fn"],
-        lu_precision=lu_precision,
-        linear=True,
-    )
-    results = benchmark.pedantic(
-        lambda: solve(
-            y0=system["y0"],
-            t_span=_TIMES,
-            params=params,
-            first_step=1e-6,
-            rtol=1e-6,
-            atol=1e-8,
-        ).block_until_ready(),
-        warmup_rounds=1,
-        rounds=1,
-    )
-    results_np = np.asarray(results)
-
-    assert results.shape == (ensemble_size, len(_TIMES), system["n_vars"])
-    assert np.all(np.isfinite(results_np))
-    np.testing.assert_allclose(results_np.sum(axis=2), 1.0, atol=_GERSH_MASS_ATOL)
-    if ensemble_size in _REFERENCE_ENSEMBLE_SIZES:
-        y_ref = diffrax_kvaerno5_solve_cached(
-            system["ode_fn"],
-            y0=system["y0"],
-            t_span=_TIMES,
-            params=params,
-            first_step=1e-6,
-            rtol=1e-8,
-            atol=1e-10,
-        ).block_until_ready()
-        np.testing.assert_allclose(
-            results_np, np.asarray(y_ref), rtol=_GERSH_REF_RTOL, atol=3e-8
-        )
-
-
-@pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarpgersh5_linearise_matches_reference(lu_precision):
-    """Stage-local stiff-linearisation mode stays close to the cached reference."""
-    system = _make_reversible_trapping_system(_SYSTEM_DIMS[0])
-    params = _make_params_batch(_REFERENCE_ENSEMBLE_SIZES[0], seed=42)
-    solve = make_kencarpgersh5(
-        ode_fn=system["ode_fn"],
-        lu_precision=lu_precision,
-        linearise=True,
-    )
-    results = solve(
-        y0=system["y0"],
-        t_span=_TIMES,
-        params=params,
-        first_step=1e-6,
-        rtol=1e-6,
-        atol=1e-8,
-    ).block_until_ready()
-    results_np = np.asarray(results)
-
-    assert results.shape == (
-        _REFERENCE_ENSEMBLE_SIZES[0],
-        len(_TIMES),
-        system["n_vars"],
-    )
-    assert np.all(np.isfinite(results_np))
-    np.testing.assert_allclose(results_np.sum(axis=2), 1.0, atol=_GERSH_MASS_ATOL)
-
-    y_ref = diffrax_kvaerno5_solve_cached(
-        system["ode_fn"],
-        y0=system["y0"],
-        t_span=_TIMES,
-        params=params,
-        first_step=1e-6,
-        rtol=1e-8,
-        atol=1e-10,
-    ).block_until_ready()
-    np.testing.assert_allclose(
-        results_np, np.asarray(y_ref), rtol=_GERSH_REF_RTOL, atol=1e-7
-    )
 
 
 # ---------------------------------------------------------------------------
