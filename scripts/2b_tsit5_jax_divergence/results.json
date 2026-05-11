@@ -1,0 +1,241 @@
+{
+  "NVIDIA GeForce RTX 4070 SUPER": {
+    "ic_identical_random": {
+      "5000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_identical_random",
+        "batch_size": 5000,
+        "solve_time_ms": 2307.33541296795,
+        "total_lane_iterations": 284800000,
+        "wasted_lane_iterations": 0,
+        "min_batch_loop_iterations": 712,
+        "max_batch_loop_iterations": 712,
+        "wasted_lane_iteration_ratio": 0.0
+      },
+      "10000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_identical_random",
+        "batch_size": 10000,
+        "solve_time_ms": 1621.1216327734292,
+        "total_lane_iterations": 284800000,
+        "wasted_lane_iterations": 0,
+        "min_batch_loop_iterations": 712,
+        "max_batch_loop_iterations": 712,
+        "wasted_lane_iteration_ratio": 0.0
+      },
+      "25000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_identical_random",
+        "batch_size": 25000,
+        "solve_time_ms": 976.7565348185599,
+        "total_lane_iterations": 284800000,
+        "wasted_lane_iterations": 0,
+        "min_batch_loop_iterations": 712,
+        "max_batch_loop_iterations": 712,
+        "wasted_lane_iteration_ratio": 0.0
+      },
+      "50000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_identical_random",
+        "batch_size": 50000,
+        "solve_time_ms": 793.2282456196845,
+        "total_lane_iterations": 284800000,
+        "wasted_lane_iterations": 0,
+        "min_batch_loop_iterations": 712,
+        "max_batch_loop_iterations": 712,
+        "wasted_lane_iteration_ratio": 0.0
+      },
+      "100000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_identical_random",
+        "batch_size": 100000,
+        "solve_time_ms": 770.8946578204632,
+        "total_lane_iterations": 284800000,
+        "wasted_lane_iterations": 0,
+        "min_batch_loop_iterations": 712,
+        "max_batch_loop_iterations": 712,
+        "wasted_lane_iteration_ratio": 0.0
+      },
+      "200000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_identical_random",
+        "batch_size": 200000,
+        "solve_time_ms": 700.6989174056798,
+        "total_lane_iterations": 284800000,
+        "wasted_lane_iterations": 0,
+        "min_batch_loop_iterations": 712,
+        "max_batch_loop_iterations": 712,
+        "wasted_lane_iteration_ratio": 0.0
+      },
+      "400000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_identical_random",
+        "batch_size": 400000,
+        "solve_time_ms": 861.3332921639085,
+        "total_lane_iterations": 284800000,
+        "wasted_lane_iterations": 0,
+        "min_batch_loop_iterations": 712,
+        "max_batch_loop_iterations": 712,
+        "wasted_lane_iteration_ratio": 0.0
+      }
+    },
+    "ic_large_random": {
+      "5000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_random",
+        "batch_size": 5000,
+        "solve_time_ms": 2346.937764203176,
+        "total_lane_iterations": 289615000,
+        "wasted_lane_iterations": 124533182,
+        "min_batch_loop_iterations": 723,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.42999562177373407
+      },
+      "10000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_random",
+        "batch_size": 10000,
+        "solve_time_ms": 1648.3565889764577,
+        "total_lane_iterations": 289700000,
+        "wasted_lane_iterations": 124618182,
+        "min_batch_loop_iterations": 723,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.43016286503279255
+      },
+      "25000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_random",
+        "batch_size": 25000,
+        "solve_time_ms": 1009.5340486150235,
+        "total_lane_iterations": 289850000,
+        "wasted_lane_iterations": 124768182,
+        "min_batch_loop_iterations": 724,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.43045776091081595
+      },
+      "50000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_random",
+        "batch_size": 50000,
+        "solve_time_ms": 807.4076417833567,
+        "total_lane_iterations": 289950000,
+        "wasted_lane_iterations": 124868182,
+        "min_batch_loop_iterations": 724,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.4306541886532161
+      },
+      "100000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_random",
+        "batch_size": 100000,
+        "solve_time_ms": 789.7657749708742,
+        "total_lane_iterations": 290000000,
+        "wasted_lane_iterations": 124918182,
+        "min_batch_loop_iterations": 725,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.43075235172413795
+      },
+      "200000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_random",
+        "batch_size": 200000,
+        "solve_time_ms": 720.6708245910704,
+        "total_lane_iterations": 290000000,
+        "wasted_lane_iterations": 124918182,
+        "min_batch_loop_iterations": 725,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.43075235172413795
+      },
+      "400000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_random",
+        "batch_size": 400000,
+        "solve_time_ms": 888.0961085669696,
+        "total_lane_iterations": 290000000,
+        "wasted_lane_iterations": 124918182,
+        "min_batch_loop_iterations": 725,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.43075235172413795
+      }
+    },
+    "ic_large_sorted": {
+      "5000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_sorted",
+        "batch_size": 5000,
+        "solve_time_ms": 1350.5626744125038,
+        "total_lane_iterations": 166795000,
+        "wasted_lane_iterations": 1713182,
+        "min_batch_loop_iterations": 72,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.010271183188944513
+      },
+      "10000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_sorted",
+        "batch_size": 10000,
+        "solve_time_ms": 957.8408974222839,
+        "total_lane_iterations": 168460000,
+        "wasted_lane_iterations": 3378182,
+        "min_batch_loop_iterations": 86,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.020053318295144246
+      },
+      "25000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_sorted",
+        "batch_size": 25000,
+        "solve_time_ms": 603.8941873703152,
+        "total_lane_iterations": 173625000,
+        "wasted_lane_iterations": 8543182,
+        "min_batch_loop_iterations": 123,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.04920479193664507
+      },
+      "50000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_sorted",
+        "batch_size": 50000,
+        "solve_time_ms": 506.4015160314739,
+        "total_lane_iterations": 181850000,
+        "wasted_lane_iterations": 16768182,
+        "min_batch_loop_iterations": 171,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.09220886444872148
+      },
+      "100000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_sorted",
+        "batch_size": 100000,
+        "solve_time_ms": 536.1468662042171,
+        "total_lane_iterations": 197600000,
+        "wasted_lane_iterations": 32518182,
+        "min_batch_loop_iterations": 259,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.1645656983805668
+      },
+      "200000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_sorted",
+        "batch_size": 200000,
+        "solve_time_ms": 569.5481163915247,
+        "total_lane_iterations": 229400000,
+        "wasted_lane_iterations": 64318182,
+        "min_batch_loop_iterations": 422,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.2803756843940715
+      },
+      "400000": {
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "case_key": "ic_large_sorted",
+        "batch_size": 400000,
+        "solve_time_ms": 882.3692471720278,
+        "total_lane_iterations": 290000000,
+        "wasted_lane_iterations": 124918182,
+        "min_batch_loop_iterations": 725,
+        "max_batch_loop_iterations": 725,
+        "wasted_lane_iteration_ratio": 0.43075235172413795
+      }
+    }
+  }
+}

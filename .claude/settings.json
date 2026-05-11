@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(xargs sed *)"
+      "Bash(xargs sed *)",
+      "Bash(git ls-tree *)"
     ]
   }
 }
