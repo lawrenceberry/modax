@@ -1,4 +1,27 @@
-"""Semi-discretized one-dimensional heat equation systems."""
+"""Semi-discretized one-dimensional heat equation systems.
+
+Heat equation — stiffness from grid refinement
+
+M is tridiagonal with uniform entries -2 / dx^2 on the diagonal and 1 / dx^2 on
+the off-diagonals. Eigenvalues range from about -pi^2 to -4 / dx^2, so the
+stiffness ratio grows like O(N^2) with grid refinement.
+
+PDE:
+    du/dt = alpha d^2u/dx^2,  x in (0, 1),  u(0, t) = u(1, t) = 0
+
+Grid:
+    N interior points, dx = 1 / (N + 1), x_i = (i + 1) * dx
+
+The initial condition y0_i = sin(pi x_i) is the first discrete eigenmode of M,
+so the exact solution is y_i(t) = y0_i * exp(lambda_1 * alpha * t), where
+lambda_1 = (2 / dx^2) * (cos(pi * dx) - 1). This lets tests validate against
+the analytic answer rather than a second numerical solver.
+
+The matrix-vector product has a cancellation hazard in fp32: each row computes a
+second difference whose individual terms are much larger than the result for a
+smooth sine mode. The benchmarks therefore keep matrix-vector evaluation in
+fp64 and vary only LU precision.
+"""
 
 import jax.numpy as jnp
 import numpy as np

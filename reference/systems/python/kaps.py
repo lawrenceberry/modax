@@ -1,4 +1,19 @@
-"""Coupled Kaps singular-perturbation systems."""
+"""Coupled Kaps singular-perturbation systems.
+
+Kaps' problem — controllable stiffness with a known exact solution
+
+Each equation pair (y1_i, y2_i) is an independent copy of the original Kaps system
+with a different stiffness parameter epsilon_i. The stiffness ratio of pair i is
+approximately 1 / epsilon_i, so epsilon_min controls the maximum stiffness across
+the system. The initial conditions lie exactly on the slow manifold, so there is
+no fast initial transient, only the stable fast modes that implicit solvers must
+handle without being forced into tiny steps.
+
+The analytical solution is independent of epsilon_i for all pairs:
+    y1_i(t) = exp(-2t),  y2_i(t) = exp(-t)
+
+This allows precise validation at arbitrary stiffness without a reference solver.
+"""
 
 import jax.numpy as jnp
 import numpy as np

@@ -1,18 +1,4 @@
-"""Tests for the Rodas5 nonlinear solver on coupled Kaps singular-perturbation systems.
-
-Kaps' problem — controllable stiffness with a known exact solution
-
-Each equation pair (y1_i, y2_i) is an independent copy of the original Kaps system
-with a different stiffness parameter ε_i. The stiffness ratio of pair i is ≈ 1/ε_i,
-so ε_min controls the maximum stiffness across the system. The initial conditions lie
-exactly on the slow manifold, so there is no fast initial transient — only the stable
-fast modes that implicit solvers must handle without being forced into tiny steps.
-
-The analytical solution is independent of ε_i for all pairs:
-    y1_i(t) = exp(−2t),  y2_i(t) = exp(−t)
-
-which allows precise validation at arbitrary stiffness without a reference solver.
-"""
+"""Solver benchmarks and correctness checks for the Kaps reference system."""
 
 import numpy as np
 import pytest

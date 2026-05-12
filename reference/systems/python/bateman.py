@@ -1,4 +1,36 @@
-"""Bateman radioactive decay chain systems."""
+"""Bateman radioactive decay chain systems.
+
+Physical background
+-------------------
+The Bateman equations describe a sequential radioactive decay chain
+A_1 -> A_2 -> ... -> A_n, where each species A_i decays into A_{i+1} with a
+first-order rate constant lambda_i. The final species A_n is stable. Starting
+from a pure parent population, the parent feeds the chain, each intermediate is
+produced by its predecessor and destroyed by its own decay, and the stable end
+product accumulates irreversibly.
+
+ODE system
+----------
+    dN_1/dt = -lambda_1 N_1
+    dN_i/dt = lambda_{i-1} N_{i-1} - lambda_i N_i
+    dN_n/dt = lambda_{n-1} N_{n-1}
+
+The coefficient matrix M is lower bidiagonal: diagonal entries -lambda_i and
+subdiagonal entries +lambda_i. A global rate-scale factor p[0] multiplies M as
+the ensemble parameter. Total population is conserved for all t.
+
+Analytical solution
+-------------------
+Because M is constant the exact solution is N(t) = expm(p[0] * M * t) * N0.
+This module evaluates it through an eigendecomposition of M so tests can compare
+against a closed-form linear solution.
+
+Stiffness character
+-------------------
+The Jacobian equals p[0] * M identically, independent of t and y. The stiffness
+ratio is fixed at lambda_max / lambda_min throughout integration, and the
+``stiffness`` parameter sets this ratio directly.
+"""
 
 import jax.numpy as jnp
 import numpy as np
