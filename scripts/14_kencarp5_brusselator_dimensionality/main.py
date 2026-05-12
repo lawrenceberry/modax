@@ -21,7 +21,6 @@ from typing import Callable
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -36,6 +35,8 @@ from scripts.benchmark_common import (
     time_blocked,
 )
 from solvers.kencarp5 import solve as kencarp5_solve
+from solvers.kencarp5ckn import solve as kencarp5ckn_solve
+from solvers.rodas5 import solve as rodas5_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -55,6 +56,13 @@ _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 _LOCAL_SOLVER_DEFS = [
     ("local_kencarp5_linear", "my kencarp5 linear=True", "#2b7be0", "o", True),
     ("local_kencarp5_newton", "my kencarp5 linear=False", "#e02b2b", "D", False),
+]
+_CUSTOM_KERNEL_SOLVER_DEFS = [
+    ("kencarp5ckn_linear", "numba-cuda kencarp5 linear=True", "#f0a202", "P", True),
+    ("kencarp5ckn_newton", "numba-cuda kencarp5 linear=False", "#d35400", "X", False),
+]
+_RODAS_SOLVER_DEFS = [
+    ("local_rodas5_fp64_lu", "my rodas5 fp64 LU", "#00a6a6", "v", "fp64"),
 ]
 # (key, label, color, marker, solve_fn)
 _JAX_SOLVER_DEFS = [
@@ -120,6 +128,47 @@ def time_diffrax_kencarp5(dim: int, *, scenario: str) -> float:
     return ms
 
 
+def time_custom_kernel_kencarp5(dim: int, *, linear: bool, scenario: str) -> float:
+    n_grid = dim // 2
+    y0_batch, params = brusselator.make_scenario(scenario, n_grid, _ENSEMBLE_SIZE)
+
+    def run():
+        return kencarp5ckn_solve(
+            brusselator.explicit_ode_fn_numba_cuda,
+            brusselator.implicit_ode_fn_numba_cuda,
+            brusselator.implicit_jac_fn_numba_cuda,
+            y0=y0_batch,
+            t_span=_T_SPAN,
+            params=params,
+            linear=linear,
+            **_SOLVER_KWARGS,
+        )
+
+    ms, _ = time_blocked(run, _N_RUNS)
+    return ms
+
+
+def time_local_rodas5(dim: int, *, scenario: str, lu_precision: str) -> float:
+    n_grid = dim // 2
+    _, _, ode_fn, _ = brusselator.make_system(n_grid)
+    y0_batch, params = brusselator.make_scenario(scenario, n_grid, _ENSEMBLE_SIZE)
+    y0_j = jnp.asarray(y0_batch)
+    p_j = jnp.asarray(params)
+
+    def run():
+        return rodas5_solve(
+            ode_fn,
+            y0_j,
+            _T_SPAN,
+            p_j,
+            lu_precision=lu_precision,
+            **_SOLVER_KWARGS,
+        )
+
+    ms, _ = time_blocked(run, _N_RUNS)
+    return ms
+
+
 def time_julia_kencarp5(dim: int, *, ensemble_backend: str, scenario: str) -> float:
     n_grid = dim // 2
     y0_batch, params = brusselator.make_scenario(scenario, n_grid, _ENSEMBLE_SIZE)
@@ -148,6 +197,36 @@ def make_solver_specs(scenario: str) -> list[SolverSpec]:
                 timing_fn=(
                     lambda dim, linear=linear, sc=scenario: time_local_kencarp5(
                         dim, linear=linear, scenario=sc
+                    )
+                ),
+            )
+        )
+    for key, label, color, marker, linear in _CUSTOM_KERNEL_SOLVER_DEFS:
+        specs.append(
+            SolverSpec(
+                key=key,
+                label=label,
+                color=color,
+                marker=marker,
+                linestyle="-",
+                timing_fn=(
+                    lambda dim, linear=linear, sc=scenario: time_custom_kernel_kencarp5(
+                        dim, linear=linear, scenario=sc
+                    )
+                ),
+            )
+        )
+    for key, label, color, marker, lu_precision in _RODAS_SOLVER_DEFS:
+        specs.append(
+            SolverSpec(
+                key=key,
+                label=label,
+                color=color,
+                marker=marker,
+                linestyle="--",
+                timing_fn=(
+                    lambda dim, precision=lu_precision, sc=scenario: time_local_rodas5(
+                        dim, scenario=sc, lu_precision=precision
                     )
                 ),
             )

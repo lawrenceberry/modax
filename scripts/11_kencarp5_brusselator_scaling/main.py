@@ -35,6 +35,8 @@ from scripts.benchmark_common import (
     time_blocked,
 )
 from solvers.kencarp5 import solve as kencarp5_solve
+from solvers.kencarp5ckn import solve as kencarp5ckn_solve
+from solvers.rodas5 import solve as rodas5_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -52,6 +54,13 @@ _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 _LOCAL_SOLVER_DEFS = [
     ("local_kencarp5_linear", "my kencarp5 linear=True", "#2b7be0", "o", True),
     ("local_kencarp5_newton", "my kencarp5 linear=False", "#e02b2b", "D", False),
+]
+_CUSTOM_KERNEL_SOLVER_DEFS = [
+    ("kencarp5ckn_linear", "numba-cuda kencarp5 linear=True", "#f0a202", "P", True),
+    ("kencarp5ckn_newton", "numba-cuda kencarp5 linear=False", "#d35400", "X", False),
+]
+_RODAS_SOLVER_DEFS = [
+    ("local_rodas5_fp64_lu", "my rodas5 fp64 LU", "#00a6a6", "v", "fp64"),
 ]
 # (key, label, color, marker, solve_fn)
 _JAX_SOLVER_DEFS = [
@@ -111,6 +120,41 @@ def time_diffrax_kencarp5(ex_fn, im_fn, y0, params) -> float:
     return ms
 
 
+def time_custom_kernel_kencarp5(y0, params, *, linear: bool) -> float:
+    def run():
+        return kencarp5ckn_solve(
+            brusselator.explicit_ode_fn_numba_cuda,
+            brusselator.implicit_ode_fn_numba_cuda,
+            brusselator.implicit_jac_fn_numba_cuda,
+            y0=np.asarray(y0),
+            t_span=_T_SPAN,
+            params=np.asarray(params),
+            linear=linear,
+            **_SOLVER_KWARGS,
+        )
+
+    ms, _ = time_blocked(run, _N_RUNS)
+    return ms
+
+
+def time_local_rodas5(ode_fn, y0, params, *, lu_precision: str) -> float:
+    y0_j = jnp.asarray(y0)
+    p_j = jnp.asarray(params)
+
+    def run():
+        return rodas5_solve(
+            ode_fn,
+            y0_j,
+            _T_SPAN,
+            p_j,
+            lu_precision=lu_precision,
+            **_SOLVER_KWARGS,
+        )
+
+    ms, _ = time_blocked(run, _N_RUNS)
+    return ms
+
+
 def time_julia_kencarp5(y0, params, *, ensemble_backend: str) -> float:
     result = julia_kencarp5_solve._julia_solve_with_timing(
         "brusselator",
@@ -124,7 +168,7 @@ def time_julia_kencarp5(y0, params, *, ensemble_backend: str) -> float:
     return result.solve_time_s * 1000
 
 
-def make_solver_specs(ex_fn, im_fn) -> list[SolverSpec]:
+def make_solver_specs(ex_fn, im_fn, ode_fn) -> list[SolverSpec]:
     specs: list[SolverSpec] = []
     for key, label, color, marker, linear in _LOCAL_SOLVER_DEFS:
         specs.append(
@@ -137,6 +181,36 @@ def make_solver_specs(ex_fn, im_fn) -> list[SolverSpec]:
                 timing_fn=(
                     lambda y0, params, linear=linear: time_local_kencarp5(
                         ex_fn, im_fn, y0, params, linear=linear
+                    )
+                ),
+            )
+        )
+    for key, label, color, marker, linear in _CUSTOM_KERNEL_SOLVER_DEFS:
+        specs.append(
+            SolverSpec(
+                key=key,
+                label=label,
+                color=color,
+                marker=marker,
+                linestyle="-",
+                timing_fn=(
+                    lambda y0, params, linear=linear: time_custom_kernel_kencarp5(
+                        y0, params, linear=linear
+                    )
+                ),
+            )
+        )
+    for key, label, color, marker, lu_precision in _RODAS_SOLVER_DEFS:
+        specs.append(
+            SolverSpec(
+                key=key,
+                label=label,
+                color=color,
+                marker=marker,
+                linestyle="--",
+                timing_fn=(
+                    lambda y0, params, precision=lu_precision: time_local_rodas5(
+                        ode_fn, y0, params, lu_precision=precision
                     )
                 ),
             )
@@ -274,9 +348,9 @@ def main() -> None:
     gpu_name = get_gpu_name()
     print(f"GPU: {gpu_name}\n")
 
-    ex_fn, im_fn, _ode_fn, _y0 = brusselator.make_system(_N_GRID)
+    ex_fn, im_fn, ode_fn, _y0 = brusselator.make_system(_N_GRID)
     cache = load_cache(_CACHE_PATH)
-    specs = make_solver_specs(ex_fn, im_fn)
+    specs = make_solver_specs(ex_fn, im_fn, ode_fn)
     rows_by_scenario = run_benchmarks(specs, gpu_name, cache)
 
     slug = gpu_slug(gpu_name)

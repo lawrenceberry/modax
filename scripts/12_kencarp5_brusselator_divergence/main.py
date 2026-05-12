@@ -33,6 +33,8 @@ from scripts.benchmark_common import (
     time_blocked,
 )
 from solvers.kencarp5 import solve as kencarp5_solve
+from solvers.kencarp5ckn import solve as kencarp5ckn_solve
+from solvers.rodas5 import solve as rodas5_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -104,6 +106,29 @@ _SOLVERS = (
         "s",
         "timing",
     ),
+    SolverSpec(
+        "kencarp5ckn_linear",
+        "numba-cuda kencarp5 linear=True",
+        "#f0a202",
+        "P",
+        "kencarp5ckn",
+        linear=True,
+    ),
+    SolverSpec(
+        "kencarp5ckn_newton",
+        "numba-cuda kencarp5 linear=False",
+        "#d35400",
+        "X",
+        "kencarp5ckn",
+        linear=False,
+    ),
+    SolverSpec(
+        "local_rodas5_fp64_lu",
+        "my rodas5 fp64 LU",
+        "#00a6a6",
+        "v",
+        "timing",
+    ),
     # DiffEqGPU 3.13 has no SplitODEProblem support on EnsembleGPUArray,
     # so this Julia row is fully-implicit (no IMEX) — see the comment
     # block at top of reference/solvers/julia/run_solver.jl.
@@ -151,6 +176,15 @@ def solve_timing_only(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
             jnp.asarray(params),
             **_SOLVER_KWARGS,
         )
+    if solver.key == "local_rodas5_fp64_lu":
+        return rodas5_solve(
+            _ODE_FN,
+            jnp.asarray(y0, dtype=jnp.float64),
+            _T_SPAN,
+            jnp.asarray(params),
+            lu_precision="fp64",
+            **_SOLVER_KWARGS,
+        )
     raise ValueError(f"unsupported timing-only solver: {solver.key}")
 
 
@@ -171,6 +205,24 @@ def time_solve(
     if solver.mode == "timing":
         ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
         return ms, None
+    if solver.mode == "kencarp5ckn":
+        assert solver.linear is not None
+        ms, result = time_blocked(
+            lambda: kencarp5ckn_solve(
+                brusselator.explicit_ode_fn_numba_cuda,
+                brusselator.implicit_ode_fn_numba_cuda,
+                brusselator.implicit_jac_fn_numba_cuda,
+                y0=y0,
+                t_span=_T_SPAN,
+                params=params,
+                linear=solver.linear,
+                return_stats=True,
+                **_SOLVER_KWARGS,
+            ),
+            _N_RUNS,
+        )
+        _, stats = result
+        return ms, stats
 
     assert solver.linear is not None
     ms, result = time_blocked(

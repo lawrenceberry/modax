@@ -28,8 +28,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.systems.python import brusselator
-from scripts.benchmark_common import get_gpu_name, gpu_slug
+from scripts.benchmark_common import get_gpu_name, gpu_slug, time_blocked
 from solvers.kencarp5 import solve as kencarp5_solve
+from solvers.kencarp5ckn import solve as kencarp5ckn_solve
+from solvers.rodas5 import solve as rodas5_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -69,6 +71,16 @@ class LinearSetting:
     linear: bool
 
 
+@dataclass(frozen=True)
+class BaselineSolver:
+    key: str
+    label: str
+    color: str
+    marker: str
+    mode: str
+    linear: bool | None = None
+
+
 _SCENARIOS = (
     Scenario("identical", "identical y0", "#2b7be0"),
     Scenario("divergent", "divergent y0", "#e02b2b"),
@@ -80,6 +92,31 @@ _GROUPINGS = (
 _LINEAR_SETTINGS = (
     LinearSetting("lin", "linear=True", True),
     LinearSetting("nl", "linear=False", False),
+)
+_BASELINE_SOLVERS = (
+    BaselineSolver(
+        "kencarp5ckn_lin",
+        "numba-cuda kencarp5 linear=True",
+        "#f0a202",
+        "P",
+        "kencarp5ckn",
+        True,
+    ),
+    BaselineSolver(
+        "kencarp5ckn_nl",
+        "numba-cuda kencarp5 linear=False",
+        "#d35400",
+        "X",
+        "kencarp5ckn",
+        False,
+    ),
+    BaselineSolver(
+        "rodas5_fp64",
+        "my rodas5 fp64 LU",
+        "#00a6a6",
+        "v",
+        "rodas5",
+    ),
 )
 
 _CSV_FIELDS = (
@@ -180,6 +217,62 @@ def time_solve_with_stats(
     return ms, summarize_stats(stats)
 
 
+def summarize_custom_kernel_stats(stats: dict) -> dict[str, float | int]:
+    accepted_steps = np.asarray(stats["accepted_steps"])
+    rejected_steps = np.asarray(stats["rejected_steps"])
+    loop_steps = np.asarray(stats["loop_steps"])
+    active_lane_iterations = int(np.sum(accepted_steps + rejected_steps))
+    return {
+        "total_lane_iterations": active_lane_iterations,
+        "wasted_lane_iterations": 0,
+        "min_batch_loop_iterations": int(np.min(loop_steps)),
+        "max_batch_loop_iterations": int(np.max(loop_steps)),
+        "wasted_lane_iteration_ratio": 0.0,
+    }
+
+
+def time_baseline_solver(
+    solver: BaselineSolver, y0: np.ndarray, params: np.ndarray
+) -> tuple[float, dict[str, float | int]]:
+    if solver.mode == "kencarp5ckn":
+        assert solver.linear is not None
+        ms, result = time_blocked(
+            lambda: kencarp5ckn_solve(
+                brusselator.explicit_ode_fn_numba_cuda,
+                brusselator.implicit_ode_fn_numba_cuda,
+                brusselator.implicit_jac_fn_numba_cuda,
+                y0=y0,
+                t_span=_T_SPAN,
+                params=params,
+                linear=solver.linear,
+                return_stats=True,
+                **_SOLVER_KWARGS,
+            ),
+            _N_RUNS,
+        )
+        _, stats = result
+        return ms, summarize_custom_kernel_stats(stats)
+
+    ms, _ = time_blocked(
+        lambda: rodas5_solve(
+            _ODE_FN,
+            jnp.asarray(y0, dtype=jnp.float64),
+            _T_SPAN,
+            jnp.asarray(params),
+            lu_precision="fp64",
+            **_SOLVER_KWARGS,
+        ),
+        _N_RUNS,
+    )
+    return ms, {
+        "total_lane_iterations": 0,
+        "wasted_lane_iterations": 0,
+        "min_batch_loop_iterations": 0,
+        "max_batch_loop_iterations": 0,
+        "wasted_lane_iteration_ratio": 0.0,
+    }
+
+
 def active_attempt_order(y0: np.ndarray, params: np.ndarray) -> np.ndarray:
     _, stats = solve_with_stats(y0, params, batch_size=None, linear=True)
     jax.block_until_ready(stats)
@@ -252,6 +345,41 @@ def collect_row(
     return row
 
 
+def baseline_case_key(
+    scenario: Scenario, grouping: Grouping, solver: BaselineSolver
+) -> str:
+    return f"{scenario.key}_{grouping.key}_{solver.key}"
+
+
+def collect_baseline_row(
+    gpu_name: str,
+    scenario: Scenario,
+    grouping: Grouping,
+    solver: BaselineSolver,
+    y0: np.ndarray,
+    params: np.ndarray,
+) -> dict | None:
+    print(
+        f"  {scenario.label:<14} {grouping.label:<6} {solver.label:<32} ...",
+        end=" ",
+        flush=True,
+    )
+    try:
+        ms, stats = time_baseline_solver(solver, y0, params)
+    except Exception as exc:
+        print(f"FAILED ({exc})")
+        return None
+    row = {
+        "gpu": gpu_name,
+        "case_key": baseline_case_key(scenario, grouping, solver),
+        "batch_size": 0,
+        "solve_time_ms": float(ms),
+        **stats,
+    }
+    print(format_stats(row), flush=True)
+    return row
+
+
 def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
@@ -291,6 +419,24 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                 save_cache(cache)
             if row is not None:
                 rows.append(row)
+        if linear.key == _LINEAR_SETTINGS[-1].key:
+            for solver in _BASELINE_SOLVERS:
+                bkey = baseline_case_key(scenario, grouping, solver)
+                cached = gpu_cache.get(bkey)
+                if is_complete_row(cached):
+                    row = cached
+                    print(
+                        f"  {scenario.label:<14} {grouping.label:<6} "
+                        f"{solver.label:<32} ... (cached) {format_stats(row)}"
+                    )
+                else:
+                    row = collect_baseline_row(
+                        gpu_name, scenario, grouping, solver, y0, params
+                    )
+                    gpu_cache[bkey] = row
+                    save_cache(cache)
+                if row is not None:
+                    rows.append(row)
         print()
     return rows
 
@@ -350,6 +496,28 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
         )
         time_handles.append(time_line)
         waste_handles.append(waste_line)
+
+    baseline_x = _BATCH_SIZES[-1] * 1.3
+    for scenario in _SCENARIOS:
+        for grouping in _GROUPINGS:
+            if scenario.key == "identical" and grouping.key == "sorted":
+                continue
+            for solver in _BASELINE_SOLVERS:
+                case_rows = rows_for_case(
+                    rows, baseline_case_key(scenario, grouping, solver)
+                )
+                _, times_ms, _ = case_rows
+                if not times_ms:
+                    continue
+                (line,) = ax_time.plot(
+                    [baseline_x],
+                    [times_ms[0]],
+                    color=solver.color,
+                    marker=solver.marker,
+                    linestyle="None",
+                    label=f"baseline: {scenario.label} / {grouping.label} / {solver.label}",
+                )
+                time_handles.append(line)
 
     ax_time.set_xscale("log")
     ax_time.set_yscale("log")

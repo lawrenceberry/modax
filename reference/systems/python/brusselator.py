@@ -98,6 +98,7 @@ trajectory that exercises both halves of the IMEX split.
 
 import jax.numpy as jnp
 import numpy as np
+from numba import cuda
 
 N_GRID = 32
 N_VARS = 2 * N_GRID
@@ -183,6 +184,66 @@ def implicit_ode_fn(y, t, p):
 
 def ode_fn(y, t, p):
     return _DEFAULT_ODE(y, t, p)
+
+
+@cuda.jit(device=True)
+def explicit_ode_fn_numba_cuda(y, t, p, dy, i):
+    scale = p[i, 0]
+    a_eff = scale * A
+    b_eff = scale * B
+    n_grid = y.shape[1] // 2
+    for g in range(n_grid):
+        u = y[i, 2 * g]
+        v = y[i, 2 * g + 1]
+        u2v = u * u * v
+        dy[i, 2 * g] = a_eff + u2v - (b_eff + 1.0) * u
+        dy[i, 2 * g + 1] = b_eff * u - u2v
+
+
+@cuda.jit(device=True)
+def implicit_ode_fn_numba_cuda(y, t, p, dy, i):
+    n_grid = y.shape[1] // 2
+    dx = L / n_grid
+    diff_coeff = ALPHA / (dx * dx)
+    for g in range(n_grid):
+        left = g - 1
+        if left < 0:
+            left = n_grid - 1
+        right = g + 1
+        if right >= n_grid:
+            right = 0
+        u = y[i, 2 * g]
+        v = y[i, 2 * g + 1]
+        lap_u = y[i, 2 * right] - 2.0 * u + y[i, 2 * left]
+        lap_v = y[i, 2 * right + 1] - 2.0 * v + y[i, 2 * left + 1]
+        dy[i, 2 * g] = diff_coeff * lap_u
+        dy[i, 2 * g + 1] = diff_coeff * lap_v
+
+
+@cuda.jit(device=True)
+def implicit_jac_fn_numba_cuda(y, t, p, jac, i):
+    n_vars = jac.shape[1]
+    n_grid = n_vars // 2
+    dx = L / n_grid
+    diff_coeff = ALPHA / (dx * dx)
+    for r in range(n_vars):
+        for c in range(n_vars):
+            jac[i, r, c] = 0.0
+    for g in range(n_grid):
+        left = g - 1
+        if left < 0:
+            left = n_grid - 1
+        right = g + 1
+        if right >= n_grid:
+            right = 0
+        u_row = 2 * g
+        v_row = 2 * g + 1
+        jac[i, u_row, 2 * g] += -2.0 * diff_coeff
+        jac[i, u_row, 2 * left] += diff_coeff
+        jac[i, u_row, 2 * right] += diff_coeff
+        jac[i, v_row, 2 * g + 1] += -2.0 * diff_coeff
+        jac[i, v_row, 2 * left + 1] += diff_coeff
+        jac[i, v_row, 2 * right + 1] += diff_coeff
 
 
 def make_params(size: int, seed: int = 42) -> np.ndarray:
