@@ -1,8 +1,9 @@
 function make_coupled_vdp_lattice_spec(config)
     n_osc = require_config_int(config, "n_osc")
-    MU = 100.0
-    D = 10.0
-    OMEGA_SQ = 1.0
+    MU = Float64(get(config, "mu", 100.0))
+    D = Float64(get(config, "d", 10.0))
+    OMEGA = Float64(get(config, "omega", 1.0))
+    OMEGA_SQ = OMEGA * OMEGA
 
     function ode!(du, u, p, t)
         scale = p[1]
@@ -50,7 +51,7 @@ function make_coupled_vdp_lattice_spec(config)
             ir = mod(i, n_osc_local) + 1
             laplacian_i = u[2ir-1] - 2.0 * xi + u[2il-1]
             du[2i-1] = vi
-            du[2i] = scale * 100.0 * (1.0 - xi * xi) * vi - xi + 10.0 * laplacian_i
+            du[2i] = scale * MU * (1.0 - xi * xi) * vi - OMEGA_SQ * xi + D * laplacian_i
         end
         return SVector(du)
     end

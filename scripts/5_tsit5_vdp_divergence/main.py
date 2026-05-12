@@ -1,0 +1,448 @@
+"""High-dimensional non-stiff VDP divergence benchmark for Tsit5 solvers.
+
+Runs the 64D non-stiff coupled VDP lattice (n_osc = 32, mu = 1.0) with 1000
+trajectories while sweeping the ``make_scenario(..., divergence=...)`` knob.
+For each solver and divergence value, the benchmark records solve time and the
+actual distribution of accepted plus rejected Tsit5 steps.
+
+Usage:
+    uv run python scripts/5_tsit5_vdp_divergence/main.py
+"""
+
+import csv
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+import jax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
+from numba import cuda
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
+from reference.systems.python import coupled_vdp_lattice
+from scripts.benchmark_common import (
+    get_gpu_name,
+    load_cache,
+    output_paths,
+    save_cache,
+    time_blocked,
+)
+from solvers.tsit5 import solve as tsit5_solve
+from solvers.tsit5ckn import prepare_solve as tsit5ckn_prepare_solve
+from solvers.tsit5ckn import run_prepared as tsit5ckn_run_prepared
+
+jax.config.update("jax_enable_x64", True)
+
+_MU_NONSTIFF = 1.0
+_D = 10.0
+_OMEGA = 1.0
+
+_N_OSC = 32
+_DIM = 2 * _N_OSC
+_ENSEMBLE_SIZE = 1000
+_N_RUNS = 10
+_T_SPAN = coupled_vdp_lattice.TIMES
+_DIVERGENCES = (0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0)
+_SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_CACHE_PATH = _SCRIPT_DIR / "results.json"
+_JULIA_CACHE_VERSION = 1
+
+_ODE_FN, _ = coupled_vdp_lattice.make_system(_N_OSC, mu=_MU_NONSTIFF)
+
+_CSV_FIELDS = (
+    "gpu",
+    "solver_key",
+    "solver",
+    "divergence",
+    "dim",
+    "n_osc",
+    "ensemble_size",
+    "solve_time_ms",
+    "mean_steps",
+    "step_std",
+    "step_cv",
+    "normalized_solve_time_ms_per_step",
+    "step_variance",
+    "min_steps",
+    "max_steps",
+    "rejected_steps_mean",
+)
+
+
+@dataclass(frozen=True)
+class SolverSpec:
+    key: str
+    label: str
+    color: str
+    marker: str
+    mode: str
+    ensemble_backend: str | None = None
+    sort_by_steps: bool = False
+
+
+_SOLVERS = (
+    SolverSpec("tsit5", "JAX Tsit5", "#2b7be0", "o", "stats"),
+    SolverSpec("tsit5ckn", "numba-cuda Tsit5", "#f0a202", "s", "stats"),
+    SolverSpec(
+        "tsit5ckn_sorted",
+        "numba-cuda Tsit5 sorted",
+        "#f0a202",
+        "P",
+        "stats",
+        sort_by_steps=True,
+    ),
+    SolverSpec(
+        "julia_tsit5_EnsembleGPUKernel",
+        "Julia Tsit5 GPUKernel",
+        "#d35400",
+        "v",
+        "julia",
+        "EnsembleGPUKernel",
+    ),
+    SolverSpec(
+        "julia_tsit5_EnsembleGPUKernel_sorted",
+        "Julia Tsit5 GPUKernel sorted",
+        "#d35400",
+        "X",
+        "julia",
+        "EnsembleGPUKernel",
+        True,
+    ),
+)
+
+
+@cuda.jit(device=True)
+def ode_fn_vdp_numba(y, t, p, dy, i):
+    n_osc = int(p[i, 0])
+    scale = p[i, 1]
+    mu = 1.0
+    diffusion = 10.0
+    for k in range(n_osc):
+        kp1 = (k + 1) % n_osc
+        km1 = (k + n_osc - 1) % n_osc
+        xk = y[i, 2 * k]
+        vk = y[i, 2 * k + 1]
+        lap = y[i, 2 * kp1] - 2.0 * xk + y[i, 2 * km1]
+        dy[i, 2 * k] = vk
+        dy[i, 2 * k + 1] = scale * mu * (1.0 - xk * xk) * vk - xk + diffusion * lap
+
+
+def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
+    return coupled_vdp_lattice.make_scenario(
+        "divergent",
+        _N_OSC,
+        _ENSEMBLE_SIZE,
+        seed=42,
+        divergence=divergence,
+    )
+
+
+def _ckn_params(params: np.ndarray) -> np.ndarray:
+    return np.column_stack(
+        [
+            np.full(params.shape[0], float(_N_OSC), dtype=np.float64),
+            params[:, 0],
+        ]
+    )
+
+
+def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
+    if solver.key.startswith("tsit5ckn"):
+        prepared = tsit5ckn_prepare_solve(
+            ode_fn_vdp_numba,
+            y0=y0,
+            t_span=_T_SPAN,
+            params=_ckn_params(params),
+            **_SOLVER_KWARGS,
+        )
+        return tsit5ckn_run_prepared(
+            prepared,
+            return_stats=True,
+            copy_solution=False,
+        )
+
+    return tsit5_solve(
+        _ODE_FN,
+        y0=jnp.asarray(y0, dtype=jnp.float64),
+        t_span=_T_SPAN,
+        params=jnp.asarray(params, dtype=jnp.float64),
+        return_stats=True,
+        **_SOLVER_KWARGS,
+    )
+
+
+def time_solve(
+    solver: SolverSpec, y0: np.ndarray, params: np.ndarray
+) -> tuple[float, dict | None]:
+    if solver.mode == "julia":
+        result = julia_tsit5_solve._julia_solve_with_timing(
+            "coupled_vdp_lattice",
+            y0,
+            _T_SPAN,
+            params,
+            system_config={
+                "n_osc": _N_OSC,
+                "mu": _MU_NONSTIFF,
+                "d": _D,
+                "omega": _OMEGA,
+            },
+            ensemble_backend=solver.ensemble_backend,
+            **_SOLVER_KWARGS,
+        )
+        return result.solve_time_s * 1000, None
+    if solver.key.startswith("tsit5ckn"):
+        prepared = tsit5ckn_prepare_solve(
+            ode_fn_vdp_numba,
+            y0=y0,
+            t_span=_T_SPAN,
+            params=_ckn_params(params),
+            **_SOLVER_KWARGS,
+        )
+        ms, result = time_blocked(
+            lambda: tsit5ckn_run_prepared(
+                prepared,
+                return_stats=True,
+                copy_solution=False,
+            ),
+            _N_RUNS,
+        )
+        _, stats = result
+        return ms, stats
+
+    ms, result = time_blocked(lambda: solve_with_stats(solver, y0, params), _N_RUNS)
+    _, stats = result
+    return ms, stats
+
+
+def summarize_stats(stats: dict) -> dict[str, float | int]:
+    accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
+    rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
+    total_steps = accepted_steps + rejected_steps
+    mean_steps = float(np.mean(total_steps))
+    ddof = 1 if total_steps.size > 1 else 0
+    step_variance = float(np.var(total_steps, ddof=ddof))
+    step_std = float(np.sqrt(step_variance))
+    step_cv = step_std / mean_steps if mean_steps else 0.0
+    return {
+        "mean_steps": mean_steps,
+        "step_std": step_std,
+        "step_cv": float(step_cv),
+        "step_variance": step_variance,
+        "min_steps": int(np.min(total_steps)),
+        "max_steps": int(np.max(total_steps)),
+        "rejected_steps_mean": float(np.mean(rejected_steps)),
+    }
+
+
+def sort_by_attempted_steps(
+    y0: np.ndarray, params: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, dict[str, float | int]]:
+    _, stats = solve_with_stats(_SOLVERS[0], y0, params)
+    jax.block_until_ready(stats)
+    accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
+    rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
+    attempts = accepted_steps + rejected_steps
+    order = np.argsort(-attempts, kind="stable")
+    return y0[order], params[order], summarize_stats(stats)
+
+
+def stats_from_row(row: dict) -> dict[str, float | int]:
+    return {
+        "mean_steps": row["mean_steps"],
+        "step_std": row["step_std"],
+        "step_cv": row["step_cv"],
+        "step_variance": row["step_variance"],
+        "min_steps": row["min_steps"],
+        "max_steps": row["max_steps"],
+        "rejected_steps_mean": row["rejected_steps_mean"],
+    }
+
+
+def format_row(row: dict) -> str:
+    return (
+        f"{row['solve_time_ms']:.1f} ms, "
+        f"mean_steps={row['mean_steps']:.1f}, "
+        f"step_cv={row['step_cv']:.3f}, "
+        f"norm={row['normalized_solve_time_ms_per_step']:.4f} ms/step"
+    )
+
+
+def is_complete_row(value) -> bool:
+    return isinstance(value, dict) and all(field in value for field in _CSV_FIELDS)
+
+
+def is_current_cached_row(value, solver: SolverSpec) -> bool:
+    if not is_complete_row(value):
+        return False
+    if solver.mode == "julia":
+        return value.get("julia_cache_version") == _JULIA_CACHE_VERSION
+    return True
+
+
+def collect_row(
+    gpu_name: str,
+    solver: SolverSpec,
+    divergence: float,
+    stats_summary: dict | None = None,
+) -> dict | None:
+    print(
+        f"  {solver.label:<28} divergence={divergence:>4.2f} ...",
+        end=" ",
+        flush=True,
+    )
+    y0, params = make_data(divergence)
+    if solver.sort_by_steps:
+        y0, params, sorted_stats_summary = sort_by_attempted_steps(y0, params)
+        if stats_summary is None:
+            stats_summary = sorted_stats_summary
+    try:
+        ms, stats = time_solve(solver, y0, params)
+    except Exception as exc:
+        print(f"FAILED ({exc})", flush=True)
+        return None
+
+    if stats is not None:
+        stats_summary = summarize_stats(stats)
+    elif stats_summary is None:
+        _, stats = solve_with_stats(_SOLVERS[0], y0, params)
+        jax.block_until_ready(stats)
+        stats_summary = summarize_stats(stats)
+
+    normalized = (
+        ms / stats_summary["mean_steps"] if stats_summary["mean_steps"] else 0.0
+    )
+    row = {
+        "gpu": gpu_name,
+        "solver_key": solver.key,
+        "solver": solver.label,
+        "divergence": float(divergence),
+        "dim": _DIM,
+        "n_osc": _N_OSC,
+        "ensemble_size": _ENSEMBLE_SIZE,
+        "solve_time_ms": float(ms),
+        **stats_summary,
+        "normalized_solve_time_ms_per_step": float(normalized),
+    }
+    if solver.mode == "julia":
+        row["julia_cache_version"] = _JULIA_CACHE_VERSION
+    print(format_row(row), flush=True)
+    return row
+
+
+def _jax_warmup() -> None:
+    y0, params = make_data(_DIVERGENCES[0])
+    jy0 = jnp.asarray(y0, dtype=jnp.float64)
+    jparams = jnp.asarray(params)
+    for _ in range(2):
+        result = tsit5_solve(
+            _ODE_FN,
+            y0=jy0,
+            t_span=_T_SPAN,
+            params=jparams,
+            return_stats=True,
+            **_SOLVER_KWARGS,
+        )
+        jax.block_until_ready(result)
+
+
+def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
+    print("Warming up JAX solver...", end=" ", flush=True)
+    _jax_warmup()
+    print("done.", flush=True)
+    gpu_cache = cache.setdefault(gpu_name, {})
+    rows: list[dict] = []
+    for solver in _SOLVERS:
+        print(f"\n{solver.label}:")
+        solver_cache = gpu_cache.setdefault(solver.key, {})
+        for divergence in _DIVERGENCES:
+            divergence_key = f"{divergence:.6g}"
+            cached = solver_cache.get(divergence_key)
+            if is_current_cached_row(cached, solver):
+                row = cached
+                print(
+                    f"  {solver.label:<28} divergence={divergence:>4.2f} ... "
+                    f"(cached) {format_row(row)}",
+                    flush=True,
+                )
+            else:
+                local_row = gpu_cache.get("tsit5", {}).get(divergence_key)
+                stats_summary = (
+                    stats_from_row(local_row) if is_complete_row(local_row) else None
+                )
+                row = collect_row(gpu_name, solver, divergence, stats_summary)
+                solver_cache[divergence_key] = row
+                save_cache(_CACHE_PATH, cache)
+            if row is not None:
+                rows.append(row)
+    return rows
+
+
+def save_csv(rows: list[dict], path: Path) -> None:
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"Results saved to {path}")
+
+
+def rows_for_solver(rows: list[dict], solver_key: str) -> list[dict]:
+    return sorted(
+        (row for row in rows if row["solver_key"] == solver_key),
+        key=lambda row: row["divergence"],
+    )
+
+
+def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    for solver in _SOLVERS:
+        solver_rows = rows_for_solver(rows, solver.key)
+        if not solver_rows:
+            continue
+        xs = [row["step_cv"] for row in solver_rows]
+        ys = [row["normalized_solve_time_ms_per_step"] for row in solver_rows]
+        ax.scatter(
+            xs,
+            ys,
+            color=solver.color,
+            marker=solver.marker,
+            s=42,
+            label=solver.label,
+        )
+
+    ax.set_xlabel("Normalized standard deviation of attempted steps")
+    ax.set_ylabel("Solve time / mean attempted steps (ms)")
+    ax.set_yscale("log")
+    ax.set_title(
+        f"{_DIM}D coupled VDP non-stiff (μ={_MU_NONSTIFF}) Tsit5 divergence — "
+        f"{_ENSEMBLE_SIZE} trajectories — {gpu_name}"
+    )
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+
+
+def main() -> None:
+    gpu_name = get_gpu_name()
+    print(f"GPU: {gpu_name}")
+    print(
+        f"System: {_DIM}D non-stiff coupled VDP lattice (μ={_MU_NONSTIFF}), "
+        f"{_ENSEMBLE_SIZE} trajectories\n"
+    )
+
+    cache = load_cache(_CACHE_PATH)
+    rows = run_benchmarks(gpu_name, cache)
+    csv_path, plot_path = output_paths(_SCRIPT_DIR, gpu_name)
+    save_csv(rows, csv_path)
+    plot(rows, gpu_name, plot_path)
+
+
+if __name__ == "__main__":
+    main()

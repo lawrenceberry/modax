@@ -1,0 +1,51 @@
+solver_key,solver,dim,solve_time_ms
+local_tsit5,my tsit5,2,19.593460857868195
+local_tsit5,my tsit5,4,19.476049998775125
+local_tsit5,my tsit5,6,19.651703909039497
+local_tsit5,my tsit5,8,19.684769678860903
+local_tsit5,my tsit5,10,19.726780708879232
+local_tsit5,my tsit5,12,19.73537662997842
+local_tsit5,my tsit5,16,19.825591426342726
+local_tsit5,my tsit5,32,19.961007265374064
+local_tsit5,my tsit5,64,20.14410700649023
+local_tsit5,my tsit5,128,20.98040310665965
+tsit5ckn,numba-cuda tsit5,2,1.2033957988023758
+tsit5ckn,numba-cuda tsit5,4,1.313265599310398
+tsit5ckn,numba-cuda tsit5,6,1.3618025928735733
+tsit5ckn,numba-cuda tsit5,8,1.5515903942286968
+tsit5ckn,numba-cuda tsit5,10,1.5705463010817766
+tsit5ckn,numba-cuda tsit5,12,1.6711821779608727
+tsit5ckn,numba-cuda tsit5,16,2.258111583068967
+tsit5ckn,numba-cuda tsit5,32,4.517266200855374
+tsit5ckn,numba-cuda tsit5,64,
+tsit5ckn,numba-cuda tsit5,128,
+diffrax_tsit5,diffrax tsit5,2,127.22742450423539
+diffrax_tsit5,diffrax tsit5,4,127.18390310183167
+diffrax_tsit5,diffrax tsit5,6,127.46234852820635
+diffrax_tsit5,diffrax tsit5,8,127.26111738011242
+diffrax_tsit5,diffrax tsit5,10,127.30608778074384
+diffrax_tsit5,diffrax tsit5,12,127.52880826592444
+diffrax_tsit5,diffrax tsit5,16,127.84673557616772
+diffrax_tsit5,diffrax tsit5,32,127.35121590085328
+diffrax_tsit5,diffrax tsit5,64,127.96038580127062
+diffrax_tsit5,diffrax tsit5,128,128.7325724028051
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,2,
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,4,
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,6,
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,8,
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,10,
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,12,
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,16,
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,32,
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,64,
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,128,
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,2,
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,4,3.207826
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,6,3.484705
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,8,3.522534
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,10,3.608284
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,12,3.6907929999999998
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,16,4.14202
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,32,7.041971
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,64,10.890024
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,128,

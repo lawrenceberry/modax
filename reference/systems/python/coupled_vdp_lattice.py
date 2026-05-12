@@ -25,8 +25,12 @@ def ode_fn(y, t, p):
     return jnp.stack([dx, dv], axis=1).ravel()
 
 
-def make_system(n_osc: int):
-    """Return (ode_fn, y0) for a ring of n_osc coupled van der Pol oscillators."""
+def make_system(n_osc: int, *, mu: float = MU, d: float = D, omega: float = OMEGA):
+    """Return (ode_fn, y0) for a ring of n_osc coupled van der Pol oscillators.
+
+    Defaults reproduce the stiff baseline (mu=100, d=10, omega=1). Pass
+    ``mu=1.0`` for the non-stiff variant used by explicit-method benchmarks.
+    """
     y0 = jnp.array([2.0, 0.0] * n_osc, dtype=jnp.float64)
 
     def ode_fn(y, t, p):
@@ -36,7 +40,7 @@ def make_system(n_osc: int):
         v = y[1::2]
         laplacian = jnp.roll(x, -1) - 2.0 * x + jnp.roll(x, 1)
         dx = v
-        dv = scale * MU * (1.0 - x * x) * v - OMEGA**2 * x + D * laplacian
+        dv = scale * mu * (1.0 - x * x) * v - (omega**2) * x + d * laplacian
         return jnp.stack([dx, dv], axis=1).ravel()
 
     return ode_fn, y0

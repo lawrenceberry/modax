@@ -153,16 +153,30 @@ function main(args)
     ensemble_alg = make_ensemble_algorithm(ensemble_backend)
 
     # Burn startup/JIT/first-launch overhead before timing the actual solve.
+    # Drop each warmup solution and reclaim CUDA pool memory before the next
+    # solve allocates — otherwise the per-stage GPUArray scratch buffers and
+    # solution objects from prior iterations stay pinned in the CUDA pool and
+    # OOM at high dimensions / large ensembles.
     for _ in 1:SOLVE_WARMUP_RUNS
         warmup_sol = solve_ensemble(
             ensemble_prob, alg, ensemble_alg, solve_kwargs, first_step
         )
         CUDA.synchronize()
+        warmup_sol = nothing
+        GC.gc()
+        CUDA.reclaim()
     end
 
     solve_time_samples_s = Float64[]
     sol = nothing
     for _ in 1:SOLVE_TIMED_RUNS
+        # Free the previous timed solution before allocating the next one so
+        # the CUDA pool footprint stays at one solution's worth, not three.
+        if sol !== nothing
+            sol = nothing
+            GC.gc()
+            CUDA.reclaim()
+        end
         solve_start_ns = time_ns()
         sol = solve_ensemble(ensemble_prob, alg, ensemble_alg, solve_kwargs, first_step)
         CUDA.synchronize()
@@ -171,6 +185,9 @@ function main(args)
     solve_time_s = minimum(solve_time_samples_s)
 
     ys = collect_solution(sol, n_trajectories, length(t_span), length(y0))
+    sol = nothing
+    GC.gc()
+    CUDA.reclaim()
     write_c_order_array(ys_bin, ys_meta, ys)
     JSON.print(
         stdout,

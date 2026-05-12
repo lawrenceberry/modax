@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import gc
 import math
 from dataclasses import dataclass
 from typing import Any
@@ -66,6 +67,19 @@ FACTOR_MIN = 0.2
 FACTOR_MAX = 10.0
 
 _WORKSPACE_CACHE: dict[tuple[int, int, int, int], object] = {}
+
+
+def clear_caches() -> None:
+    """Drop the cached device workspaces and compiled kernels.
+
+    Useful when sweeping problem sizes in a single process: each unique
+    ``n_vars`` allocates a fresh device workspace and compiles a separate
+    kernel, and neither is released by GC because they're held by the
+    module-level caches.
+    """
+    _WORKSPACE_CACHE.clear()
+    _make_kernel.cache_clear()
+    gc.collect()
 
 
 def normalize_inputs(y0, t_span, params, first_step):
