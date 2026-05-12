@@ -195,8 +195,7 @@ def test_rodas5(benchmark, kaps_system, ensemble_size, lu_precision):
     ids=lambda p: f"{p[0]}pairs-eps{p[1]:.0e}",
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
-@pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarp5(benchmark, kaps_system, ensemble_size, lu_precision):
+def test_kencarp5(benchmark, kaps_system, ensemble_size):
     """KenCarp5 nonlinear benchmark with exact-solution validation."""
     system = kaps_system
     params = _make_params_batch(ensemble_size, seed=42)
@@ -207,7 +206,6 @@ def test_kencarp5(benchmark, kaps_system, ensemble_size, lu_precision):
             y0=system["y0"],
             t_span=_TIMES,
             params=params,
-            lu_precision=lu_precision,
             first_step=1e-6,
             rtol=1e-6,
             atol=1e-8,

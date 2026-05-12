@@ -211,9 +211,8 @@ def test_rodas5(benchmark, moving_diffusion_spike_system, ensemble_size, lu_prec
     "moving_diffusion_spike_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
-@pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
 def test_kencarp5(
-    benchmark, moving_diffusion_spike_system, ensemble_size, lu_precision
+    benchmark, moving_diffusion_spike_system, ensemble_size
 ):
     """KenCarp5 nonlinear benchmark with cached Diffrax validation on practical ensemble sizes."""
     system = moving_diffusion_spike_system
@@ -225,7 +224,6 @@ def test_kencarp5(
             y0=system["y0"],
             t_span=_TIMES,
             params=params,
-            lu_precision=lu_precision,
             linear=True,
             first_step=1e-6,
             rtol=1e-6,

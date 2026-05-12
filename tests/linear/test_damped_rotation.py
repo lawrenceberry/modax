@@ -136,8 +136,7 @@ def _run_julia_damped_rotation(
     ids=lambda n_pairs: f"{2 * n_pairs}d",
 )
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
-@pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarp5(benchmark, damped_rotation_system, ensemble_size, lu_precision):
+def test_kencarp5(benchmark, damped_rotation_system, ensemble_size):
     """KenCarp5 nonlinear benchmark on the same linear system."""
     system = damped_rotation_system
     params = _make_params_batch(ensemble_size, seed=42)
@@ -148,7 +147,6 @@ def test_kencarp5(benchmark, damped_rotation_system, ensemble_size, lu_precision
             y0=system["y0"],
             t_span=_TIMES,
             params=params,
-            lu_precision=lu_precision,
             linear=True,
             first_step=1e-4,
             rtol=1e-6,

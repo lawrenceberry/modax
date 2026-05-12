@@ -158,8 +158,7 @@ def test_rodas5(benchmark, nn_reaction_system, ensemble_size, lu_precision):
 
 @pytest.mark.parametrize("nn_reaction_system", _SYSTEM_DIMS, indirect=True, ids=_dim_id)
 @pytest.mark.parametrize("ensemble_size", _ENSEMBLE_SIZES)
-@pytest.mark.parametrize("lu_precision", ["fp32", "fp64"])
-def test_kencarp5(benchmark, nn_reaction_system, ensemble_size, lu_precision):
+def test_kencarp5(benchmark, nn_reaction_system, ensemble_size):
     """KenCarp5 nonlinear benchmark with cached Diffrax validation on practical ensemble sizes."""
     system = nn_reaction_system
     params = _make_params_batch(ensemble_size, seed=42)
@@ -170,7 +169,6 @@ def test_kencarp5(benchmark, nn_reaction_system, ensemble_size, lu_precision):
             y0=system["y0"],
             t_span=_TIMES,
             params=params,
-            lu_precision=lu_precision,
             linear=True,
             first_step=1e-6,
             rtol=1e-6,

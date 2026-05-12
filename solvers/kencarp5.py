@@ -17,7 +17,6 @@ maps them one at a time.
 """
 
 import functools
-from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -103,10 +102,24 @@ def _row_partition(mask):
     """Return a stable inactive-first permutation and its inverse.
 
     Rows where ``mask`` is False come first; True (active) rows come last.
+
+    Implemented via cumsum rather than ``jnp.argsort(stable=True)`` because the
+    latter trips an XLA ``permutation_sort_simplifier`` bug when the mask is
+    constant under ``vmap`` inside ``jax.lax.while_loop`` (the case when every
+    row of the implicit Jacobian is nonzero — e.g. linear diffusion).
     """
-    perm = jnp.argsort(mask.astype(jnp.int32), axis=-1, stable=True)
-    inv_perm = jnp.argsort(perm, axis=-1)
-    n_active = jnp.sum(mask, axis=-1, dtype=jnp.int32)
+    n = mask.shape[-1]
+    mask_i = mask.astype(jnp.int32)
+    cum_active = jnp.cumsum(mask_i, axis=-1) - mask_i
+    cum_inactive = jnp.cumsum(1 - mask_i, axis=-1) - (1 - mask_i)
+    n_active = jnp.sum(mask_i, axis=-1, dtype=jnp.int32)
+    n_inactive = jnp.int32(n) - n_active
+    # target[i] = position in the partitioned permutation where row i ends up.
+    inv_perm = jnp.where(mask, n_inactive + cum_active, cum_inactive).astype(
+        jnp.int32
+    )
+    indices = jnp.arange(n, dtype=jnp.int32)
+    perm = jnp.zeros(n, dtype=jnp.int32).at[inv_perm].set(indices)
     return perm, inv_perm, n_active
 
 
@@ -123,7 +136,7 @@ def _permute_matrix(mat, perm):
     return jnp.take_along_axis(mat_rows, perm[..., None, :], axis=-1)
 
 
-def _make_reduced_implicit_solver(n_vars, lu_dtype):
+def _make_reduced_implicit_solver(n_vars):
     """Solve ``(I - coeff * J) x = rhs`` with a single-trajectory reduced LU.
 
     Rows where ``mask`` is False are inactive: their implicit Jacobian rows
@@ -145,16 +158,10 @@ def _make_reduced_implicit_solver(n_vars, lu_dtype):
                 x_inactive = rhs_perm[:_ni]
                 jac_an = jac_perm[_ni:, :_ni]
                 jac_aa = jac_perm[_ni:, _ni:]
-                mat_aa = jnp.eye(_k, dtype=lu_dtype) - coeff.astype(
-                    lu_dtype
-                ) * jac_aa.astype(lu_dtype)
-                rhs_active = rhs_perm[_ni:] + coeff * (
-                    jac_an.astype(jnp.float64) @ x_inactive.astype(jnp.float64)
-                )
+                mat_aa = jnp.eye(_k, dtype=jnp.float64) - coeff * jac_aa
+                rhs_active = rhs_perm[_ni:] + coeff * (jac_an @ x_inactive)
                 lu_piv = jax.scipy.linalg.lu_factor(mat_aa)
-                x_active = jax.scipy.linalg.lu_solve(
-                    lu_piv, rhs_active.astype(lu_dtype)
-                ).astype(jnp.float64)
+                x_active = jax.scipy.linalg.lu_solve(lu_piv, rhs_active)
                 return jnp.concatenate((x_inactive, x_active), axis=0)
 
             branches.append(_branch)
@@ -176,7 +183,6 @@ def _make_reduced_implicit_solver(n_vars, lu_dtype):
     static_argnames=(
         "explicit_ode_fn",
         "implicit_ode_fn",
-        "lu_precision",
         "linear",
         "batch_size",
         "max_steps",
@@ -190,7 +196,6 @@ def solve(
     t_span,
     params,
     *,
-    lu_precision: Literal["fp32", "fp64"] = "fp64",
     linear: bool = False,
     batch_size=None,
     rtol=1e-8,
@@ -215,8 +220,6 @@ def solve(
     params : array, shape (n_params,) or (N, n_params)
         Parameters. A 1-D array is broadcast to all trajectories; a 2-D array
         supplies distinct parameters for each trajectory.
-    lu_precision :
-        Precision for LU factorization and LU solve: ``"fp32"`` or ``"fp64"``.
     linear : bool
         When ``True``, treat ``implicit_ode_fn`` as linear in ``y`` and use a
         single LU solve per stage instead of Newton iteration.
@@ -242,7 +245,6 @@ def solve(
         Solution at each save time for each trajectory. If ``return_stats`` is
         True, returns ``(solution, stats)``.
     """
-    lu_dtype = jnp.float32 if lu_precision == "fp32" else jnp.float64
     implicit_jac_fn = jax.jacfwd(implicit_ode_fn, argnums=0)
 
     y0_in = jnp.asarray(y0, dtype=jnp.float64)
@@ -280,7 +282,7 @@ def solve(
     bs = N if batch_size is None else batch_size
     n_chunks = (N + bs - 1) // bs
 
-    solve_row_masked = _make_reduced_implicit_solver(n_vars, lu_dtype)
+    solve_row_masked = _make_reduced_implicit_solver(n_vars)
 
     def _solve_one(params_one, y0_one):
         y_init = y0_one.copy()

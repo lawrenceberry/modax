@@ -10,6 +10,7 @@ include("robertson.jl")
 include("vdp.jl")
 include("kaps.jl")
 include("stiff_scalar.jl")
+include("brusselator.jl")
 
 function make_system_spec(system_name::String, config)
     if system_name == "coupled_vdp_lattice"
@@ -36,6 +37,8 @@ function make_system_spec(system_name::String, config)
         return make_kaps_spec(config)
     elseif system_name == "stiff_scalar"
         return make_stiff_scalar_spec(config)
+    elseif system_name == "brusselator"
+        return make_brusselator_spec(config)
     end
     error("Unknown reference ODE system '$system_name'")
 end
