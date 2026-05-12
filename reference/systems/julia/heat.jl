@@ -1,4 +1,4 @@
-function make_heat_equation_spec(config)
+function make_heat_spec(config)
     n_vars = require_config_int(config, "n_vars")
     dx = 1.0 / (n_vars + 1)
     inv_dx2 = 1.0 / dx^2

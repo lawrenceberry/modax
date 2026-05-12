@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
 from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
-from reference.systems.python import coupled_vdp_lattice
+from reference.systems.python import vdp
 from scripts.benchmark_common import (
     get_gpu_name,
     gpu_slug,
@@ -50,7 +50,7 @@ _MU_NONSTIFF = 1.0
 _D = 10.0
 _OMEGA = 1.0
 
-_T_SPAN = coupled_vdp_lattice.TIMES
+_T_SPAN = vdp.TIMES
 _ENSEMBLE_SIZE = 1000
 _N_RUNS = 10
 _JULIA_BACKENDS = ("EnsembleGPUArray", "EnsembleGPUKernel")
@@ -107,8 +107,8 @@ def ode_fn_vdp_numba(y, t, p, dy, i):
 
 def time_local_tsit5(dim: int, *, scenario: str) -> float:
     n_osc = dim // 2
-    ode_fn, _ = coupled_vdp_lattice.make_system(n_osc, mu=_MU_NONSTIFF)
-    y0_batch, params = coupled_vdp_lattice.make_scenario(
+    ode_fn, _ = vdp.make_system(n_osc, mu=_MU_NONSTIFF)
+    y0_batch, params = vdp.make_scenario(
         scenario, n_osc, _ENSEMBLE_SIZE
     )
     y0_batch = jnp.asarray(y0_batch)
@@ -129,7 +129,7 @@ def time_local_tsit5(dim: int, *, scenario: str) -> float:
 
 def time_custom_kernel_tsit5(dim: int, *, scenario: str) -> float:
     n_osc = dim // 2
-    y0_batch, scale_params = coupled_vdp_lattice.make_scenario(
+    y0_batch, scale_params = vdp.make_scenario(
         scenario, n_osc, _ENSEMBLE_SIZE
     )
     params = np.column_stack(
@@ -161,8 +161,8 @@ def time_custom_kernel_tsit5(dim: int, *, scenario: str) -> float:
 
 def time_diffrax(dim: int, solve_fn, *, scenario: str) -> float:
     n_osc = dim // 2
-    ode_fn, _ = coupled_vdp_lattice.make_system(n_osc, mu=_MU_NONSTIFF)
-    y0_batch, params = coupled_vdp_lattice.make_scenario(
+    ode_fn, _ = vdp.make_system(n_osc, mu=_MU_NONSTIFF)
+    y0_batch, params = vdp.make_scenario(
         scenario, n_osc, _ENSEMBLE_SIZE
     )
     y0_batch = jnp.asarray(y0_batch)
@@ -185,11 +185,11 @@ def time_julia_solver(
     dim: int, solve, *, ensemble_backend: str, scenario: str
 ) -> float:
     n_osc = dim // 2
-    y0_batch, params = coupled_vdp_lattice.make_scenario(
+    y0_batch, params = vdp.make_scenario(
         scenario, n_osc, _ENSEMBLE_SIZE
     )
     result = solve._julia_solve_with_timing(
-        "coupled_vdp_lattice",
+        "vdp",
         y0_batch,
         _T_SPAN,
         params,
@@ -367,7 +367,7 @@ def main() -> None:
 
     cache = load_cache(_CACHE_PATH)
 
-    for scenario in coupled_vdp_lattice.SCENARIOS:
+    for scenario in vdp.SCENARIOS:
         print(f"\n=== Scenario: {scenario} ===\n")
         specs = make_solver_specs(scenario)
         rows = run_benchmarks(specs, gpu_name, cache, scenario)

@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
 from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
-from reference.systems.python import coupled_vdp_lattice
+from reference.systems.python import vdp
 from scripts.benchmark_common import (
     get_gpu_name,
     gpu_slug,
@@ -41,7 +41,7 @@ from solvers.rodas5ckn import solve as rodas5ckn_solve
 
 jax.config.update("jax_enable_x64", True)
 
-_T_SPAN = coupled_vdp_lattice.TIMES
+_T_SPAN = vdp.TIMES
 _ENSEMBLE_SIZE = 1000
 _N_RUNS = 10
 _JULIA_BACKENDS = ("EnsembleGPUArray", "EnsembleGPUKernel")
@@ -129,8 +129,8 @@ def jac_fn_vdp_numba(y, t, p, jac, i):
 
 def time_local_rodas5(dim: int, *, lu_precision: str, scenario: str) -> float:
     n_osc = dim // 2
-    ode_fn, _ = coupled_vdp_lattice.make_system(n_osc)
-    y0_batch, params = coupled_vdp_lattice.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
+    ode_fn, _ = vdp.make_system(n_osc)
+    y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     y0_batch = jnp.asarray(y0_batch)
     params = jnp.asarray(params)
 
@@ -150,7 +150,7 @@ def time_local_rodas5(dim: int, *, lu_precision: str, scenario: str) -> float:
 
 def time_custom_kernel_rodas5(dim: int, solve_fn, *, scenario: str) -> float:
     n_osc = dim // 2
-    y0_batch, scale_params = coupled_vdp_lattice.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
+    y0_batch, scale_params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     params = np.column_stack(
         [
             np.full(_ENSEMBLE_SIZE, float(n_osc), dtype=np.float64),
@@ -174,8 +174,8 @@ def time_custom_kernel_rodas5(dim: int, solve_fn, *, scenario: str) -> float:
 
 def time_diffrax(dim: int, solve_fn, *, scenario: str) -> float:
     n_osc = dim // 2
-    ode_fn, _ = coupled_vdp_lattice.make_system(n_osc)
-    y0_batch, params = coupled_vdp_lattice.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
+    ode_fn, _ = vdp.make_system(n_osc)
+    y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     y0_batch = jnp.asarray(y0_batch)
     params = jnp.asarray(params)
 
@@ -194,9 +194,9 @@ def time_diffrax(dim: int, solve_fn, *, scenario: str) -> float:
 
 def time_julia_solver(dim: int, solve, *, ensemble_backend: str, scenario: str) -> float:
     n_osc = dim // 2
-    y0_batch, params = coupled_vdp_lattice.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
+    y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     result = solve._julia_solve_with_timing(
-        "coupled_vdp_lattice",
+        "vdp",
         y0_batch,
         _T_SPAN,
         params,
@@ -289,7 +289,7 @@ def _migrate_cache(cache: dict) -> dict:
     for gpu, gpu_data in cache.items():
         first_val = next(iter(gpu_data.values()), None)
         if isinstance(first_val, dict) and not any(
-            k in coupled_vdp_lattice.SCENARIOS for k in gpu_data
+            k in vdp.SCENARIOS for k in gpu_data
         ):
             cache[gpu] = {"identical": gpu_data}
     return cache
@@ -376,7 +376,7 @@ def main() -> None:
 
     cache = _migrate_cache(load_cache(_CACHE_PATH))
 
-    for scenario in coupled_vdp_lattice.SCENARIOS:
+    for scenario in vdp.SCENARIOS:
         print(f"\n=== Scenario: {scenario} ===\n")
         specs = make_solver_specs(scenario)
         rows = run_benchmarks(specs, gpu_name, cache, scenario)

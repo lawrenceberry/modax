@@ -135,7 +135,7 @@ def _run_julia_heat(benchmark, solver, heat_system, ensemble_size, ensemble_back
     results_np = benchmark_julia_solver(
         benchmark,
         solver,
-        "heat_equation",
+        "heat",
         y0=system["y0"],
         t_span=_TIMES,
         params=params,

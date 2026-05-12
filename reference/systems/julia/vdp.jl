@@ -1,4 +1,4 @@
-function make_coupled_vdp_lattice_spec(config)
+function make_vdp_spec(config)
     n_osc = require_config_int(config, "n_osc")
     MU = Float64(get(config, "mu", 100.0))
     D = Float64(get(config, "d", 10.0))

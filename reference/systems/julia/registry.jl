@@ -1,5 +1,5 @@
-include("coupled_vdp_lattice.jl")
-include("heat_equation.jl")
+include("vdp.jl")
+include("heat.jl")
 include("bateman.jl")
 include("lorenz.jl")
 include("robertson.jl")
@@ -7,10 +7,10 @@ include("kaps.jl")
 include("brusselator.jl")
 
 function make_system_spec(system_name::String, config)
-    if system_name == "coupled_vdp_lattice"
-        return make_coupled_vdp_lattice_spec(config)
-    elseif system_name == "heat_equation"
-        return make_heat_equation_spec(config)
+    if system_name == "vdp"
+        return make_vdp_spec(config)
+    elseif system_name == "heat"
+        return make_heat_spec(config)
     elseif system_name == "bateman"
         return make_bateman_spec(config)
     elseif system_name == "lorenz"

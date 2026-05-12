@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
 from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
-from reference.systems.python import coupled_vdp_lattice
+from reference.systems.python import vdp
 from scripts.benchmark_common import (
     get_gpu_name,
     load_cache,
@@ -41,14 +41,14 @@ _N_OSC = 32
 _DIM = 2 * _N_OSC
 _ENSEMBLE_SIZE = 1000
 _N_RUNS = 10
-_T_SPAN = coupled_vdp_lattice.TIMES
+_T_SPAN = vdp.TIMES
 _DIVERGENCES = (0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0)
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 
-_ODE_FN, _ = coupled_vdp_lattice.make_system(_N_OSC)
+_ODE_FN, _ = vdp.make_system(_N_OSC)
 
 _CSV_FIELDS = (
     "gpu",
@@ -146,7 +146,7 @@ def jac_fn_vdp_numba(y, t, p, jac, i):
 
 
 def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
-    return coupled_vdp_lattice.make_scenario(
+    return vdp.make_scenario(
         "divergent",
         _N_OSC,
         _ENSEMBLE_SIZE,
@@ -201,7 +201,7 @@ def time_solve(
 ) -> tuple[float, dict | None]:
     if solver.mode == "julia":
         result = julia_rodas5_solve._julia_solve_with_timing(
-            "coupled_vdp_lattice",
+            "vdp",
             y0,
             _T_SPAN,
             params,
