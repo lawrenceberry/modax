@@ -1099,7 +1099,7 @@ numba = [
 ]
 
 [[package]]
-name = "ode-test"
+name = "modax"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
