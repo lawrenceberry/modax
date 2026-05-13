@@ -65,7 +65,7 @@ jax.config.update("jax_enable_x64", True)
 
 _N_TRAJ = 400_000
 _T_SPAN = robertson.TIMES
-_N_RUNS = 5
+_N_RUNS = 1
 _BATCH_SIZES = (10_000, 25_000, 50_000, 100_000, 200_000, 400_000)
 _SOLVER_KWARGS = {
     "first_step": 1e-4,
