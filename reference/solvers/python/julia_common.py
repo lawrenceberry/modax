@@ -19,6 +19,7 @@ _REFERENCE_SOLVERS_DIR = Path(__file__).resolve().parents[1]
 _JULIA_DIR = _REFERENCE_SOLVERS_DIR / "julia"
 _JULIA_RUNNER = _JULIA_DIR / "run_solver.jl"
 _JULIA_PROJECT_FLAG = f"--project={_JULIA_DIR}"
+JULIA_SOLVE_TIMEOUT_SECONDS = 30.0
 
 JULIA_ENSEMBLE_BACKENDS = ("EnsembleGPUArray", "EnsembleGPUKernel")
 _SUPPORTED_SOLVER_BACKENDS = {
@@ -287,14 +288,22 @@ def _run_julia_solver(
             str(ys_meta),
         ]
         wall_start = time.perf_counter()
-        completed = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=_JULIA_DIR,
-            env=_julia_subprocess_env(),
-        )
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=_JULIA_DIR,
+                env=_julia_subprocess_env(),
+                timeout=JULIA_SOLVE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                "Julia reference solve exceeded "
+                f"{JULIA_SOLVE_TIMEOUT_SECONDS:g}s timeout.\n"
+                f"Command: {' '.join(cmd)}"
+            ) from exc
         wall_end = time.perf_counter()
         if completed.returncode != 0:
             raise RuntimeError(

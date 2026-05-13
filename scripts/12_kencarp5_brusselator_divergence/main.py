@@ -33,6 +33,7 @@ from scripts.benchmark_common import (
     output_paths,
     save_cache,
     time_blocked,
+    timeout_cache_entry,
 )
 from solvers.kencarp5 import solve as kencarp5_solve
 from solvers.kencarp5ckn import solve as kencarp5ckn_solve
@@ -314,6 +315,9 @@ def collect_row(
 
     try:
         row = run()
+    except TimeoutError:
+        print(TIMEOUT_ERROR, flush=True)
+        return timeout_cache_entry()
     except Exception as exc:
         print(f"FAILED ({exc})", flush=True)
         return None

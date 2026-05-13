@@ -152,6 +152,9 @@ def collect_timed_timing(
     print(f"  {label:<{label_width}} {descriptor} ...", end=" ", flush=True)
     try:
         ms = run()
+    except TimeoutError:
+        print(TIMEOUT_ERROR)
+        return timeout_cache_entry()
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
