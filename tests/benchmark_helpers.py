@@ -442,7 +442,9 @@ def _brusselator_implicit_cuda(y, t, p, dy, i):
         u_idx = 2 * grid
         v_idx = u_idx + 1
         dy[i, u_idx] = diff * (y[i, 2 * left] - 2.0 * y[i, u_idx] + y[i, 2 * right])
-        dy[i, v_idx] = diff * (y[i, 2 * left + 1] - 2.0 * y[i, v_idx] + y[i, 2 * right + 1])
+        dy[i, v_idx] = diff * (
+            y[i, 2 * left + 1] - 2.0 * y[i, v_idx] + y[i, 2 * right + 1]
+        )
 
 
 @cuda.jit(device=True)
@@ -454,9 +456,7 @@ def _brusselator_ode_cuda(y, t, p, dy, i):
         right = 0 if grid == 3 else grid + 1
         u_idx = 2 * grid
         v_idx = u_idx + 1
-        dy[i, u_idx] += diff * (
-            y[i, 2 * left] - 2.0 * y[i, u_idx] + y[i, 2 * right]
-        )
+        dy[i, u_idx] += diff * (y[i, 2 * left] - 2.0 * y[i, u_idx] + y[i, 2 * right])
         dy[i, v_idx] += diff * (
             y[i, 2 * left + 1] - 2.0 * y[i, v_idx] + y[i, 2 * right + 1]
         )

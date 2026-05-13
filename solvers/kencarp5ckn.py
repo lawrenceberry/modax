@@ -8,9 +8,19 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-from numba import cuda
+from numba import cuda, types
 from nvmath.device import LUPivotSolver
+
+from solvers._jax_numba_custom_call import (
+    ABI_ARRAY,
+    ABI_SCALAR_F64,
+    ABI_SCALAR_I32,
+    ffi_abi_call,
+    make_launch,
+)
 
 GAMMA = 41.0 / 200.0
 
@@ -51,6 +61,7 @@ _WORKSPACE_CACHE: dict[tuple[int, int, int, int], object] = {}
 def clear_caches() -> None:
     _WORKSPACE_CACHE.clear()
     _make_kernel.cache_clear()
+    _make_jax_launch.cache_clear()
     gc.collect()
 
 
@@ -604,7 +615,9 @@ def _make_kernel(explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars: int)
                             delta = smem_rhs[b_offset + j]
                             rhs[i, j] = delta
                             u_new = u[i, j] - delta
-                            scale = atol + rtol * max(math.fabs(u[i, j]), math.fabs(u_new))
+                            scale = atol + rtol * max(
+                                math.fabs(u[i, j]), math.fabs(u_new)
+                            )
                             ratio = delta / scale
                             delta_norm_acc += ratio * ratio
                             if not math.isfinite(u_new) or not math.isfinite(delta):
@@ -619,7 +632,9 @@ def _make_kernel(explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars: int)
                         cuda.syncthreads()
                         if lane == 0:
                             for other_lane in range(1, batch_lanes):
-                                smem_delta[tx] += smem_delta[batch + other_lane * batches_per_block]
+                                smem_delta[tx] += smem_delta[
+                                    batch + other_lane * batches_per_block
+                                ]
                             delta_norm = math.sqrt(smem_delta[tx] / n_vars)
                             if delta_norm <= 1.0 and not math.isnan(delta_norm):
                                 smem_converged[batch] = 1
@@ -708,7 +723,9 @@ def _make_kernel(explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars: int)
                 for j in range(lane, n_vars, batch_lanes):
                     y[i, j] = stage_y[i, 7, j]
                 cuda.syncthreads()
-                if math.fabs(t_new - next_target) <= 1e-12 * max(1.0, math.fabs(next_target)):
+                if math.fabs(t_new - next_target) <= 1e-12 * max(
+                    1.0, math.fabs(next_target)
+                ):
                     for j in range(lane, n_vars, batch_lanes):
                         hist[i, save_idx, j] = y[i, j]
                     cuda.syncthreads()
@@ -811,6 +828,52 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
     return solution, numpy_stats(accepted_steps, rejected_steps, loop_steps)
 
 
+@functools.cache
+def _make_jax_launch(
+    explicit_ode_fn,
+    implicit_ode_fn,
+    implicit_jac_fn,
+    n: int,
+    n_vars: int,
+    n_save: int,
+    n_params: int,
+):
+    kernel, lu_solver = _make_kernel(
+        explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars
+    )
+    f64_2d = types.float64[:, ::1]
+    f64_1d = types.float64[::1]
+    i32_1d = types.int32[::1]
+    f64_3d = types.float64[:, :, ::1]
+    argtypes = (
+        f64_2d,
+        f64_1d,
+        f64_2d,
+        types.int32,
+        types.float64,
+        types.float64,
+        types.float64,
+        types.int32,
+        f64_3d,
+        i32_1d,
+        i32_1d,
+        i32_1d,
+        f64_2d,
+        f64_2d,
+        f64_2d,
+        f64_2d,
+        f64_2d,
+        f64_3d,
+        f64_3d,
+        f64_3d,
+        f64_3d,
+    )
+    threads = as_launch_block_dim(lu_solver.block_dim)
+    batches_per_block = int(lu_solver.batches_per_block)
+    blocks = (n + batches_per_block - 1) // batches_per_block
+    return make_launch(kernel, argtypes, grid=blocks, block=threads)
+
+
 def solve(
     explicit_ode_fn,
     implicit_ode_fn,
@@ -826,17 +889,74 @@ def solve(
     max_steps=100000,
     return_stats=False,
 ):
-    prepared = prepare_solve(
-        explicit_ode_fn,
-        implicit_ode_fn,
-        implicit_jac_fn,
-        y0,
-        t_span,
-        params,
-        linear=linear,
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
+    """JAX-callable KenCarp5 custom-kernel solve."""
+
+    y0_arr = jnp.asarray(y0, dtype=jnp.float64)
+    params_arr = jnp.asarray(params, dtype=jnp.float64)
+    times = jnp.asarray(t_span, dtype=jnp.float64)
+    if y0_arr.ndim != 2:
+        raise ValueError("custom-kernel KenCarp5 expects y0 shape (N, n_vars)")
+    if params_arr.ndim != 2:
+        raise ValueError("custom-kernel KenCarp5 expects params shape (N, n_params)")
+    n, n_vars = y0_arr.shape
+    if params_arr.shape[0] != n:
+        raise ValueError("params and y0 must have the same batch size")
+    n_save = times.shape[0]
+    n_params = params_arr.shape[1]
+    dt0 = (
+        np.float64(first_step)
+        if first_step is not None
+        else np.float64((float(times[-1]) - float(times[0])) * 1e-6)
     )
-    return run_prepared(prepared, return_stats=return_stats, copy_solution=True)
+
+    launch = _make_jax_launch(
+        explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n, n_vars, n_save, n_params
+    )
+    hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
+    int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
+    work_spec = jax.ShapeDtypeStruct((n, n_vars), jnp.float64)
+    stage_spec = jax.ShapeDtypeStruct((n, 8, n_vars), jnp.float64)
+    jac_spec = jax.ShapeDtypeStruct((n, n_vars, n_vars), jnp.float64)
+    output_specs = (
+        hist_spec,
+        int_spec,
+        int_spec,
+        int_spec,
+        work_spec,
+        work_spec,
+        work_spec,
+        work_spec,
+        work_spec,
+        stage_spec,
+        stage_spec,
+        stage_spec,
+        jac_spec,
+    )
+    result = ffi_abi_call(
+        launch,
+        (y0_arr, times, params_arr),
+        output_specs,
+        input_kinds=(
+            ABI_ARRAY,
+            ABI_ARRAY,
+            ABI_ARRAY,
+            ABI_SCALAR_I32,
+            ABI_SCALAR_F64,
+            ABI_SCALAR_F64,
+            ABI_SCALAR_F64,
+            ABI_SCALAR_I32,
+        ),
+        output_kinds=(ABI_ARRAY,) * len(output_specs),
+        scalar_f64_values=(dt0, rtol, atol),
+        scalar_i32_values=(1 if linear else 0, max_steps),
+    )
+    hist, accepted, rejected, loop_steps = result[:4]
+    if not return_stats:
+        return hist
+    return hist, {
+        "accepted_steps": accepted,
+        "rejected_steps": rejected,
+        "loop_steps": loop_steps,
+        "batch_loop_iterations": loop_steps,
+        "valid_lanes": jnp.ones_like(loop_steps, dtype=jnp.int32),
+    }

@@ -7,9 +7,19 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-from numba import cuda
+from numba import cuda, types
 from nvmath.device import LUPivotSolver
+
+from solvers._jax_numba_custom_call import (
+    ABI_ARRAY,
+    ABI_SCALAR_F64,
+    ABI_SCALAR_I32,
+    ffi_abi_call,
+    make_launch,
+)
 
 # fmt: off
 GAMMA = 0.19
@@ -773,6 +783,35 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
     return solution, numpy_stats(accepted_steps, rejected_steps, loop_steps)
 
 
+@functools.cache
+def _make_jax_launch(ode_fn, jac_fn, n: int, n_vars: int, n_save: int, n_params: int):
+    kernel, lu_solver = _make_kernel(ode_fn, jac_fn, n_vars)
+    f64_2d = types.float64[:, ::1]
+    f64_1d = types.float64[::1]
+    i32_1d = types.int32[::1]
+    argtypes = (
+        f64_2d,
+        f64_1d,
+        f64_2d,
+        types.float64,
+        types.float64,
+        types.float64,
+        types.int32,
+        types.float64[:, :, ::1],
+        i32_1d,
+        i32_1d,
+        i32_1d,
+        f64_2d,
+        f64_2d,
+        f64_2d,
+        types.float64[:, :, ::1],
+    )
+    batches_per_block = int(lu_solver.batches_per_block)
+    threads = as_launch_block_dim(lu_solver.block_dim)
+    blocks = (n + batches_per_block - 1) // batches_per_block
+    return make_launch(kernel, argtypes, grid=blocks, block=threads)
+
+
 def solve(
     ode_fn,
     jac_fn,
@@ -787,16 +826,59 @@ def solve(
     max_steps=100000,
     return_stats=False,
 ):
-    prepared = prepare_solve(
-        ode_fn,
-        jac_fn,
-        y0,
-        t_span,
-        params,
-        batch_size=batch_size,
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
+    """JAX-callable Rodas5 custom-kernel solve."""
+
+    del batch_size
+    y0_arr = jnp.asarray(y0, dtype=jnp.float64)
+    params_arr = jnp.asarray(params, dtype=jnp.float64)
+    times = jnp.asarray(t_span, dtype=jnp.float64)
+    if y0_arr.ndim != 2:
+        raise ValueError("custom-kernel Rodas5 expects y0 shape (N, n_vars)")
+    if params_arr.ndim != 2:
+        raise ValueError("custom-kernel Rodas5 expects params shape (N, n_params)")
+    n, n_vars = y0_arr.shape
+    if params_arr.shape[0] != n:
+        raise ValueError("params and y0 must have the same batch size")
+    n_save = times.shape[0]
+    n_params = params_arr.shape[1]
+    dt0 = (
+        np.float64(first_step)
+        if first_step is not None
+        else np.float64((float(times[-1]) - float(times[0])) * 1e-6)
     )
-    return run_prepared(prepared, return_stats=return_stats, copy_solution=True)
+
+    launch = _make_jax_launch(ode_fn, jac_fn, n, n_vars, n_save, n_params)
+    hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
+    int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
+    work_spec = jax.ShapeDtypeStruct((n, n_vars), jnp.float64)
+    jac_spec = jax.ShapeDtypeStruct((n, n_vars, n_vars), jnp.float64)
+    output_specs = (
+        (hist_spec, int_spec, int_spec, int_spec) + (work_spec,) * 3 + (jac_spec,)
+    )
+    result = ffi_abi_call(
+        launch,
+        (y0_arr, times, params_arr),
+        output_specs,
+        input_kinds=(
+            ABI_ARRAY,
+            ABI_ARRAY,
+            ABI_ARRAY,
+            ABI_SCALAR_F64,
+            ABI_SCALAR_F64,
+            ABI_SCALAR_F64,
+            ABI_SCALAR_I32,
+        ),
+        output_kinds=(ABI_ARRAY,) * len(output_specs),
+        scalar_f64_values=(dt0, rtol, atol),
+        scalar_i32_values=(max_steps,),
+    )
+    hist, accepted, rejected, loop_steps = result[:4]
+    if not return_stats:
+        return hist
+    return hist, {
+        "accepted_steps": accepted,
+        "rejected_steps": rejected,
+        "loop_steps": loop_steps,
+        "batch_loop_iterations": loop_steps,
+        "valid_lanes": jnp.ones_like(loop_steps, dtype=jnp.int32),
+    }
