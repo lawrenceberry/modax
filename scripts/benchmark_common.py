@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import json
-import multiprocessing as mp
-import queue
 import subprocess
 import time
-import traceback
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -50,37 +47,11 @@ def timing_value_or_none(value) -> float | None:
     return float(value)
 
 
-def _child_run(queue_: mp.Queue, run: Callable[[], T]) -> None:
-    try:
-        queue_.put(("ok", run()))
-    except BaseException as exc:
-        queue_.put(("err", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
-
-
 def run_with_timeout(
     run: Callable[[], T], timeout_s: float = SOLVE_TIMEOUT_SECONDS
 ) -> T:
-    ctx = mp.get_context("fork")
-    result_queue = ctx.Queue(maxsize=1)
-    process = ctx.Process(target=_child_run, args=(result_queue, run))
-    process.start()
-    process.join(timeout_s)
-    if process.is_alive():
-        process.terminate()
-        process.join()
-        raise BenchmarkTimeoutError(TIMEOUT_ERROR)
-
-    try:
-        status, *payload = result_queue.get_nowait()
-    except queue.Empty as exc:
-        raise RuntimeError(
-            f"child process exited with code {process.exitcode}"
-        ) from exc
-
-    if status == "ok":
-        return payload[0]
-    message, tb = payload
-    raise RuntimeError(f"{message}\n{tb}")
+    del timeout_s
+    return run()
 
 
 def get_gpu_name() -> str:
