@@ -77,8 +77,8 @@ function solve_ensemble(ensemble_prob, alg, ensemble_alg, solve_kwargs, first_st
     return SciMLBase.solve(ensemble_prob, alg, ensemble_alg; solve_kwargs..., dt=first_step)
 end
 
-const SOLVE_WARMUP_RUNS = 2
-const SOLVE_TIMED_RUNS = 3
+const SOLVE_WARMUP_RUNS = 1
+const SOLVE_TIMED_RUNS = 1
 
 function make_problem(spec::ReferenceSystemSpec, solver_name::String, ensemble_backend::String, y0, tspan, p0)
     if ensemble_backend == "EnsembleGPUArray"
