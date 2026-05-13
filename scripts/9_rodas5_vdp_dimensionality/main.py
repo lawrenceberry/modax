@@ -49,7 +49,7 @@ jax.config.update("jax_enable_x64", True)
 
 _T_SPAN = vdp.TIMES
 _ENSEMBLE_SIZE = 1000
-_N_RUNS = 10
+_N_RUNS = 1
 
 # Powers of 2 from 2 to 128 (n_osc = dim // 2: 1, 2, 4, 8, 16, 32, 64)
 _DIMENSIONS = (2, 4, 6, 8, 10, 12, 16, 32, 64, 128)
@@ -61,6 +61,7 @@ _SCENARIOS = (
     ("identical", 0.0),
     ("divergent", 1.0),
 )
+
 
 @dataclass(frozen=True)
 class Case(BenchmarkCase):
@@ -185,9 +186,7 @@ def jac_fn_vdp_numba(y, t, p, jac, i):
 
 def time_case(case: Case, dim: int, *, divergence: float) -> float:
     n_osc = dim // 2
-    y0_batch, params = vdp.make_scenario(
-        n_osc, _ENSEMBLE_SIZE, divergence=divergence
-    )
+    y0_batch, params = vdp.make_scenario(n_osc, _ENSEMBLE_SIZE, divergence=divergence)
     kwargs = case.kwargs or {}
 
     if case.is_julia:
