@@ -44,7 +44,7 @@ jax.config.update("jax_enable_x64", True)
 
 _T_SPAN = robertson.TIMES
 _ENSEMBLE_SIZES = (1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000)
-_N_RUNS = 10
+_N_RUNS = 1
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"

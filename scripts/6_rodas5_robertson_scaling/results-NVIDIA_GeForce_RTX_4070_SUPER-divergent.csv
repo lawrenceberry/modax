@@ -1,67 +1,67 @@
 solver_key,solver,ensemble_size,solve_time_ms
-local_rodas5_fp32_lu,my rodas5 fp32 LU,1,16.123097389936447
-local_rodas5_fp32_lu,my rodas5 fp32 LU,3,18.43766870442778
-local_rodas5_fp32_lu,my rodas5 fp32 LU,10,19.610874401405454
-local_rodas5_fp32_lu,my rodas5 fp32 LU,30,19.560551294125617
-local_rodas5_fp32_lu,my rodas5 fp32 LU,100,19.65364241041243
-local_rodas5_fp32_lu,my rodas5 fp32 LU,300,19.50666829943657
-local_rodas5_fp32_lu,my rodas5 fp32 LU,1000,20.235598599538207
-local_rodas5_fp32_lu,my rodas5 fp32 LU,3000,23.294298304244876
-local_rodas5_fp32_lu,my rodas5 fp32 LU,10000,32.34440051019192
-local_rodas5_fp32_lu,my rodas5 fp32 LU,30000,67.87495259195566
-local_rodas5_fp32_lu,my rodas5 fp32 LU,100000,177.4898987961933
-local_rodas5_fp64_lu,my rodas5 fp64 LU,1,17.305307602509856
-local_rodas5_fp64_lu,my rodas5 fp64 LU,3,18.6712953960523
-local_rodas5_fp64_lu,my rodas5 fp64 LU,10,19.54337488859892
-local_rodas5_fp64_lu,my rodas5 fp64 LU,30,19.3942487007007
-local_rodas5_fp64_lu,my rodas5 fp64 LU,100,19.62552589830011
-local_rodas5_fp64_lu,my rodas5 fp64 LU,300,20.009162998758256
-local_rodas5_fp64_lu,my rodas5 fp64 LU,1000,21.047450695186853
-local_rodas5_fp64_lu,my rodas5 fp64 LU,3000,25.64042010344565
-local_rodas5_fp64_lu,my rodas5 fp64 LU,10000,40.746235311962664
-local_rodas5_fp64_lu,my rodas5 fp64 LU,30000,90.88779950980097
-local_rodas5_fp64_lu,my rodas5 fp64 LU,100000,256.9159416016191
-rodas5ckn,numba-cuda rodas5,1,2.918817405588925
-rodas5ckn,numba-cuda rodas5,3,3.0644708080217242
-rodas5ckn,numba-cuda rodas5,10,3.2724362099543214
-rodas5ckn,numba-cuda rodas5,30,3.4275365993380547
-rodas5ckn,numba-cuda rodas5,100,3.411782579496503
-rodas5ckn,numba-cuda rodas5,300,3.4560735104605556
-rodas5ckn,numba-cuda rodas5,1000,3.5635780077427626
-rodas5ckn,numba-cuda rodas5,3000,3.5803440026938915
-rodas5ckn,numba-cuda rodas5,10000,4.176609800197184
-rodas5ckn,numba-cuda rodas5,30000,11.628846800886095
-rodas5ckn,numba-cuda rodas5,100000,31.72824489884078
-diffrax_kvaerno5,diffrax kvaerno5,1,860.3406918002293
-diffrax_kvaerno5,diffrax kvaerno5,3,887.1087499894202
-diffrax_kvaerno5,diffrax kvaerno5,10,888.805840909481
-diffrax_kvaerno5,diffrax kvaerno5,30,894.1146158846095
-diffrax_kvaerno5,diffrax kvaerno5,100,921.9662996008992
-diffrax_kvaerno5,diffrax kvaerno5,300,934.7998503129929
-diffrax_kvaerno5,diffrax kvaerno5,1000,944.9285135837272
-diffrax_kvaerno5,diffrax kvaerno5,3000,1014.638161403127
-diffrax_kvaerno5,diffrax kvaerno5,10000,1263.1787220947444
-diffrax_kvaerno5,diffrax kvaerno5,30000,2023.2980940956625
-diffrax_kvaerno5,diffrax kvaerno5,100000,4668.050573882647
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,1,0.31241
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,3,114.013781
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,10,113.836071
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,30,118.95360000000001
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,100,120.734231
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,300,135.38017399999998
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,1000,213.352196
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,3000,306.866017
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,10000,1124.095828
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,30000,3286.345563
-julia_rodas5_EnsembleGPUArray,julia rodas5 array,100000,29816.657874
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,1,
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,3,4.294656
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,10,4.242376
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,30,4.304375
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,100,5.174294000000001
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,300,8.196191
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,1000,12.691485
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,3000,19.460207
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,10000,44.547075
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,30000,1000.9672869999999
-julia_rodas5_EnsembleGPUKernel,julia rodas5 kernel,100000,738.440237
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,1,16.398227773606777
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,3,18.43205140903592
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,10,19.548106007277966
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,30,19.805092830210924
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,100,19.347448833286762
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,300,19.83962208032608
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,1000,20.43397445231676
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,3000,23.56361225247383
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,10000,32.77730708941817
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,30000,67.87732196971774
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,100000,177.2843641228974
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,1,17.98667712137103
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,3,18.942383583635092
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,10,19.482647068798542
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,30,19.920130725950003
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,100,19.815241917967796
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,300,20.366615150123835
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,1000,21.50100003927946
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,3000,26.02839795872569
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,10000,41.035675909370184
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,30000,90.9047219902277
+modax rodas5 jax fp64 lu,modax rodas5 jax fp64 lu,100000,256.63196528330445
+modax rodas5 numba,modax rodas5 numba,1,3.09161888435483
+modax rodas5 numba,modax rodas5 numba,3,3.2419273629784584
+modax rodas5 numba,modax rodas5 numba,10,3.425243776291609
+modax rodas5 numba,modax rodas5 numba,30,3.6271410062909126
+modax rodas5 numba,modax rodas5 numba,100,3.5597719252109528
+modax rodas5 numba,modax rodas5 numba,300,3.4232838079333305
+modax rodas5 numba,modax rodas5 numba,1000,3.4880926832556725
+modax rodas5 numba,modax rodas5 numba,3000,3.5558617673814297
+modax rodas5 numba,modax rodas5 numba,10000,3.880418371409178
+modax rodas5 numba,modax rodas5 numba,30000,10.910993441939354
+modax rodas5 numba,modax rodas5 numba,100000,30.56260710582137
+diffrax kvaerno5,diffrax kvaerno5,1,802.134320139885
+diffrax kvaerno5,diffrax kvaerno5,3,849.1917350329459
+diffrax kvaerno5,diffrax kvaerno5,10,852.646338287741
+diffrax kvaerno5,diffrax kvaerno5,30,887.9119157791138
+diffrax kvaerno5,diffrax kvaerno5,100,925.4366182722151
+diffrax kvaerno5,diffrax kvaerno5,300,933.6797213181853
+diffrax kvaerno5,diffrax kvaerno5,1000,937.4588341452181
+diffrax kvaerno5,diffrax kvaerno5,3000,975.678120739758
+diffrax kvaerno5,diffrax kvaerno5,10000,1227.1212739869952
+diffrax kvaerno5,diffrax kvaerno5,30000,1974.4706428609788
+diffrax kvaerno5,diffrax kvaerno5,100000,4501.086622942239
+julia rodas5 array,julia rodas5 array,1,0.33881500000000003
+julia rodas5 array,julia rodas5 array,3,119.068319
+julia rodas5 array,julia rodas5 array,10,119.986405
+julia rodas5 array,julia rodas5 array,30,113.905042
+julia rodas5 array,julia rodas5 array,100,118.47748
+julia rodas5 array,julia rodas5 array,300,122.97959999999999
+julia rodas5 array,julia rodas5 array,1000,131.43264499999998
+julia rodas5 array,julia rodas5 array,3000,195.24364699999998
+julia rodas5 array,julia rodas5 array,10000,332.858864
+julia rodas5 array,julia rodas5 array,30000,
+julia rodas5 array,julia rodas5 array,100000,
+julia rodas5 kernel,julia rodas5 kernel,1,
+julia rodas5 kernel,julia rodas5 kernel,3,4.7638430000000005
+julia rodas5 kernel,julia rodas5 kernel,10,4.759703
+julia rodas5 kernel,julia rodas5 kernel,30,4.806152999999999
+julia rodas5 kernel,julia rodas5 kernel,100,5.630115
+julia rodas5 kernel,julia rodas5 kernel,300,8.568678
+julia rodas5 kernel,julia rodas5 kernel,1000,12.987808999999999
+julia rodas5 kernel,julia rodas5 kernel,3000,20.149374
+julia rodas5 kernel,julia rodas5 kernel,10000,45.856612
+julia rodas5 kernel,julia rodas5 kernel,30000,137.389968
+julia rodas5 kernel,julia rodas5 kernel,100000,401.599686
