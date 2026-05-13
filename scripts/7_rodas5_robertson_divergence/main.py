@@ -26,15 +26,12 @@ from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from reference.systems.python import robertson
 from scripts.benchmark_common import (
     TIMEOUT_ERROR,
-    BenchmarkTimeoutError,
     get_gpu_name,
     is_timeout,
     load_cache,
     output_paths,
     save_cache,
     time_blocked,
-    timed_solve,
-    timeout_cache_entry,
 )
 from solvers.rodas5 import solve as rodas5_solve
 from solvers.rodas5ckn import prepare_solve as rodas5ckn_prepare_solve
@@ -102,44 +99,40 @@ class Case:
     sort_by_steps: bool = False
     max_divergence: float | None = None
 
-    @property
-    def label(self) -> str:
-        return self.key
-
 
 CASES = (
-    Case("rodas5_fp32_lu", "#2b7be0", "o", "stats"),
-    Case("rodas5ckn", "#f0a202", "s", "stats"),
+    Case("modax rodas5 jax fp32 lu", "#2b7be0", "o", "stats"),
+    Case("modax rodas5 numba", "#f0a202", "s", "stats"),
     Case(
-        "rodas5ckn_sorted",
+        "modax rodas5 numba (sorted)",
         "#f0a202",
         "P",
         "stats",
         sort_by_steps=True,
     ),
     # Case(
-    #     "diffrax_kvaerno5",
+    #     "diffrax kvaerno5",
     #     "#2ba84a",
     #     "^",
     #     "timing",
     #     max_divergence=1.5,
     # ),
     # Case(
-    #     "julia_rodas5_EnsembleGPUArray",
+    #     "julia rodas5 array",
     #     "#9b59b6",
     #     "D",
     #     "julia",
     #     "EnsembleGPUArray",
     # ),
     Case(
-        "julia_rodas5_EnsembleGPUKernel",
+        "julia rodas5 kernel",
         "#d35400",
         "v",
         "julia",
         "EnsembleGPUKernel",
     ),
     Case(
-        "julia_rodas5_EnsembleGPUKernel_sorted",
+        "julia rodas5 kernel (sorted)",
         "#d35400",
         "X",
         "julia",
@@ -159,7 +152,7 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
-    if solver.key.startswith("rodas5ckn"):
+    if solver.key.startswith("modax rodas5 numba"):
         return rodas5ckn_solve(
             robertson.ode_fn_numba_cuda,
             robertson.jac_fn_numba_cuda,
@@ -181,7 +174,7 @@ def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
 
 
 def solve_timing_only(solver: Case, y0: np.ndarray, params: np.ndarray):
-    if solver.key == "diffrax_kvaerno5":
+    if solver.key == "diffrax kvaerno5":
         return diffrax_kvaerno5_solve(
             robertson.ode_fn,
             y0=jnp.asarray(y0, dtype=jnp.float64),
@@ -209,7 +202,7 @@ def time_solve(
     if solver.mode == "timing":
         ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
         return ms, None
-    if solver.key.startswith("rodas5ckn"):
+    if solver.key.startswith("modax rodas5 numba"):
         prepared = rodas5ckn_prepare_solve(
             robertson.ode_fn_numba_cuda,
             robertson.jac_fn_numba_cuda,
@@ -308,7 +301,7 @@ def collect_row(
     stats_summary: dict | None = None,
 ) -> dict | None:
     print(
-        f"  {solver.label:<20} divergence={divergence:>4.2f} ...",
+        f"  {solver.key:<20} divergence={divergence:>4.2f} ...",
         end=" ",
         flush=True,
     )
@@ -337,7 +330,7 @@ def collect_row(
         row = {
             "gpu": gpu_name,
             "solver_key": solver.key,
-            "solver": solver.label,
+            "solver": solver.key,
             "divergence": float(divergence),
             "dim": _DIM,
             "ensemble_size": _N_TRAJ,
@@ -350,10 +343,7 @@ def collect_row(
         return row
 
     try:
-        row = timed_solve(run)
-    except BenchmarkTimeoutError:
-        print(TIMEOUT_ERROR, flush=True)
-        return timeout_cache_entry()
+        row = run()
     except Exception as exc:
         print(f"FAILED ({exc})", flush=True)
         return None
@@ -365,13 +355,13 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
     for solver in CASES:
-        print(f"\n{solver.label}:")
+        print(f"\n{solver.key}:")
         solver_cache = gpu_cache.setdefault(solver.key, {})
         for divergence in _DIVERGENCES:
             divergence_key = f"{divergence:.6g}"
             if solver.max_divergence is not None and divergence > solver.max_divergence:
                 print(
-                    f"  {solver.label:<20} divergence={divergence:>4.2f} ... "
+                    f"  {solver.key:<20} divergence={divergence:>4.2f} ... "
                     f"SKIPPED (divergence > {solver.max_divergence:g})",
                     flush=True,
                 )
@@ -382,12 +372,14 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                 row = cached
                 text = TIMEOUT_ERROR if is_timeout(row) else format_row(row)
                 print(
-                    f"  {solver.label:<20} divergence={divergence:>4.2f} ... "
+                    f"  {solver.key:<20} divergence={divergence:>4.2f} ... "
                     f"(cached) {text}",
                     flush=True,
                 )
             else:
-                local_row = gpu_cache.get("rodas5_fp32_lu", {}).get(divergence_key)
+                local_row = gpu_cache.get("modax rodas5 jax fp32 lu", {}).get(
+                    divergence_key
+                )
                 stats_summary = (
                     stats_from_row(local_row) if is_complete_row(local_row) else None
                 )
@@ -428,7 +420,7 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
             color=solver.color,
             marker=solver.marker,
             s=42,
-            label=solver.label,
+            label=solver.key,
         )
 
     ax.set_xlabel("Normalized standard deviation of attempted steps")

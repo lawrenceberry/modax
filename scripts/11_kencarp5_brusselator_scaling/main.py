@@ -85,7 +85,7 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="local_kencarp5_linear",
+        key="modax kencarp5 jax linear",
         color="#2b7be0",
         marker="o",
         solve_fn=kencarp5_solve,
@@ -97,7 +97,7 @@ CASES: tuple[Case, ...] = (
         coerce_jax=True,
     ),
     Case(
-        key="local_kencarp5_newton",
+        key="modax kencarp5 jax newton",
         color="#e02b2b",
         marker="D",
         solve_fn=kencarp5_solve,
@@ -109,7 +109,7 @@ CASES: tuple[Case, ...] = (
         coerce_jax=True,
     ),
     Case(
-        key="kencarp5ckn_linear",
+        key="modax kencarp5 numba linear",
         color="#f0a202",
         marker="P",
         solve_fn=kencarp5ckn_solve,
@@ -122,7 +122,7 @@ CASES: tuple[Case, ...] = (
         coerce_numpy=True,
     ),
     Case(
-        key="kencarp5ckn_newton",
+        key="modax kencarp5 numba newton",
         color="#d35400",
         marker="X",
         solve_fn=kencarp5ckn_solve,
@@ -135,7 +135,7 @@ CASES: tuple[Case, ...] = (
         coerce_numpy=True,
     ),
     Case(
-        key="local_rodas5_fp64_lu",
+        key="modax rodas5 jax fp64 lu",
         color="#00a6a6",
         marker="v",
         linestyle="--",
@@ -147,7 +147,7 @@ CASES: tuple[Case, ...] = (
         coerce_jax=True,
     ),
     Case(
-        key="diffrax_kencarp5",
+        key="diffrax kencarp5",
         color="#2ba84a",
         marker="s",
         solve_fn=diffrax_kencarp5_solve,
@@ -160,7 +160,7 @@ CASES: tuple[Case, ...] = (
     # DiffEqGPU 3.13 has no SplitODEProblem support on EnsembleGPUArray, so this
     # row is fully implicit rather than IMEX.
     Case(
-        key="julia_kencarp5_EnsembleGPUArray",
+        key="julia kencarp5 array",
         color="#9b59b6",
         marker="^",
         solve_fn=julia_kencarp5_solve,
@@ -235,7 +235,7 @@ def time_case(case: Case, y0, params) -> float:
 
 def collect_timing(case: Case, size: int, y0, params):
     return collect_timed_timing(
-        case.label,
+        case.key,
         f"n={size:>7}",
         lambda: time_case(case, y0, params),
         label_width=28,
@@ -254,14 +254,14 @@ def run_benchmarks(
         print(f"\n=== {scenario} ===\n")
         rows: list[_Row] = []
         for case in cases:
-            print(f"{case.label}:")
+            print(f"{case.key}:")
             solver_cache = gpu_cache.setdefault(f"{scenario}_{case.key}", {})
             for size in _ENSEMBLE_SIZES:
                 size_key = str(size)
                 if size_key in solver_cache:
                     ms = solver_cache[size_key]
                     ms_text = format_cached_timing(ms)
-                    print(f"  {case.label:<28} n={size:>7} ... (cached) {ms_text}")
+                    print(f"  {case.key:<28} n={size:>7} ... (cached) {ms_text}")
                 else:
                     y0, params = brusselator.make_scenario(
                         _N_GRID, size, divergence=divergence
@@ -269,7 +269,7 @@ def run_benchmarks(
                     ms = collect_timing(case, size, y0, params)
                     solver_cache[size_key] = ms
                     save_cache(_CACHE_PATH, cache)
-                rows.append((case.key, case.label, size, timing_value_or_none(ms)))
+                rows.append((case.key, case.key, size, timing_value_or_none(ms)))
             print()
         rows_by_scenario[scenario] = rows
     return rows_by_scenario
@@ -301,7 +301,7 @@ def plot(
             marker=case.marker,
             color=case.color,
             linestyle=case.linestyle,
-            label=case.label,
+            label=case.key,
         )
     ax.set_xscale("log")
     ax.set_yscale("log")

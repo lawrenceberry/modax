@@ -47,14 +47,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from reference.systems.python import lorenz
 from scripts.benchmark_common import (
     TIMEOUT_ERROR,
-    BenchmarkTimeoutError,
     get_gpu_name,
     gpu_slug,
     is_timeout,
     load_cache,
     save_cache,
-    timed_solve,
-    timeout_cache_entry,
 )
 from solvers.tsit5 import solve as tsit5_solve
 
@@ -222,10 +219,7 @@ def collect_row(
         flush=True,
     )
     try:
-        ms, stats = timed_solve(lambda: time_solve_with_stats(y0, batch_size))
-    except BenchmarkTimeoutError:
-        print(TIMEOUT_ERROR)
-        return timeout_cache_entry()
+        ms, stats = time_solve_with_stats(y0, batch_size)
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
@@ -248,17 +242,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
         case_key = f"{scenario.key}_{grouping.key}"
         case_cache = gpu_cache.setdefault(case_key, {})
         print(f"{scenario.label} / {grouping.label}:")
-        try:
-            y0 = timed_solve(
-                lambda: order_initial_conditions(base_y0, scenario, grouping)
-            )
-        except BenchmarkTimeoutError:
-            print(f"  ordering ... {TIMEOUT_ERROR}")
-            for bs in _BATCH_SIZES:
-                case_cache.setdefault(str(int(bs)), timeout_cache_entry())
-            save_cache(_CACHE_PATH, cache)
-            print()
-            continue
+        y0 = order_initial_conditions(base_y0, scenario, grouping)
         for bs in _BATCH_SIZES:
             bs_key = str(int(bs))
             cached = case_cache.get(bs_key)

@@ -79,7 +79,7 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="local_rodas5_fp32_lu",
+        key="modax rodas5 jax fp32 lu",
         color="#2b7be0",
         marker="o",
         solve_fn=rodas5_solve,
@@ -89,7 +89,7 @@ CASES: tuple[Case, ...] = (
         lu_precision="fp32",
     ),
     Case(
-        key="local_rodas5_fp64_lu",
+        key="modax rodas5 jax fp64 lu",
         color="#e02b2b",
         marker="D",
         solve_fn=rodas5_solve,
@@ -99,7 +99,7 @@ CASES: tuple[Case, ...] = (
         lu_precision="fp64",
     ),
     Case(
-        key="rodas5ckn",
+        key="modax rodas5 numba",
         color="#f0a202",
         marker="P",
         solve_fn=rodas5ckn_solve,
@@ -108,7 +108,7 @@ CASES: tuple[Case, ...] = (
         kwargs=_SOLVER_KWARGS,
     ),
     Case(
-        key="diffrax_kvaerno5",
+        key="diffrax kvaerno5",
         color="#2ba84a",
         marker="s",
         solve_fn=diffrax_kvaerno5_solve,
@@ -117,7 +117,7 @@ CASES: tuple[Case, ...] = (
         kwargs=_SOLVER_KWARGS,
     ),
     Case(
-        key="julia_rodas5_EnsembleGPUArray",
+        key="julia rodas5 array",
         color="#9b59b6",
         marker="^",
         solve_fn=julia_rodas5_solve,
@@ -128,7 +128,7 @@ CASES: tuple[Case, ...] = (
         ensemble_backend="EnsembleGPUArray",
     ),
     Case(
-        key="julia_rodas5_EnsembleGPUKernel",
+        key="julia rodas5 kernel",
         color="#9b59b6",
         marker="v",
         linestyle="--",
@@ -250,7 +250,7 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
 
 def collect_timing(case: Case, dim: int, divergence: float):
     return collect_timed_timing(
-        case.label,
+        case.key,
         f"dim={dim:>4}",
         lambda: time_case(case, dim, divergence=divergence),
         label_width=28,
@@ -276,19 +276,19 @@ def run_benchmarks(
     scenario_cache = cache.setdefault(gpu_name, {}).setdefault(scenario, {})
     rows: list[_Row] = []
     for case in cases:
-        print(f"\n{case.label}:")
+        print(f"\n{case.key}:")
         solver_cache = scenario_cache.setdefault(case.key, {})
         for dim in _DIMENSIONS:
             dim_key = str(dim)
             if dim_key in solver_cache:
                 ms = solver_cache[dim_key]
                 ms_text = format_cached_timing(ms)
-                print(f"  {case.label:<28} dim={dim:>4} ... (cached) {ms_text}")
+                print(f"  {case.key:<28} dim={dim:>4} ... (cached) {ms_text}")
             else:
                 ms = collect_timing(case, dim, divergence)
                 solver_cache[dim_key] = ms
                 save_cache(_CACHE_PATH, cache)
-            rows.append((case.key, case.label, dim, timing_value_or_none(ms)))
+            rows.append((case.key, case.key, dim, timing_value_or_none(ms)))
         print()
     return rows
 
@@ -319,7 +319,7 @@ def plot(
             marker=case.marker,
             color=case.color,
             linestyle=case.linestyle,
-            label=case.label,
+            label=case.key,
         )
     ax.set_xscale("log")
     ax.set_yscale("log")

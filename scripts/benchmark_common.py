@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import subprocess
 import time
@@ -14,13 +13,8 @@ import jax
 
 T = TypeVar("T")
 
-SOLVE_TIMEOUT_SECONDS = 30.0
 TIMEOUT_ERROR = "exceeded timeout"
 TIMEOUT_STATUS = "timeout"
-
-
-class BenchmarkTimeoutError(TimeoutError):
-    pass
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -29,10 +23,6 @@ class BenchmarkCase:
     color: str
     marker: str
     linestyle: str = "-"
-
-    @property
-    def label(self) -> str:
-        return self.key
 
 
 def timeout_cache_entry() -> dict[str, str]:
@@ -59,20 +49,6 @@ def timing_value_or_none(value) -> float | None:
     if is_timeout(value) or value is None:
         return None
     return float(value)
-
-
-def run_with_timeout(
-    run: Callable[[], T], timeout_s: float = SOLVE_TIMEOUT_SECONDS
-) -> T:
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(run)
-    try:
-        return future.result(timeout=timeout_s)
-    except concurrent.futures.TimeoutError as exc:
-        future.cancel()
-        raise BenchmarkTimeoutError(TIMEOUT_ERROR) from exc
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def get_gpu_name() -> str:
@@ -118,9 +94,7 @@ def output_paths(script_dir: Path, gpu_name: str) -> tuple[Path, Path]:
     return script_dir / f"results-{slug}.csv", script_dir / f"plot-{slug}.png"
 
 
-def time_blocked(
-    run: Callable[[], T], n_runs: int, *, timeout_s: float | None = None
-) -> tuple[float, T]:
+def time_blocked(run: Callable[[], T], n_runs: int) -> tuple[float, T]:
     def time_once() -> tuple[float, T]:
         result = run()
         jax.block_until_ready(result)
@@ -131,8 +105,6 @@ def time_blocked(
             jax.block_until_ready(result)
         return (time.perf_counter() - t0) / n_runs * 1000, result
 
-    if timeout_s is not None:
-        return run_with_timeout(time_once, timeout_s)
     return time_once()
 
 
@@ -170,10 +142,6 @@ def drop_none_rows(
     return list(xs), list(times)
 
 
-def timed_solve(run: Callable[[], T], timeout_s: float = SOLVE_TIMEOUT_SECONDS) -> T:
-    return run_with_timeout(run, timeout_s)
-
-
 def collect_timed_timing(
     label: str,
     descriptor: str,
@@ -183,10 +151,7 @@ def collect_timed_timing(
 ) -> float | dict[str, str] | None:
     print(f"  {label:<{label_width}} {descriptor} ...", end=" ", flush=True)
     try:
-        ms = timed_solve(run)
-    except BenchmarkTimeoutError:
-        print(TIMEOUT_ERROR)
-        return timeout_cache_entry()
+        ms = run()
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None

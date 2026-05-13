@@ -29,15 +29,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from reference.systems.python import brusselator
 from scripts.benchmark_common import (
     TIMEOUT_ERROR,
-    BenchmarkTimeoutError,
     get_gpu_name,
     gpu_slug,
     is_timeout,
     load_cache,
     save_cache,
     time_blocked,
-    timed_solve,
-    timeout_cache_entry,
 )
 from solvers.kencarp5 import solve as kencarp5_solve
 from solvers.kencarp5ckn import solve as kencarp5ckn_solve
@@ -100,29 +97,29 @@ _GROUPINGS = (
     Grouping("sorted", "sorted", "--", "s"),
 )
 _LINEAR_SETTINGS = (
-    LinearSetting("lin", "linear=True", True),
-    LinearSetting("nl", "linear=False", False),
+    LinearSetting("modax kencarp5 jax linear", "modax kencarp5 jax linear", True),
+    LinearSetting("modax kencarp5 jax newton", "modax kencarp5 jax newton", False),
 )
 _BASELINE_SOLVERS = (
     BaselineSolver(
-        "kencarp5ckn_lin",
-        "numba-cuda kencarp5 linear=True",
+        "modax kencarp5 numba linear",
+        "modax kencarp5 numba linear",
         "#f0a202",
         "P",
         "kencarp5ckn",
         True,
     ),
     BaselineSolver(
-        "kencarp5ckn_nl",
-        "numba-cuda kencarp5 linear=False",
+        "modax kencarp5 numba newton",
+        "modax kencarp5 numba newton",
         "#d35400",
         "X",
         "kencarp5ckn",
         False,
     ),
     BaselineSolver(
-        "rodas5_fp64",
-        "my rodas5 fp64 LU",
+        "modax rodas5 jax fp64 lu",
+        "modax rodas5 jax fp64 lu",
         "#00a6a6",
         "v",
         "rodas5",
@@ -330,12 +327,7 @@ def collect_row(
         flush=True,
     )
     try:
-        ms, stats = timed_solve(
-            lambda: time_solve_with_stats(y0, params, batch_size, linear.linear)
-        )
-    except BenchmarkTimeoutError:
-        print(TIMEOUT_ERROR)
-        return timeout_cache_entry()
+        ms, stats = time_solve_with_stats(y0, params, batch_size, linear.linear)
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
@@ -370,10 +362,7 @@ def collect_baseline_row(
         flush=True,
     )
     try:
-        ms, stats = timed_solve(lambda: time_baseline_solver(solver, y0, params))
-    except BenchmarkTimeoutError:
-        print(TIMEOUT_ERROR)
-        return timeout_cache_entry()
+        ms, stats = time_baseline_solver(solver, y0, params)
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
@@ -404,30 +393,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
         if cur != last_scenario_grouping:
             last_scenario_grouping = cur
             print(f"{scenario.label} / {grouping.label}:")
-            try:
-                ordered_data = timed_solve(
-                    lambda: order_data(*base_data[scenario.key], scenario, grouping)
-                )
-            except BenchmarkTimeoutError:
-                print(f"  ordering ... {TIMEOUT_ERROR}")
-                failed_orderings.add(cur)
-                ordered_data = None
-                for linear_for_cache in _LINEAR_SETTINGS:
-                    timeout_case_cache = gpu_cache.setdefault(
-                        case_key(scenario, grouping, linear_for_cache), {}
-                    )
-                    for bs in _BATCH_SIZES:
-                        timeout_case_cache.setdefault(
-                            str(int(bs)), timeout_cache_entry()
-                        )
-                for solver in _BASELINE_SOLVERS:
-                    gpu_cache.setdefault(
-                        baseline_case_key(scenario, grouping, solver),
-                        timeout_cache_entry(),
-                    )
-                save_cache(_CACHE_PATH, cache)
-                print()
-                continue
+            ordered_data = order_data(*base_data[scenario.key], scenario, grouping)
 
         assert ordered_data is not None
         y0, params = ordered_data

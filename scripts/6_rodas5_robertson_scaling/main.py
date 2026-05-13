@@ -75,7 +75,7 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="local_rodas5_fp32_lu",
+        key="modax rodas5 jax fp32 lu",
         color="#2b7be0",
         marker="o",
         solve_fn=rodas5_solve,
@@ -85,7 +85,7 @@ CASES: tuple[Case, ...] = (
         lu_precision="fp32",
     ),
     Case(
-        key="local_rodas5_fp64_lu",
+        key="modax rodas5 jax fp64 lu",
         color="#e02b2b",
         marker="D",
         solve_fn=rodas5_solve,
@@ -95,7 +95,7 @@ CASES: tuple[Case, ...] = (
         lu_precision="fp64",
     ),
     Case(
-        key="rodas5ckn",
+        key="modax rodas5 numba",
         color="#f0a202",
         marker="P",
         solve_fn=rodas5ckn_solve,
@@ -106,7 +106,7 @@ CASES: tuple[Case, ...] = (
         coerce_numpy=True,
     ),
     Case(
-        key="diffrax_kvaerno5",
+        key="diffrax kvaerno5",
         color="#2ba84a",
         marker="s",
         solve_fn=diffrax_kvaerno5_solve,
@@ -116,7 +116,7 @@ CASES: tuple[Case, ...] = (
         kwargs=_SOLVER_KWARGS,
     ),
     Case(
-        key="julia_rodas5_EnsembleGPUArray",
+        key="julia rodas5 array",
         color="#9b59b6",
         marker="^",
         solve_fn=julia_rodas5_solve,
@@ -128,7 +128,7 @@ CASES: tuple[Case, ...] = (
         ensemble_backend="EnsembleGPUArray",
     ),
     Case(
-        key="julia_rodas5_EnsembleGPUKernel",
+        key="julia rodas5 kernel",
         color="#9b59b6",
         marker="v",
         linestyle="--",
@@ -197,7 +197,7 @@ def time_case(case: Case, y0, params) -> float:
 
 def collect_timing(case: Case, size: int, y0, params):
     return collect_timed_timing(
-        case.label,
+        case.key,
         f"n={size:>7}",
         lambda: time_case(case, y0, params),
         label_width=24,
@@ -216,20 +216,20 @@ def run_benchmarks(
         print(f"\n=== {scenario} ===\n")
         rows: list[_Row] = []
         for case in cases:
-            print(f"{case.label}:")
+            print(f"{case.key}:")
             solver_cache = gpu_cache.setdefault(f"{scenario}_{case.key}", {})
             for size in _ENSEMBLE_SIZES:
                 size_key = str(size)
                 if size_key in solver_cache:
                     ms = solver_cache[size_key]
                     ms_text = format_cached_timing(ms)
-                    print(f"  {case.label:<24} n={size:>7} ... (cached) {ms_text}")
+                    print(f"  {case.key:<24} n={size:>7} ... (cached) {ms_text}")
                 else:
                     y0, params = robertson.make_scenario(size, divergence=divergence)
                     ms = collect_timing(case, size, y0, params)
                     solver_cache[size_key] = ms
                     save_cache(_CACHE_PATH, cache)
-                rows.append((case.key, case.label, size, timing_value_or_none(ms)))
+                rows.append((case.key, case.key, size, timing_value_or_none(ms)))
             print()
         rows_by_scenario[scenario] = rows
     return rows_by_scenario
@@ -261,7 +261,7 @@ def plot(
             marker=case.marker,
             color=case.color,
             linestyle=case.linestyle,
-            label=case.label,
+            label=case.key,
         )
     ax.set_xscale("log")
     ax.set_yscale("log")

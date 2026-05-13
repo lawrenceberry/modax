@@ -80,7 +80,7 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="local_tsit5",
+        key="modax tsit5 jax",
         color="#2b7be0",
         marker="o",
         linestyle="-",
@@ -91,7 +91,7 @@ CASES: tuple[Case, ...] = (
         kwargs=_SOLVER_KWARGS,
     ),
     Case(
-        key="tsit5ckn",
+        key="modax tsit5 numba",
         color="#f0a202",
         marker="P",
         linestyle="-",
@@ -103,7 +103,7 @@ CASES: tuple[Case, ...] = (
         coerce_numpy=True,
     ),
     Case(
-        key="diffrax_tsit5",
+        key="diffrax tsit5",
         color="#2ba84a",
         marker="s",
         linestyle="-",
@@ -114,7 +114,7 @@ CASES: tuple[Case, ...] = (
         kwargs=_SOLVER_KWARGS,
     ),
     Case(
-        key="julia_tsit5_EnsembleGPUArray",
+        key="julia tsit5 array",
         color="#9b59b6",
         marker="^",
         linestyle="-",
@@ -128,7 +128,7 @@ CASES: tuple[Case, ...] = (
         ensemble_backend="EnsembleGPUArray",
     ),
     Case(
-        key="julia_tsit5_EnsembleGPUKernel",
+        key="julia tsit5 kernel",
         color="#9b59b6",
         marker="v",
         linestyle="--",
@@ -185,18 +185,18 @@ def run_benchmarks(
         print(f"\n=== {scenario} ===\n")
         rows: list[Row] = []
         for case in cases:
-            print(f"{case.label}:")
+            print(f"{case.key}:")
             solver_cache = gpu_cache.setdefault(f"{scenario}_{case.key}", {})
             for size in _ENSEMBLE_SIZES:
                 size_key = str(size)
                 if size_key in solver_cache:
                     ms = solver_cache[size_key]
                     ms_text = format_cached_timing(ms)
-                    print(f"  {case.label:<20} n={size:>7} ... (cached) {ms_text}")
+                    print(f"  {case.key:<20} n={size:>7} ... (cached) {ms_text}")
                 else:
                     y0, params = lorenz.make_scenario(size, divergence=divergence)
                     ms = collect_timed_timing(
-                        case.label,
+                        case.key,
                         f"n={size:>7}",
                         lambda: time_case(case, y0, params),
                         label_width=20,
@@ -206,7 +206,7 @@ def run_benchmarks(
                 rows.append(
                     Row(
                         key=case.key,
-                        label=case.label,
+                        label=case.key,
                         size=size,
                         ms=timing_value_or_none(ms),
                     )
@@ -242,7 +242,7 @@ def plot(
             marker=case.marker,
             color=case.color,
             linestyle=case.linestyle,
-            label=case.label,
+            label=case.key,
         )
     ax.set_xscale("log")
     ax.set_yscale("log")

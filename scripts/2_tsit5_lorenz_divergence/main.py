@@ -1,6 +1,6 @@
 """Lorenz divergence-CV benchmark for Tsit5 solvers.
 
-Runs the Lorenz system with 400,000 trajectories while sweeping the
+Runs the Lorenz system with 100,000 trajectories while sweeping the
 ``make_scenario(..., divergence=...)`` knob. For each solver and divergence
 value, the benchmark records solve time and the actual distribution of accepted
 plus rejected Tsit5 steps.
@@ -21,20 +21,16 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
 from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
 from reference.systems.python import lorenz
 from scripts.benchmark_common import (
     TIMEOUT_ERROR,
-    BenchmarkTimeoutError,
     get_gpu_name,
     is_timeout,
     load_cache,
     output_paths,
     save_cache,
     time_blocked,
-    timed_solve,
-    timeout_cache_entry,
 )
 from solvers.tsit5 import solve as tsit5_solve
 from solvers.tsit5ckn import prepare_solve as tsit5ckn_prepare_solve
@@ -62,7 +58,6 @@ _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
-_JULIA_CACHE_VERSION = 3
 
 _CSV_FIELDS = (
     "gpu",
@@ -92,39 +87,26 @@ class Case:
     ensemble_backend: str | None = None
     sort_by_steps: bool = False
 
-    @property
-    def label(self) -> str:
-        return self.key
-
 
 CASES = (
-    Case("tsit5", "#2b7be0", "o", "stats"),
-    Case("tsit5ckn", "#f0a202", "s", "stats"),
+    Case("modax tsit5 jax", "#2b7be0", "o", "stats"),
+    Case("modax tsit5 numba", "#f0a202", "s", "stats"),
     Case(
-        "tsit5ckn_sorted",
+        "modax tsit5 numba (sorted)",
         "#f0a202",
         "P",
         "stats",
         sort_by_steps=True,
     ),
-    # Case("diffrax_tsit5", "Diffrax Tsit5", "#2ba84a", "^", "timing"),
-    # Case(
-    #     "julia_tsit5_EnsembleGPUArray",
-    #     "Julia Tsit5 GPUArray",
-    #     "#9b59b6",
-    #     "D",
-    #     "julia",
-    #     "EnsembleGPUArray",
-    # ),
     Case(
-        "julia_tsit5_EnsembleGPUKernel",
+        "julia tsit5 kernel",
         "#d35400",
         "v",
         "julia",
         "EnsembleGPUKernel",
     ),
     Case(
-        "julia_tsit5_EnsembleGPUKernel_sorted",
+        "julia tsit5 kernel (sorted)",
         "#d35400",
         "X",
         "julia",
@@ -143,7 +125,7 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
-    if solver.key.startswith("tsit5ckn"):
+    if solver.key.startswith("modax tsit5 numba"):
         prepared = tsit5ckn_prepare_solve(
             lorenz.ode_fn_numba_cuda,
             y0=y0,
@@ -167,18 +149,6 @@ def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
     )
 
 
-def solve_timing_only(solver: Case, y0: np.ndarray, params: np.ndarray):
-    if solver.key == "diffrax_tsit5":
-        return diffrax_tsit5_solve(
-            lorenz.ode_fn,
-            y0=jnp.asarray(y0, dtype=jnp.float64),
-            t_span=lorenz.TIMES,
-            params=jnp.asarray(params, dtype=jnp.float64),
-            **_SOLVER_KWARGS,
-        )
-    raise ValueError(f"unsupported timing-only solver: {solver.key}")
-
-
 def time_solve(
     solver: Case, y0: np.ndarray, params: np.ndarray
 ) -> tuple[float, dict | None]:
@@ -196,7 +166,7 @@ def time_solve(
     if solver.mode == "timing":
         ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
         return ms, None
-    if solver.key.startswith("tsit5ckn"):
+    if solver.key.startswith("modax tsit5 numba"):
         prepared = tsit5ckn_prepare_solve(
             lorenz.ode_fn_numba_cuda,
             y0=y0,
@@ -282,8 +252,6 @@ def is_current_cached_row(value, solver: Case) -> bool:
         return True
     if not is_complete_row(value):
         return False
-    if solver.mode == "julia":
-        return value.get("julia_cache_version") == _JULIA_CACHE_VERSION
     return True
 
 
@@ -294,7 +262,7 @@ def collect_row(
     stats_summary: dict | None = None,
 ) -> dict | None:
     print(
-        f"  {solver.label:<16} divergence={divergence:>4.2f} ...",
+        f"  {solver.key:<16} divergence={divergence:>4.2f} ...",
         end=" ",
         flush=True,
     )
@@ -323,7 +291,7 @@ def collect_row(
         row = {
             "gpu": gpu_name,
             "solver_key": solver.key,
-            "solver": solver.label,
+            "solver": solver.key,
             "divergence": float(divergence),
             "dim": _DIM,
             "ensemble_size": _N_TRAJ,
@@ -331,15 +299,10 @@ def collect_row(
             **local_stats_summary,
             "normalized_solve_time_ms_per_step": float(normalized),
         }
-        if solver.mode == "julia":
-            row["julia_cache_version"] = _JULIA_CACHE_VERSION
         return row
 
     try:
-        row = timed_solve(run)
-    except BenchmarkTimeoutError:
-        print(TIMEOUT_ERROR, flush=True)
-        return timeout_cache_entry()
+        row = run()
     except Exception as exc:
         print(f"FAILED ({exc})", flush=True)
         return None
@@ -351,7 +314,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
     for solver in CASES:
-        print(f"\n{solver.label}:")
+        print(f"\n{solver.key}:")
         solver_cache = gpu_cache.setdefault(solver.key, {})
         for divergence in _DIVERGENCES:
             divergence_key = f"{divergence:.6g}"
@@ -363,12 +326,12 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                 else:
                     text = format_row(row)
                 print(
-                    f"  {solver.label:<16} divergence={divergence:>4.2f} ... "
+                    f"  {solver.key:<16} divergence={divergence:>4.2f} ... "
                     f"(cached) {text}",
                     flush=True,
                 )
             else:
-                local_row = gpu_cache.get("tsit5", {}).get(divergence_key)
+                local_row = gpu_cache.get("modax tsit5 jax", {}).get(divergence_key)
                 stats_summary = (
                     stats_from_row(local_row) if is_complete_row(local_row) else None
                 )
@@ -409,7 +372,7 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
             color=solver.color,
             marker=solver.marker,
             s=42,
-            label=solver.label,
+            label=solver.key,
         )
 
     ax.set_xlabel("Normalized standard deviation of attempted steps")

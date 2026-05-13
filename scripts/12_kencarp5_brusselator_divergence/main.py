@@ -27,15 +27,12 @@ from reference.solvers.python.julia_kencarp5 import solve as julia_kencarp5_solv
 from reference.systems.python import brusselator
 from scripts.benchmark_common import (
     TIMEOUT_ERROR,
-    BenchmarkTimeoutError,
     get_gpu_name,
     is_timeout,
     load_cache,
     output_paths,
     save_cache,
     time_blocked,
-    timed_solve,
-    timeout_cache_entry,
 )
 from solvers.kencarp5 import solve as kencarp5_solve
 from solvers.kencarp5ckn import solve as kencarp5ckn_solve
@@ -85,48 +82,44 @@ class Case:
     linear: bool | None = None
     ensemble_backend: str | None = None
 
-    @property
-    def label(self) -> str:
-        return self.key
-
 
 CASES = (
     Case(
-        "local_kencarp5_linear",
+        "modax kencarp5 jax linear",
         "#2b7be0",
         "o",
         "stats",
         linear=True,
     ),
     Case(
-        "local_kencarp5_newton",
+        "modax kencarp5 jax newton",
         "#e02b2b",
         "D",
         "stats",
         linear=False,
     ),
     Case(
-        "diffrax_kencarp5",
+        "diffrax kencarp5",
         "#2ba84a",
         "s",
         "timing",
     ),
     Case(
-        "kencarp5ckn_linear",
+        "modax kencarp5 numba linear",
         "#f0a202",
         "P",
         "kencarp5ckn",
         linear=True,
     ),
     Case(
-        "kencarp5ckn_newton",
+        "modax kencarp5 numba newton",
         "#d35400",
         "X",
         "kencarp5ckn",
         linear=False,
     ),
     Case(
-        "local_rodas5_fp64_lu",
+        "modax rodas5 jax fp64 lu",
         "#00a6a6",
         "v",
         "timing",
@@ -135,7 +128,7 @@ CASES = (
     # so this Julia row is fully-implicit (no IMEX) — see the comment
     # block at top of reference/solvers/julia/run_solver.jl.
     Case(
-        "julia_kencarp5_EnsembleGPUArray",
+        "julia kencarp5 array",
         "#9b59b6",
         "^",
         "julia",
@@ -167,7 +160,7 @@ def solve_with_stats(linear: bool, y0: np.ndarray, params: np.ndarray):
 
 
 def solve_timing_only(solver: Case, y0: np.ndarray, params: np.ndarray):
-    if solver.key == "diffrax_kencarp5":
+    if solver.key == "diffrax kencarp5":
         return diffrax_kencarp5_solve(
             _EX_FN,
             _IM_FN,
@@ -176,7 +169,7 @@ def solve_timing_only(solver: Case, y0: np.ndarray, params: np.ndarray):
             jnp.asarray(params),
             **_SOLVER_KWARGS,
         )
-    if solver.key == "local_rodas5_fp64_lu":
+    if solver.key == "modax rodas5 jax fp64 lu":
         return rodas5_solve(
             _ODE_FN,
             jnp.asarray(y0, dtype=jnp.float64),
@@ -284,7 +277,7 @@ def collect_row(
     stats_summary: dict | None = None,
 ) -> dict | None:
     print(
-        f"  {solver.label:<28} divergence={divergence:>4.2f} ...",
+        f"  {solver.key:<28} divergence={divergence:>4.2f} ...",
         end=" ",
         flush=True,
     )
@@ -309,7 +302,7 @@ def collect_row(
         return {
             "gpu": gpu_name,
             "solver_key": solver.key,
-            "solver": solver.label,
+            "solver": solver.key,
             "divergence": float(divergence),
             "dim": _DIM,
             "n_grid": _N_GRID,
@@ -320,10 +313,7 @@ def collect_row(
         }
 
     try:
-        row = timed_solve(run)
-    except BenchmarkTimeoutError:
-        print(TIMEOUT_ERROR, flush=True)
-        return timeout_cache_entry()
+        row = run()
     except Exception as exc:
         print(f"FAILED ({exc})", flush=True)
         return None
@@ -342,7 +332,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
     for solver in CASES:
-        print(f"\n{solver.label}:")
+        print(f"\n{solver.key}:")
         solver_cache = gpu_cache.setdefault(solver.key, {})
         for divergence in _DIVERGENCES:
             divergence_key = f"{divergence:.6g}"
@@ -351,12 +341,12 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                 row = cached
                 text = TIMEOUT_ERROR if is_timeout(row) else format_row(row)
                 print(
-                    f"  {solver.label:<28} divergence={divergence:>4.2f} ... "
+                    f"  {solver.key:<28} divergence={divergence:>4.2f} ... "
                     f"(cached) {text}",
                     flush=True,
                 )
             else:
-                local_row = gpu_cache.get("local_kencarp5_linear", {}).get(
+                local_row = gpu_cache.get("modax kencarp5 jax linear", {}).get(
                     divergence_key
                 )
                 stats_summary = (
@@ -399,7 +389,7 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
             color=solver.color,
             marker=solver.marker,
             s=42,
-            label=solver.label,
+            label=solver.key,
         )
 
     ax.set_xlabel("Normalized standard deviation of attempted steps")
