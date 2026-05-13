@@ -58,7 +58,7 @@ _OMEGA = 1.0
 
 _T_SPAN = vdp.TIMES
 _ENSEMBLE_SIZE = 1000
-_N_RUNS = 10
+_N_RUNS = 1
 
 _DIMENSIONS = (2, 4, 6, 8, 10, 12, 16, 32, 64, 128)
 
@@ -160,9 +160,7 @@ def _vdp_system_config(n_osc: int) -> dict[str, float | int]:
 
 def time_case(case: Case, dim: int, *, divergence: float) -> float:
     n_osc = dim // 2
-    y0_batch, params = vdp.make_scenario(
-        n_osc, _ENSEMBLE_SIZE, divergence=divergence
-    )
+    y0_batch, params = vdp.make_scenario(n_osc, _ENSEMBLE_SIZE, divergence=divergence)
     kwargs = case.kwargs or {}
 
     if case.is_julia:
