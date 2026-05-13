@@ -1,0 +1,64 @@
+solver_key,solver,ensemble_size,solve_time_ms
+modax kencarp5 jax linear,modax kencarp5 jax linear,3,21.105234045535326
+modax kencarp5 jax linear,modax kencarp5 jax linear,10,23.44683511182666
+modax kencarp5 jax linear,modax kencarp5 jax linear,30,24.21655599027872
+modax kencarp5 jax linear,modax kencarp5 jax linear,100,27.5326669216156
+modax kencarp5 jax linear,modax kencarp5 jax linear,300,53.67731535807252
+modax kencarp5 jax linear,modax kencarp5 jax linear,1000,128.97154968231916
+modax kencarp5 jax linear,modax kencarp5 jax linear,3000,344.95564829558134
+modax kencarp5 jax linear,modax kencarp5 jax linear,10000,1137.0708663016558
+modax kencarp5 jax linear,modax kencarp5 jax linear,30000,3418.490649666637
+modax kencarp5 jax newton,modax kencarp5 jax newton,3,42.07930900156498
+modax kencarp5 jax newton,modax kencarp5 jax newton,10,46.78399069234729
+modax kencarp5 jax newton,modax kencarp5 jax newton,30,48.15461300313473
+modax kencarp5 jax newton,modax kencarp5 jax newton,100,54.41281571984291
+modax kencarp5 jax newton,modax kencarp5 jax newton,300,104.2697629891336
+modax kencarp5 jax newton,modax kencarp5 jax newton,1000,215.58023383840919
+modax kencarp5 jax newton,modax kencarp5 jax newton,3000,633.612705860287
+modax kencarp5 jax newton,modax kencarp5 jax newton,10000,2057.8838791698217
+modax kencarp5 jax newton,modax kencarp5 jax newton,30000,6178.289873059839
+modax kencarp5 numba linear,modax kencarp5 numba linear,3,21.062612999230623
+modax kencarp5 numba linear,modax kencarp5 numba linear,10,21.076533943414688
+modax kencarp5 numba linear,modax kencarp5 numba linear,30,20.594602916389704
+modax kencarp5 numba linear,modax kencarp5 numba linear,100,23.47363391891122
+modax kencarp5 numba linear,modax kencarp5 numba linear,300,59.38873812556267
+modax kencarp5 numba linear,modax kencarp5 numba linear,1000,175.98076909780502
+modax kencarp5 numba linear,modax kencarp5 numba linear,3000,524.5941840112209
+modax kencarp5 numba linear,modax kencarp5 numba linear,10000,1739.4551038742065
+modax kencarp5 numba linear,modax kencarp5 numba linear,30000,5188.841550145298
+modax kencarp5 numba newton,modax kencarp5 numba newton,3,33.72758813202381
+modax kencarp5 numba newton,modax kencarp5 numba newton,10,33.48103119060397
+modax kencarp5 numba newton,modax kencarp5 numba newton,30,33.47484115511179
+modax kencarp5 numba newton,modax kencarp5 numba newton,100,37.631071638315916
+modax kencarp5 numba newton,modax kencarp5 numba newton,300,109.73430890589952
+modax kencarp5 numba newton,modax kencarp5 numba newton,1000,327.11295038461685
+modax kencarp5 numba newton,modax kencarp5 numba newton,3000,976.1235117912292
+modax kencarp5 numba newton,modax kencarp5 numba newton,10000,3246.7484790831804
+modax kencarp5 numba newton,modax kencarp5 numba newton,30000,9700.922010932118
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,3,4.765703808516264
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,10,4.897173028439283
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,30,5.067381076514721
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,100,5.42173907160759
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,300,6.80477824062109
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,1000,12.945101596415043
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,3000,34.53230671584606
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,10000,113.98532381281257
+modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,30000,284.77121889591217
+diffrax kencarp5,diffrax kencarp5,3,21.369843743741512
+diffrax kencarp5,diffrax kencarp5,10,25.451576802879572
+diffrax kencarp5,diffrax kencarp5,30,26.502428110688925
+diffrax kencarp5,diffrax kencarp5,100,28.537880163639784
+diffrax kencarp5,diffrax kencarp5,300,45.63024127855897
+diffrax kencarp5,diffrax kencarp5,1000,99.85713893547654
+diffrax kencarp5,diffrax kencarp5,3000,262.3935230076313
+diffrax kencarp5,diffrax kencarp5,10000,847.8032872080803
+diffrax kencarp5,diffrax kencarp5,30000,2534.1518321074545
+julia kencarp5 array,julia kencarp5 array,3,39.265109
+julia kencarp5 array,julia kencarp5 array,10,47.271066
+julia kencarp5 array,julia kencarp5 array,30,65.100341
+julia kencarp5 array,julia kencarp5 array,100,96.657399
+julia kencarp5 array,julia kencarp5 array,300,202.77302
+julia kencarp5 array,julia kencarp5 array,1000,272.982195
+julia kencarp5 array,julia kencarp5 array,3000,909.627461
+julia kencarp5 array,julia kencarp5 array,10000,6685.575518000001
+julia kencarp5 array,julia kencarp5 array,30000,

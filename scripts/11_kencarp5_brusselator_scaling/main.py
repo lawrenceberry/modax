@@ -135,7 +135,7 @@ CASES: tuple[Case, ...] = (
         coerce_numpy=True,
     ),
     Case(
-        key="modax rodas5 jax fp64 lu",
+        key="modax rodas5 jax fp32 lu",
         color="#00a6a6",
         marker="v",
         linestyle="--",
@@ -143,7 +143,7 @@ CASES: tuple[Case, ...] = (
         ode_fn=_ODE_FN,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        lu_precision="fp64",
+        lu_precision="fp32",
         coerce_jax=True,
     ),
     Case(
