@@ -15,22 +15,28 @@ PARAMS = jnp.array([0.04, 1e4, 3e7], dtype=jnp.float64)
 N_PARAMS = 3
 
 
+def _rhs(y0, y1, y2, k1, k2, k3):
+    return (
+        -k1 * y0 + k2 * y1 * y2,
+        k1 * y0 - k2 * y1 * y2 - k3 * y1**2,
+        k3 * y1**2,
+    )
+
+
+_rhs_cuda = cuda.jit(device=True)(_rhs)
+
+
 def ode_fn(y, t, p):
     del t
-    return jnp.array(
-        [
-            -p[0] * y[0] + p[1] * y[1] * y[2],
-            p[0] * y[0] - p[1] * y[1] * y[2] - p[2] * y[1] ** 2,
-            p[2] * y[1] ** 2,
-        ]
-    )
+    dy0, dy1, dy2 = _rhs(y[0], y[1], y[2], p[0], p[1], p[2])
+    return jnp.array([dy0, dy1, dy2])
 
 
 @cuda.jit(device=True)
 def ode_fn_numba_cuda(y, t, p, dy, i):
-    dy[i, 0] = -p[i, 0] * y[i, 0] + p[i, 1] * y[i, 1] * y[i, 2]
-    dy[i, 1] = p[i, 0] * y[i, 0] - p[i, 1] * y[i, 1] * y[i, 2] - p[i, 2] * y[i, 1] ** 2
-    dy[i, 2] = p[i, 2] * y[i, 1] ** 2
+    dy[i, 0], dy[i, 1], dy[i, 2] = _rhs_cuda(
+        y[i, 0], y[i, 1], y[i, 2], p[i, 0], p[i, 1], p[i, 2]
+    )
 
 
 @cuda.jit(device=True)
@@ -84,9 +90,7 @@ def make_initial_conditions(
     """
     divergence = _validate_divergence(divergence)
     rng = np.random.default_rng(seed)
-    alpha = ALPHA * (
-        (1.0 - divergence) + divergence * rng.uniform(0.0, 1.0, size)
-    )
+    alpha = ALPHA * ((1.0 - divergence) + divergence * rng.uniform(0.0, 1.0, size))
     y0 = np.column_stack(
         [
             (1 - EPS) * alpha,

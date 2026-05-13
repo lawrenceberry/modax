@@ -34,6 +34,7 @@ ratio is fixed at lambda_max / lambda_min throughout integration, and the
 
 import jax.numpy as jnp
 import numpy as np
+from numba import cuda
 
 TIMES = jnp.array((0.0, 0.2, 0.5, 1.0, 2.0), dtype=jnp.float64)
 
@@ -77,6 +78,31 @@ def make_system(n_vars, stiffness):
         "y0": y0,
         "M_np": M_np,
     }
+
+
+@cuda.jit(device=True)
+def ode_fn_numba_cuda(y, t, p, dy, i):
+    """Hardcoded for n=4, stiffness=100 (decay rates 1, 10, 100)."""
+    scale = p[i, 0]
+    dy[i, 0] = scale * (-y[i, 0])
+    dy[i, 1] = scale * (y[i, 0] - 10.0 * y[i, 1])
+    dy[i, 2] = scale * (10.0 * y[i, 1] - 100.0 * y[i, 2])
+    dy[i, 3] = scale * (100.0 * y[i, 2])
+
+
+@cuda.jit(device=True)
+def jac_fn_numba_cuda(y, t, p, jac, i):
+    """Hardcoded for n=4, stiffness=100 (decay rates 1, 10, 100)."""
+    for r in range(4):
+        for c in range(4):
+            jac[i, r, c] = 0.0
+    scale = p[i, 0]
+    jac[i, 0, 0] = -scale
+    jac[i, 1, 0] = scale
+    jac[i, 1, 1] = -10.0 * scale
+    jac[i, 2, 1] = 10.0 * scale
+    jac[i, 2, 2] = -100.0 * scale
+    jac[i, 3, 2] = 100.0 * scale
 
 
 def make_params(size, seed=42):

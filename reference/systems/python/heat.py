@@ -25,6 +25,7 @@ fp64 and vary only LU precision.
 
 import jax.numpy as jnp
 import numpy as np
+from numba import cuda
 
 TIMES = jnp.array((0.0, 0.025, 0.05, 0.075, 0.1), dtype=jnp.float64)
 
@@ -64,6 +65,35 @@ def make_system(n_vars):
         "implicit_ode_fn": implicit_ode_fn,
         "y0": y0,
     }
+
+
+@cuda.jit(device=True)
+def ode_fn_numba_cuda(y, t, p, dy, i):
+    """Hardcoded for n=4 (inv_dx2=25)."""
+    scale = p[i, 0] * 25.0
+    dy[i, 0] = scale * (-2.0 * y[i, 0] + y[i, 1])
+    dy[i, 1] = scale * (y[i, 0] - 2.0 * y[i, 1] + y[i, 2])
+    dy[i, 2] = scale * (y[i, 1] - 2.0 * y[i, 2] + y[i, 3])
+    dy[i, 3] = scale * (y[i, 2] - 2.0 * y[i, 3])
+
+
+@cuda.jit(device=True)
+def jac_fn_numba_cuda(y, t, p, jac, i):
+    """Hardcoded for n=4 (inv_dx2=25)."""
+    for r in range(4):
+        for c in range(4):
+            jac[i, r, c] = 0.0
+    scale = p[i, 0] * 25.0
+    jac[i, 0, 0] = -2.0 * scale
+    jac[i, 0, 1] = scale
+    jac[i, 1, 0] = scale
+    jac[i, 1, 1] = -2.0 * scale
+    jac[i, 1, 2] = scale
+    jac[i, 2, 1] = scale
+    jac[i, 2, 2] = -2.0 * scale
+    jac[i, 2, 3] = scale
+    jac[i, 3, 2] = scale
+    jac[i, 3, 3] = -2.0 * scale
 
 
 def make_params(size, seed=42):

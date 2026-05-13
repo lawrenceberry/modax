@@ -2,6 +2,7 @@
 
 import jax.numpy as jnp
 import numpy as np
+from numba import cuda
 
 N_OSC = 35
 N_VARS = 2 * N_OSC
@@ -14,14 +15,23 @@ Y0 = jnp.array([2.0, 0.0] * N_OSC, dtype=jnp.float64)
 PARAMS = jnp.array([1.0], dtype=jnp.float64)
 
 
+def _rhs_osc(x, v, x_left, x_right, scale, mu, d, omega):
+    return (
+        v,
+        scale * mu * (1.0 - x * x) * v
+        - omega * omega * x
+        + d * (x_left - 2.0 * x + x_right),
+    )
+
+
+_rhs_osc_cuda = cuda.jit(device=True)(_rhs_osc)
+
+
 def ode_fn(y, t, p):
     del t
-    scale = p[0]
     x = y[0::2]
     v = y[1::2]
-    laplacian = jnp.roll(x, -1) - 2.0 * x + jnp.roll(x, 1)
-    dx = v
-    dv = scale * MU * (1.0 - x * x) * v - OMEGA**2 * x + D * laplacian
+    dx, dv = _rhs_osc(x, v, jnp.roll(x, 1), jnp.roll(x, -1), p[0], MU, D, OMEGA)
     return jnp.stack([dx, dv], axis=1).ravel()
 
 
@@ -35,15 +45,46 @@ def make_system(n_osc: int, *, mu: float = MU, d: float = D, omega: float = OMEG
 
     def ode_fn(y, t, p):
         del t
-        scale = p[0]
         x = y[0::2]
         v = y[1::2]
-        laplacian = jnp.roll(x, -1) - 2.0 * x + jnp.roll(x, 1)
-        dx = v
-        dv = scale * mu * (1.0 - x * x) * v - (omega**2) * x + d * laplacian
+        dx, dv = _rhs_osc(x, v, jnp.roll(x, 1), jnp.roll(x, -1), p[0], mu, d, omega)
         return jnp.stack([dx, dv], axis=1).ravel()
 
     return ode_fn, y0
+
+
+@cuda.jit(device=True)
+def ode_fn_numba_cuda(y, t, p, dy, i):
+    """Hardcoded for n_osc=2, mu=1.0, d=10.0, omega=1.0."""
+    scale = p[i, 0]
+    # n_osc=2 ring: each oscillator's only neighbor is the other one
+    dy[i, 0], dy[i, 1] = _rhs_osc_cuda(
+        y[i, 0], y[i, 1], y[i, 2], y[i, 2], scale, 1.0, 10.0, 1.0
+    )
+    dy[i, 2], dy[i, 3] = _rhs_osc_cuda(
+        y[i, 2], y[i, 3], y[i, 0], y[i, 0], scale, 1.0, 10.0, 1.0
+    )
+
+
+@cuda.jit(device=True)
+def jac_fn_numba_cuda(y, t, p, jac, i):
+    """Hardcoded for n_osc=2, mu=1.0, d=10.0, omega=1.0."""
+    for r in range(4):
+        for c in range(4):
+            jac[i, r, c] = 0.0
+    scale = p[i, 0]
+    x0 = y[i, 0]
+    v0 = y[i, 1]
+    x1 = y[i, 2]
+    v1 = y[i, 3]
+    jac[i, 0, 1] = 1.0
+    jac[i, 1, 0] = scale * (-2.0 * x0 * v0) - 21.0
+    jac[i, 1, 1] = scale * (1.0 - x0 * x0)
+    jac[i, 1, 2] = 20.0
+    jac[i, 2, 3] = 1.0
+    jac[i, 3, 0] = 20.0
+    jac[i, 3, 2] = scale * (-2.0 * x1 * v1) - 21.0
+    jac[i, 3, 3] = scale * (1.0 - x1 * x1)
 
 
 def make_params(size: int, seed: int = 42) -> np.ndarray:
@@ -94,9 +135,9 @@ def make_scenario(
 
     base_params = make_params(size, seed)
     param_center = max(divergence, 1.0)
-    params = np.maximum(
-        param_center + divergence * (base_params - 1.0), 1e-6
-    ).astype(np.float64)
+    params = np.maximum(param_center + divergence * (base_params - 1.0), 1e-6).astype(
+        np.float64
+    )
     return y0, params
 
 
