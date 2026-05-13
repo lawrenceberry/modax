@@ -43,7 +43,7 @@ jax.config.update("jax_enable_x64", True)
 _N_OSC = 32
 _DIM = 2 * _N_OSC
 _ENSEMBLE_SIZE = 1000
-_N_RUNS = 10
+_N_RUNS = 1
 _T_SPAN = vdp.TIMES
 _DIVERGENCES = (0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0)
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
@@ -92,14 +92,6 @@ CASES = (
         "P",
         "stats",
         sort_by_steps=True,
-    ),
-    # Case("diffrax kvaerno5", "Diffrax Kvaerno5", "#2ba84a", "^", "timing"),
-    Case(
-        "julia rodas5 array",
-        "#9b59b6",
-        "D",
-        "julia",
-        "EnsembleGPUArray",
     ),
 )
 
@@ -331,23 +323,6 @@ def collect_row(
         return None
     print(format_row(row), flush=True)
     return row
-
-
-def _jax_warmup() -> None:
-    y0, params = make_data(_DIVERGENCES[0])
-    jy0 = jnp.asarray(y0, dtype=jnp.float64)
-    jparams = jnp.asarray(params)
-    for _ in range(2):
-        result = rodas5_solve(
-            _ODE_FN,
-            y0=jy0,
-            t_span=_T_SPAN,
-            params=jparams,
-            lu_precision="fp32",
-            return_stats=True,
-            **_SOLVER_KWARGS,
-        )
-        jax.block_until_ready(result)
 
 
 def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
