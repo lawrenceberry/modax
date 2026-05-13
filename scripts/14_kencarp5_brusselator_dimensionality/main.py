@@ -48,7 +48,7 @@ jax.config.update("jax_enable_x64", True)
 
 _T_SPAN = brusselator.TIMES
 _ENSEMBLE_SIZE = 1000
-_N_RUNS = 5
+_N_RUNS = 1
 
 # Total ODE dimension (= 2 * n_grid). Matches the script 9 VDP sweep shape.
 _DIMENSIONS = (4, 8, 12, 16, 24, 32, 48, 64, 96, 128)
@@ -60,6 +60,7 @@ _SCENARIOS = (
     ("identical", 0.0),
     ("divergent", 1.0),
 )
+
 
 @dataclass(frozen=True)
 class Case(BenchmarkCase):
@@ -119,7 +120,7 @@ CASES: tuple[Case, ...] = (
         linear=False,
     ),
     Case(
-        key="modax rodas5 jax fp64 lu",
+        key="modax rodas5 jax fp32 lu",
         color="#00a6a6",
         marker="v",
         linestyle="--",
@@ -127,7 +128,7 @@ CASES: tuple[Case, ...] = (
         mode="rodas",
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        lu_precision="fp64",
+        lu_precision="fp32",
     ),
     Case(
         key="diffrax kencarp5",
