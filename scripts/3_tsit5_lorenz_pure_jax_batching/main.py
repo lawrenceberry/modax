@@ -59,7 +59,7 @@ jax.config.update("jax_enable_x64", True)
 
 _N_TRAJ = 400_000
 _T_SPAN = (0.0, 5.0)
-_N_RUNS = 5
+_N_RUNS = 1
 _BATCH_SIZES = (5_000, 10_000, 25_000, 50_000, 100_000, 200_000, 400_000)
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
@@ -86,8 +86,8 @@ class Grouping:
 
 
 _SCENARIOS = (
-    Scenario("ic_identical", "identical y0", "#2b7be0"),
-    Scenario("ic_large", "large dy0", "#e02b2b"),
+    Scenario("ic_identical", "identical", "#2b7be0"),
+    Scenario("ic_large", "divergent", "#e02b2b"),
 )
 
 _GROUPINGS = (
