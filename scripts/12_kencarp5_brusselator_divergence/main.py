@@ -44,7 +44,7 @@ jax.config.update("jax_enable_x64", True)
 _N_GRID = 32
 _DIM = 2 * _N_GRID
 _ENSEMBLE_SIZE = 1000
-_N_RUNS = 5
+_N_RUNS = 1
 _T_SPAN = brusselator.TIMES
 _DIVERGENCES = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
