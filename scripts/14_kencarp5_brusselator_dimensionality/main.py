@@ -344,9 +344,7 @@ def plot(
     ax.set_yscale("log")
     ax.set_xlabel("ODE dimension")
     ax.set_ylabel("Solve time (ms)")
-    ax.set_title(
-        f"KenCarp5 dimensionality — {scenario} — Brusselator — {gpu_name}"
-    )
+    ax.set_title(f"KenCarp5 dimensionality — {scenario} — Brusselator — {gpu_name}")
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_DIMENSIONS)
     ax.set_xticklabels([str(d) for d in _DIMENSIONS], rotation=45, ha="right")

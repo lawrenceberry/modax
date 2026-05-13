@@ -73,7 +73,9 @@ def run_with_timeout(
     try:
         status, *payload = result_queue.get_nowait()
     except queue.Empty as exc:
-        raise RuntimeError(f"child process exited with code {process.exitcode}") from exc
+        raise RuntimeError(
+            f"child process exited with code {process.exitcode}"
+        ) from exc
 
     if status == "ok":
         return payload[0]

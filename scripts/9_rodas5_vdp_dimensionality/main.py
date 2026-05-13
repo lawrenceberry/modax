@@ -195,7 +195,9 @@ def time_diffrax(dim: int, solve_fn, *, scenario: str) -> float:
     return ms
 
 
-def time_julia_solver(dim: int, solve, *, ensemble_backend: str, scenario: str) -> float:
+def time_julia_solver(
+    dim: int, solve, *, ensemble_backend: str, scenario: str
+) -> float:
     n_osc = dim // 2
     y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     result = solve._julia_solve_with_timing(
@@ -218,8 +220,8 @@ def make_solver_specs(scenario: str) -> list[SolverSpec]:
             color=color,
             marker=marker,
             linestyle="-",
-            timing_fn=lambda dim, precision=lu_precision, sc=scenario: time_local_rodas5(
-                dim, lu_precision=precision, scenario=sc
+            timing_fn=lambda dim, precision=lu_precision, sc=scenario: (
+                time_local_rodas5(dim, lu_precision=precision, scenario=sc)
             ),
         )
         for key, label, color, marker, lu_precision in _LOCAL_SOLVER_DEFS
@@ -231,7 +233,9 @@ def make_solver_specs(scenario: str) -> list[SolverSpec]:
             color=color,
             marker=marker,
             linestyle="-",
-            timing_fn=lambda dim, fn=fn, sc=scenario: time_custom_kernel_rodas5(dim, fn, scenario=sc),
+            timing_fn=lambda dim, fn=fn, sc=scenario: time_custom_kernel_rodas5(
+                dim, fn, scenario=sc
+            ),
         )
         for key, label, color, marker, fn in _CUSTOM_KERNEL_SOLVER_DEFS
     )
@@ -242,7 +246,9 @@ def make_solver_specs(scenario: str) -> list[SolverSpec]:
             color=color,
             marker=marker,
             linestyle="-",
-            timing_fn=lambda dim, fn=fn, sc=scenario: time_diffrax(dim, fn, scenario=sc),
+            timing_fn=lambda dim, fn=fn, sc=scenario: time_diffrax(
+                dim, fn, scenario=sc
+            ),
         )
         for key, label, color, marker, fn in _JAX_SOLVER_DEFS
     )
@@ -256,8 +262,8 @@ def make_solver_specs(scenario: str) -> list[SolverSpec]:
                     color=color,
                     marker=marker,
                     linestyle=linestyle,
-                    timing_fn=lambda dim, s=solve, b=backend, sc=scenario: time_julia_solver(
-                        dim, s, ensemble_backend=b, scenario=sc
+                    timing_fn=lambda dim, s=solve, b=backend, sc=scenario: (
+                        time_julia_solver(dim, s, ensemble_backend=b, scenario=sc)
                     ),
                 )
             )

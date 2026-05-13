@@ -68,7 +68,7 @@ def _pycapsule_new(ptr: int, name: bytes = _CAPSULE_NAME) -> object:
 
 
 def _source() -> str:
-    return r'''
+    return r"""
 #include <cstdint>
 #include <dlfcn.h>
 #include <mutex>
@@ -299,7 +299,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Attr<ffi::Span<const int32_t>>("scalar_i32_values")
         .RemainingArgs()
         .RemainingRets());
-'''
+"""
 
 
 def _build_bridge() -> Path:
@@ -434,7 +434,9 @@ def ffi_abi_call(
         "block_y": np.int64(launch.block[1]),
         "block_z": np.int64(launch.block[2]),
         "shared_mem": np.int64(launch.shared_mem),
-        "arg_kinds": np.asarray(tuple(input_kinds) + tuple(output_kinds), dtype=np.int64),
+        "arg_kinds": np.asarray(
+            tuple(input_kinds) + tuple(output_kinds), dtype=np.int64
+        ),
         "scalar_f64_values": np.asarray(tuple(scalar_f64_values), dtype=np.float64),
         "scalar_i32_values": np.asarray(tuple(scalar_i32_values), dtype=np.int32),
     }

@@ -115,9 +115,7 @@ def _row_partition(mask):
     n_active = jnp.sum(mask_i, axis=-1, dtype=jnp.int32)
     n_inactive = jnp.int32(n) - n_active
     # target[i] = position in the partitioned permutation where row i ends up.
-    inv_perm = jnp.where(mask, n_inactive + cum_active, cum_inactive).astype(
-        jnp.int32
-    )
+    inv_perm = jnp.where(mask, n_inactive + cum_active, cum_inactive).astype(jnp.int32)
     indices = jnp.arange(n, dtype=jnp.int32)
     perm = jnp.zeros(n, dtype=jnp.int32).at[inv_perm].set(indices)
     return perm, inv_perm, n_active
@@ -433,9 +431,7 @@ def solve(
                 total_stage = stage_fe[i] + stage_fi[i]
                 err_est = err_est + dt * _B_ERROR[i] * total_stage
             failed = (
-                failed
-                | jnp.any(~jnp.isfinite(y_new))
-                | jnp.any(~jnp.isfinite(err_est))
+                failed | jnp.any(~jnp.isfinite(y_new)) | jnp.any(~jnp.isfinite(err_est))
             )
             return y_new, err_est, failed
 

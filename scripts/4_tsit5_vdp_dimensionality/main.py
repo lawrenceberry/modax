@@ -111,9 +111,7 @@ def ode_fn_vdp_numba(y, t, p, dy, i):
 def time_local_tsit5(dim: int, *, scenario: str) -> float:
     n_osc = dim // 2
     ode_fn, _ = vdp.make_system(n_osc, mu=_MU_NONSTIFF)
-    y0_batch, params = vdp.make_scenario(
-        scenario, n_osc, _ENSEMBLE_SIZE
-    )
+    y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     y0_batch = jnp.asarray(y0_batch)
     params = jnp.asarray(params)
 
@@ -132,9 +130,7 @@ def time_local_tsit5(dim: int, *, scenario: str) -> float:
 
 def time_custom_kernel_tsit5(dim: int, *, scenario: str) -> float:
     n_osc = dim // 2
-    y0_batch, scale_params = vdp.make_scenario(
-        scenario, n_osc, _ENSEMBLE_SIZE
-    )
+    y0_batch, scale_params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     params = np.column_stack(
         [
             np.full(_ENSEMBLE_SIZE, float(n_osc), dtype=np.float64),
@@ -165,9 +161,7 @@ def time_custom_kernel_tsit5(dim: int, *, scenario: str) -> float:
 def time_diffrax(dim: int, solve_fn, *, scenario: str) -> float:
     n_osc = dim // 2
     ode_fn, _ = vdp.make_system(n_osc, mu=_MU_NONSTIFF)
-    y0_batch, params = vdp.make_scenario(
-        scenario, n_osc, _ENSEMBLE_SIZE
-    )
+    y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     y0_batch = jnp.asarray(y0_batch)
     params = jnp.asarray(params)
 
@@ -188,9 +182,7 @@ def time_julia_solver(
     dim: int, solve, *, ensemble_backend: str, scenario: str
 ) -> float:
     n_osc = dim // 2
-    y0_batch, params = vdp.make_scenario(
-        scenario, n_osc, _ENSEMBLE_SIZE
-    )
+    y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
     result = solve._julia_solve_with_timing(
         "vdp",
         y0_batch,
