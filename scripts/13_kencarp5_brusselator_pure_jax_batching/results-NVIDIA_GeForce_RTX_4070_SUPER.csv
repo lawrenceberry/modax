@@ -1,0 +1,16 @@
+gpu,case_key,batch_size,solve_time_ms,total_lane_iterations,wasted_lane_iterations,min_batch_loop_iterations,max_batch_loop_iterations,wasted_lane_iteration_ratio
+NVIDIA GeForce RTX 4070 SUPER,identical_random_modax kencarp5 jax linear,64,1509.906659834087,45056,0,11,11,0.0
+NVIDIA GeForce RTX 4070 SUPER,identical_random_modax kencarp5 jax linear,256,644.0483573824167,45056,0,11,11,0.0
+NVIDIA GeForce RTX 4070 SUPER,identical_random_modax kencarp5 jax linear,1024,478.79577707499266,45056,0,11,11,0.0
+NVIDIA GeForce RTX 4070 SUPER,identical_random_modax kencarp5 jax linear,4096,472.4120758473873,45056,0,11,11,0.0
+NVIDIA GeForce RTX 4070 SUPER,identical_random_modax rodas5 jax fp64 lu,0,179.47572330012918,0,0,0,0,0.0
+NVIDIA GeForce RTX 4070 SUPER,divergent_random_modax kencarp5 jax linear,64,5190.998402889818,154496,17582,36,41,0.11380229908864954
+NVIDIA GeForce RTX 4070 SUPER,divergent_random_modax kencarp5 jax linear,256,2272.1168850548565,159488,22574,37,41,0.1415404293739968
+NVIDIA GeForce RTX 4070 SUPER,divergent_random_modax kencarp5 jax linear,1024,1762.6814460381866,165888,28974,40,41,0.17466001157407407
+NVIDIA GeForce RTX 4070 SUPER,divergent_random_modax kencarp5 jax linear,4096,1754.948171786964,167936,31022,41,41,0.18472513338414634
+NVIDIA GeForce RTX 4070 SUPER,divergent_random_modax rodas5 jax fp64 lu,0,739.7604142315686,0,0,0,0,0.0
+NVIDIA GeForce RTX 4070 SUPER,divergent_sorted_modax kencarp5 jax linear,64,4650.8945832028985,137344,430,30,41,0.003130824790307549
+NVIDIA GeForce RTX 4070 SUPER,divergent_sorted_modax kencarp5 jax linear,256,1980.8250446803868,138752,1838,31,41,0.01324665590405904
+NVIDIA GeForce RTX 4070 SUPER,divergent_sorted_modax kencarp5 jax linear,1024,1523.1194412335753,143360,6446,32,41,0.04496372767857143
+NVIDIA GeForce RTX 4070 SUPER,divergent_sorted_modax kencarp5 jax linear,4096,1754.7732568345964,167936,31022,41,41,0.18472513338414634
+NVIDIA GeForce RTX 4070 SUPER,divergent_sorted_modax rodas5 jax fp64 lu,0,739.8417582735419,0,0,0,0,0.0

@@ -43,10 +43,9 @@ from solvers.rodas5 import solve as rodas5_solve
 jax.config.update("jax_enable_x64", True)
 
 _N_GRID = 32
-_DIM = 2 * _N_GRID
 _N_TRAJ = 4096
 _T_SPAN = brusselator.TIMES
-_N_RUNS = 3
+_N_RUNS = 1
 _BATCH_SIZES = (64, 256, 1024, 4096)
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
@@ -98,25 +97,9 @@ _GROUPINGS = (
 )
 _LINEAR_SETTINGS = (
     LinearSetting("modax kencarp5 jax linear", "modax kencarp5 jax linear", True),
-    LinearSetting("modax kencarp5 jax newton", "modax kencarp5 jax newton", False),
+    # LinearSetting("modax kencarp5 jax newton", "modax kencarp5 jax newton", False),
 )
 _BASELINE_SOLVERS = (
-    BaselineSolver(
-        "modax kencarp5 numba linear",
-        "modax kencarp5 numba linear",
-        "#f0a202",
-        "P",
-        "kencarp5ckn",
-        True,
-    ),
-    BaselineSolver(
-        "modax kencarp5 numba newton",
-        "modax kencarp5 numba newton",
-        "#d35400",
-        "X",
-        "kencarp5ckn",
-        False,
-    ),
     BaselineSolver(
         "modax rodas5 jax fp64 lu",
         "modax rodas5 jax fp64 lu",
