@@ -69,7 +69,6 @@ _LOCAL_SOLVER_KWARGS = {
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
-_JULIA_CACHE_VERSION = 3
 
 _CSV_FIELDS = (
     "gpu",
@@ -285,14 +284,8 @@ def is_complete_row(value) -> bool:
     return isinstance(value, dict) and all(field in value for field in _CSV_FIELDS)
 
 
-def is_current_cached_row(value, solver: Case) -> bool:
-    if is_timeout(value):
-        return True
-    if not is_complete_row(value):
-        return False
-    if solver.mode == "julia":
-        return value.get("julia_cache_version") == _JULIA_CACHE_VERSION
-    return True
+def is_current_cached_row(value) -> bool:
+    return is_timeout(value) or is_complete_row(value)
 
 
 def collect_row(
@@ -339,8 +332,6 @@ def collect_row(
             **local_stats_summary,
             "normalized_solve_time_ms_per_step": float(normalized),
         }
-        if solver.mode == "julia":
-            row["julia_cache_version"] = _JULIA_CACHE_VERSION
         return row
 
     try:
@@ -372,7 +363,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                 solver_cache.setdefault(divergence_key, None)
                 continue
             cached = solver_cache.get(divergence_key)
-            if is_current_cached_row(cached, solver):
+            if is_current_cached_row(cached):
                 row = cached
                 text = TIMEOUT_ERROR if is_timeout(row) else format_row(row)
                 print(
