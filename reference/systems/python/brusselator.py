@@ -84,7 +84,7 @@ a JAX-compatible benchmark for the project's IMEX solvers. Specifics:
   with ``linear=True`` (one LU per stage, no Newton iteration).
 - ``params[0]`` is a per-trajectory reaction-rate **scale** that multiplies
   both ``A`` and ``B`` (and only acts on the explicit reaction half).
-  Used by ``make_scenario("divergent", ...)`` to spread step counts across
+  Used by ``make_scenario(..., divergence=...)`` to spread step counts across
   the ensemble.
 - The split is exact: ``ode_fn(y, t, p) == explicit_ode_fn(y, t, p) +
   implicit_ode_fn(y, t, p)`` everywhere, so any non-split solver can use
@@ -109,7 +109,6 @@ ALPHA = 0.02
 L = 1.0
 TIMES = jnp.array((0.0, 0.25, 0.5, 0.75, 1.0), dtype=jnp.float64)
 PARAMS = jnp.array([1.0], dtype=jnp.float64)
-SCENARIOS = ("identical", "divergent")
 
 
 def _equilibrium(n_grid: int, a: float = A, b: float = B):
@@ -360,7 +359,6 @@ def make_params(size: int, seed: int = 42) -> np.ndarray:
 
 
 def make_scenario(
-    scenario: str,
     n_grid: int,
     size: int,
     seed: int = 42,
@@ -369,22 +367,16 @@ def make_scenario(
     a: float = A,
     b: float = B,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return ``(y0_batch, params_batch)`` for a named Brusselator scenario.
+    """Return ``(y0_batch, params_batch)`` for the Brusselator system.
 
-    ``"identical"`` puts every trajectory at the cosine-perturbed equilibrium
-    with scale=1. ``"divergent"`` perturbs both the IC and the reaction-rate
-    parameter; ``divergence=0`` collapses to identical, ``divergence=1`` gives
-    the default spread, larger values amplify it.
+    ``divergence=0`` puts every trajectory at the cosine-perturbed equilibrium
+    with scale=1. Larger values perturb both the IC and the reaction-rate
+    parameter; ``divergence=1`` gives the default spread.
     """
     if not np.isfinite(divergence) or divergence < 0.0:
         raise ValueError("divergence must be finite and non-negative")
     n_vars = 2 * n_grid
     base = _equilibrium(n_grid, a, b)
-    if scenario == "identical":
-        y0 = np.broadcast_to(base, (size, n_vars)).copy()
-        return y0, np.ones((size, N_PARAMS), dtype=np.float64)
-    if scenario != "divergent":
-        raise ValueError(f"unknown scenario: {scenario}")
 
     rng = np.random.default_rng(seed)
     # Random additive perturbations to u and v fields. Scale of perturbation

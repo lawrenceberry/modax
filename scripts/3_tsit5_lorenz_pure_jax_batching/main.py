@@ -17,11 +17,11 @@ trajectory that starts far away must cross a large region of phase space with
 significant ODE velocities before the state becomes small enough for Tsit5 to
 take large steps.
 
-The hard base IC, _HARD_Y0 = [1000, -500, 500], is fixed analytically as a
-point far from the origin. The identical scenario places every trajectory
-there, so all share the same (maximum) step count and the batch shows zero
-divergence. The ic_large scenario scales each trajectory as _HARD_Y0 * (1-t)
-for t ~ U(0, 1), moving it radially toward the origin. Because distance from
+The hard base IC, lorenz.Y0 = [1000, -500, 500], is fixed analytically as a
+point far from the origin. ``divergence=0`` places every trajectory there, so
+all share the same (maximum) step count and the batch shows zero divergence.
+The ic_large scenario scales each trajectory as ``Y0 * (1 - t)`` for
+``t ~ U(0, 1)``, moving it radially toward the origin. Because distance from
 the origin is the sole driver of difficulty, this construction guarantees that
 every ic_large trajectory is strictly easier than the identical base, and the
 step counts span a continuous range from near-maximum (t -> 0) down to
@@ -111,17 +111,13 @@ _CSV_FIELDS = (
 )
 
 
-_HARD_Y0 = np.array([1000.0, -500.0, 500.0], dtype=np.float64)
-
-
 def make_initial_conditions(
     scenario: Scenario, size: int, seed: int = 42
 ) -> np.ndarray:
-    if scenario.key == "ic_identical":
-        return np.broadcast_to(_HARD_Y0, (size, 3)).copy()
-    rng = np.random.default_rng(seed)
-    t = rng.uniform(0.0, 1.0, size=(size, 1))
-    return _HARD_Y0 * (1.0 - t)
+    divergence = 0.0 if scenario.key == "ic_identical" else 1.0
+    return np.asarray(
+        lorenz.make_initial_conditions(size, seed=seed, divergence=divergence)
+    )
 
 
 def summarize_stats(stats: dict) -> dict[str, float | int]:

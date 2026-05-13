@@ -136,7 +136,6 @@ CASES = (
 
 def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
     return lorenz.make_scenario(
-        "divergent",
         _N_TRAJ,
         seed=42,
         divergence=divergence,

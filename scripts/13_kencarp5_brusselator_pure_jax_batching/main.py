@@ -144,12 +144,12 @@ _CSV_FIELDS = (
 
 def make_initial_data(scenario: Scenario) -> tuple[np.ndarray, np.ndarray]:
     """Per-trajectory ICs + reaction-rate params for this scenario."""
+    divergence = 0.0 if scenario.key == "identical" else 1.0
     return brusselator.make_scenario(
-        scenario.key,
         _N_GRID,
         _N_TRAJ,
         seed=42,
-        divergence=1.0,
+        divergence=divergence,
     )
 
 

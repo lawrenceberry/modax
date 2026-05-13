@@ -150,7 +150,6 @@ CASES = (
 
 def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
     return brusselator.make_scenario(
-        "divergent",
         _N_GRID,
         _ENSEMBLE_SIZE,
         seed=42,

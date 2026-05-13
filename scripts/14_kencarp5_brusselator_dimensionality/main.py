@@ -56,6 +56,10 @@ _DIMENSIONS = (4, 8, 12, 16, 24, 32, 48, 64, 96, 128)
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
+_SCENARIOS = (
+    ("identical", 0.0),
+    ("divergent", 1.0),
+)
 
 @dataclass(frozen=True)
 class Case(BenchmarkCase):
@@ -157,9 +161,11 @@ CASES: tuple[Case, ...] = (
 )
 
 
-def time_case(case: Case, dim: int, *, scenario: str) -> float:
+def time_case(case: Case, dim: int, *, divergence: float) -> float:
     n_grid = dim // 2
-    y0_batch, params = brusselator.make_scenario(scenario, n_grid, _ENSEMBLE_SIZE)
+    y0_batch, params = brusselator.make_scenario(
+        n_grid, _ENSEMBLE_SIZE, divergence=divergence
+    )
     kwargs = case.kwargs or {}
 
     if case.is_julia:
@@ -213,11 +219,11 @@ def time_case(case: Case, dim: int, *, scenario: str) -> float:
     return time_blocked_ms(run, _N_RUNS)
 
 
-def collect_timing(case: Case, dim: int, scenario: str):
+def collect_timing(case: Case, dim: int, divergence: float):
     return collect_timed_timing(
         case.label,
         f"dim={dim:>4}",
-        lambda: time_case(case, dim, scenario=scenario),
+        lambda: time_case(case, dim, divergence=divergence),
         label_width=28,
     )
 
@@ -226,7 +232,7 @@ _Row = tuple[str, str, int, float | None]
 
 
 def run_benchmarks(
-    cases: Sequence[Case], gpu_name: str, cache: dict, scenario: str
+    cases: Sequence[Case], gpu_name: str, cache: dict, scenario: str, divergence: float
 ) -> list[_Row]:
     scenario_cache = cache.setdefault(gpu_name, {}).setdefault(scenario, {})
     rows: list[_Row] = []
@@ -240,7 +246,7 @@ def run_benchmarks(
                 ms_text = format_cached_timing(ms)
                 print(f"  {case.label:<28} dim={dim:>4} ... (cached) {ms_text}")
             else:
-                ms = collect_timing(case, dim, scenario)
+                ms = collect_timing(case, dim, divergence)
                 solver_cache[dim_key] = ms
                 save_cache(_CACHE_PATH, cache)
             rows.append((case.key, case.label, dim, timing_value_or_none(ms)))
@@ -303,9 +309,9 @@ def main() -> None:
     print(f"GPU: {gpu_name}\n")
 
     cache = load_cache(_CACHE_PATH)
-    for scenario in brusselator.SCENARIOS:
+    for scenario, divergence in _SCENARIOS:
         print(f"\n=== Scenario: {scenario} ===\n")
-        rows = run_benchmarks(CASES, gpu_name, cache, scenario)
+        rows = run_benchmarks(CASES, gpu_name, cache, scenario, divergence)
         csv_path, plot_path = _scenario_output_paths(gpu_name, scenario)
         save_csv(rows, csv_path)
         plot(rows, CASES, gpu_name, plot_path, scenario)

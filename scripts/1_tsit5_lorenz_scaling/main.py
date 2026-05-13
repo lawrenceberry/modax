@@ -49,6 +49,10 @@ _N_RUNS = 1
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
+_SCENARIOS = (
+    ("identical", 0.0),
+    ("divergent", 1.0),
+)
 
 
 class Row(NamedTuple):
@@ -182,7 +186,7 @@ def run_benchmarks(
 ) -> dict[str, list[Row]]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows_by_scenario: dict[str, list[Row]] = {}
-    for scenario in lorenz.SCENARIOS:
+    for scenario, divergence in _SCENARIOS:
         print(f"\n=== {scenario} ===\n")
         rows: list[Row] = []
         for case in cases:
@@ -195,7 +199,7 @@ def run_benchmarks(
                     ms_text = format_cached_timing(ms)
                     print(f"  {case.label:<20} n={size:>7} ... (cached) {ms_text}")
                 else:
-                    y0, params = lorenz.make_scenario(scenario, size)
+                    y0, params = lorenz.make_scenario(size, divergence=divergence)
                     ms = collect_timed_timing(
                         case.label,
                         f"n={size:>7}",

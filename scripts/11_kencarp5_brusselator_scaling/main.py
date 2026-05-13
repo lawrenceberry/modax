@@ -55,6 +55,10 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 _EXPLICIT_ODE_FN, _IMPLICIT_ODE_FN, _ODE_FN, _ = brusselator.make_system(_N_GRID)
+_SCENARIOS = (
+    ("identical", 0.0),
+    ("divergent", 1.0),
+)
 
 
 @dataclass(frozen=True)
@@ -253,7 +257,7 @@ def run_benchmarks(
 ) -> dict[str, list[_Row]]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows_by_scenario: dict[str, list[_Row]] = {}
-    for scenario in brusselator.SCENARIOS:
+    for scenario, divergence in _SCENARIOS:
         print(f"\n=== {scenario} ===\n")
         rows: list[_Row] = []
         for case in cases:
@@ -266,7 +270,9 @@ def run_benchmarks(
                     ms_text = format_cached_timing(ms)
                     print(f"  {case.label:<28} n={size:>7} ... (cached) {ms_text}")
                 else:
-                    y0, params = brusselator.make_scenario(scenario, _N_GRID, size)
+                    y0, params = brusselator.make_scenario(
+                        _N_GRID, size, divergence=divergence
+                    )
                     ms = collect_timing(case, size, y0, params)
                     solver_cache[size_key] = ms
                     save_cache(_CACHE_PATH, cache)

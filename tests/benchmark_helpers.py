@@ -74,7 +74,7 @@ def _bateman_case():
 
 def _brusselator_case():
     explicit, implicit, ode, _ = brusselator.make_system(4)
-    y0, params = brusselator.make_scenario("identical", 4, ENSEMBLE_SIZE)
+    y0, params = brusselator.make_scenario(4, ENSEMBLE_SIZE, divergence=0.0)
     t_span = np.asarray(brusselator.TIMES[:3], dtype=np.float64)
     return SystemCase(
         name="brusselator",
@@ -145,7 +145,7 @@ def _kaps_case():
 
 
 def _lorenz_case():
-    y0, params = lorenz.make_scenario("identical", ENSEMBLE_SIZE)
+    y0, params = lorenz.make_scenario(ENSEMBLE_SIZE, divergence=0.0)
     t_span = np.asarray((0.0, 0.01, 0.02), dtype=np.float64)
     return SystemCase(
         name="lorenz",
@@ -164,7 +164,7 @@ def _lorenz_case():
 
 
 def _robertson_case():
-    y0, params = robertson.make_scenario("identical", ENSEMBLE_SIZE)
+    y0, params = robertson.make_scenario(ENSEMBLE_SIZE, divergence=0.0)
     t_span = np.asarray((0.0, 1e-6, 1e-4), dtype=np.float64)
     return SystemCase(
         name="robertson",
@@ -186,7 +186,7 @@ def _robertson_case():
 
 def _vdp_case():
     ode, _ = vdp.make_system(2, mu=1.0)
-    y0, params = vdp.make_scenario("identical", 2, ENSEMBLE_SIZE)
+    y0, params = vdp.make_scenario(2, ENSEMBLE_SIZE, divergence=0.0)
     t_span = np.asarray(vdp.TIMES[:3], dtype=np.float64)
     return SystemCase(
         name="vdp",

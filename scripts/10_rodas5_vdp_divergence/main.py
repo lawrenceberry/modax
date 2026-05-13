@@ -152,7 +152,6 @@ def jac_fn_vdp_numba(y, t, p, jac, i):
 
 def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
     return vdp.make_scenario(
-        "divergent",
         _N_OSC,
         _ENSEMBLE_SIZE,
         seed=42,

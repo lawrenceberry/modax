@@ -102,11 +102,11 @@ def make_initial_conditions(
     significant ODE velocities before the state becomes small enough for Tsit5 to
     take large steps.
 
-    The hard base IC, _HARD_Y0 = [1000, -500, 500], is fixed analytically as a
-    point far from the origin. The identical scenario places every trajectory
-    there, so all share the same (maximum) step count and the batch shows zero
-    divergence. The ic_large scenario scales each trajectory as _HARD_Y0 * (1-t)
-    for t ~ U(0, divergence), moving it radially toward and then, for
+    The hard base IC, Y0 = [1000, -500, 500], is fixed analytically as a point
+    far from the origin. ``divergence=0`` places every trajectory there, so all
+    share the same (maximum) step count and the batch shows zero divergence.
+    Larger divergence values scale each trajectory as ``Y0 * (1 - t)`` for
+    ``t ~ U(0, divergence)``, moving it radially toward and then, for
     divergence > 1, past the origin. Because distance from the origin is the
     main driver of difficulty, values up to 1 span from near-maximum
     (t -> 0) down to near-zero (t -> 1), while larger divergence values add
@@ -118,20 +118,10 @@ def make_initial_conditions(
     return Y0 * (1.0 - t)
 
 
-SCENARIOS = ("identical", "divergent")
-
-
 def make_scenario(
-    scenario: str, size: int, seed: int = 42, *, divergence: float = 1.0
+    size: int, seed: int = 42, *, divergence: float = 1.0
 ) -> tuple[np.ndarray, np.ndarray]:
     divergence = _validate_divergence(divergence)
-    if scenario == "identical":
-        return (
-            np.broadcast_to(np.asarray(Y0), (size, N_VARS)).copy(),
-            np.broadcast_to(np.asarray(PARAMS), (size, N_PARAMS)).copy(),
-        )
-    if scenario != "divergent":
-        raise ValueError(f"unknown scenario: {scenario}")
     params = np.asarray(PARAMS) + divergence * (
         np.asarray(make_params(size, seed)) - np.asarray(PARAMS)
     )
