@@ -47,14 +47,13 @@ _OMEGA = 1.0
 _N_OSC = 32
 _DIM = 2 * _N_OSC
 _ENSEMBLE_SIZE = 1000
-_N_RUNS = 10
+_N_RUNS = 1
 _T_SPAN = vdp.TIMES
 _DIVERGENCES = (0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0)
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
-_JULIA_CACHE_VERSION = 1
 
 _ODE_FN, _ = vdp.make_system(_N_OSC, mu=_MU_NONSTIFF)
 
@@ -275,14 +274,8 @@ def is_complete_row(value) -> bool:
     return isinstance(value, dict) and all(field in value for field in _CSV_FIELDS)
 
 
-def is_current_cached_row(value, solver: Case) -> bool:
-    if is_timeout(value):
-        return True
-    if not is_complete_row(value):
-        return False
-    if solver.mode == "julia":
-        return value.get("julia_cache_version") == _JULIA_CACHE_VERSION
-    return True
+def is_current_cached_row(value) -> bool:
+    return is_timeout(value) or is_complete_row(value)
 
 
 def collect_row(
@@ -330,8 +323,6 @@ def collect_row(
             **local_stats_summary,
             "normalized_solve_time_ms_per_step": float(normalized),
         }
-        if solver.mode == "julia":
-            row["julia_cache_version"] = _JULIA_CACHE_VERSION
         return row
 
     try:
@@ -371,7 +362,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
         for divergence in _DIVERGENCES:
             divergence_key = f"{divergence:.6g}"
             cached = solver_cache.get(divergence_key)
-            if is_current_cached_row(cached, solver):
+            if is_current_cached_row(cached):
                 row = cached
                 text = TIMEOUT_ERROR if is_timeout(row) else format_row(row)
                 print(
