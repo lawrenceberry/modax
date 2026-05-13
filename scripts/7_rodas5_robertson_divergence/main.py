@@ -93,7 +93,7 @@ _CSV_FIELDS = (
 
 
 @dataclass(frozen=True)
-class SolverSpec:
+class Case:
     key: str
     label: str
     color: str
@@ -104,10 +104,10 @@ class SolverSpec:
     max_divergence: float | None = None
 
 
-_SOLVERS = (
-    SolverSpec("rodas5_fp32_lu", "JAX Rodas5 fp32 LU", "#2b7be0", "o", "stats"),
-    SolverSpec("rodas5ckn", "numba-cuda Rodas5", "#f0a202", "s", "stats"),
-    SolverSpec(
+CASES = (
+    Case("rodas5_fp32_lu", "JAX Rodas5 fp32 LU", "#2b7be0", "o", "stats"),
+    Case("rodas5ckn", "numba-cuda Rodas5", "#f0a202", "s", "stats"),
+    Case(
         "rodas5ckn_sorted",
         "numba-cuda Rodas5 sorted",
         "#f0a202",
@@ -115,7 +115,7 @@ _SOLVERS = (
         "stats",
         sort_by_steps=True,
     ),
-    # SolverSpec(
+    # Case(
     #     "diffrax_kvaerno5",
     #     "Diffrax Kvaerno5",
     #     "#2ba84a",
@@ -123,7 +123,7 @@ _SOLVERS = (
     #     "timing",
     #     max_divergence=1.5,
     # ),
-    # SolverSpec(
+    # Case(
     #     "julia_rodas5_EnsembleGPUArray",
     #     "Julia Rodas5 GPUArray",
     #     "#9b59b6",
@@ -131,7 +131,7 @@ _SOLVERS = (
     #     "julia",
     #     "EnsembleGPUArray",
     # ),
-    SolverSpec(
+    Case(
         "julia_rodas5_EnsembleGPUKernel",
         "Julia Rodas5 GPUKernel",
         "#d35400",
@@ -139,7 +139,7 @@ _SOLVERS = (
         "julia",
         "EnsembleGPUKernel",
     ),
-    SolverSpec(
+    Case(
         "julia_rodas5_EnsembleGPUKernel_sorted",
         "Julia Rodas5 GPUKernel sorted",
         "#d35400",
@@ -161,7 +161,7 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
-def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
+def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key.startswith("rodas5ckn"):
         return rodas5ckn_solve(
             robertson.ode_fn_numba_cuda,
@@ -183,7 +183,7 @@ def solve_with_stats(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
     )
 
 
-def solve_timing_only(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
+def solve_timing_only(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key == "diffrax_kvaerno5":
         return diffrax_kvaerno5_solve(
             robertson.ode_fn,
@@ -196,7 +196,7 @@ def solve_timing_only(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
 
 
 def time_solve(
-    solver: SolverSpec, y0: np.ndarray, params: np.ndarray
+    solver: Case, y0: np.ndarray, params: np.ndarray
 ) -> tuple[float, dict | None]:
     if solver.mode == "julia":
         julia_y0 = y0[0] if y0.ndim == 2 and np.all(y0 == y0[0]) else y0
@@ -260,7 +260,7 @@ def summarize_stats(stats: dict) -> dict[str, float | int]:
 def sort_by_attempted_steps(
     y0: np.ndarray, params: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, dict[str, float | int]]:
-    _, stats = solve_with_stats(_SOLVERS[0], y0, params)
+    _, stats = solve_with_stats(CASES[0], y0, params)
     jax.block_until_ready(stats)
     accepted_steps = np.asarray(jax.device_get(stats["accepted_steps"]))
     rejected_steps = np.asarray(jax.device_get(stats["rejected_steps"]))
@@ -294,7 +294,7 @@ def is_complete_row(value) -> bool:
     return isinstance(value, dict) and all(field in value for field in _CSV_FIELDS)
 
 
-def is_current_cached_row(value, solver: SolverSpec) -> bool:
+def is_current_cached_row(value, solver: Case) -> bool:
     if is_timeout(value):
         return True
     if not is_complete_row(value):
@@ -306,7 +306,7 @@ def is_current_cached_row(value, solver: SolverSpec) -> bool:
 
 def collect_row(
     gpu_name: str,
-    solver: SolverSpec,
+    solver: Case,
     divergence: float,
     stats_summary: dict | None = None,
 ) -> dict | None:
@@ -328,7 +328,7 @@ def collect_row(
         if stats is not None:
             local_stats_summary = summarize_stats(stats)
         elif local_stats_summary is None:
-            _, stats = solve_with_stats(_SOLVERS[0], y0, params)
+            _, stats = solve_with_stats(CASES[0], y0, params)
             jax.block_until_ready(stats)
             local_stats_summary = summarize_stats(stats)
 
@@ -367,7 +367,7 @@ def collect_row(
 def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
-    for solver in _SOLVERS:
+    for solver in CASES:
         print(f"\n{solver.label}:")
         solver_cache = gpu_cache.setdefault(solver.key, {})
         for divergence in _DIVERGENCES:
@@ -419,7 +419,7 @@ def rows_for_solver(rows: list[dict], solver_key: str) -> list[dict]:
 
 def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(8, 5.5))
-    for solver in _SOLVERS:
+    for solver in CASES:
         solver_rows = rows_for_solver(rows, solver.key)
         if not solver_rows:
             continue

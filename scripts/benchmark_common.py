@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Any, Callable, Sequence, TypeVar
 
 import jax
 
@@ -19,6 +21,15 @@ TIMEOUT_STATUS = "timeout"
 
 class BenchmarkTimeoutError(TimeoutError):
     pass
+
+
+@dataclass(frozen=True, kw_only=True)
+class BenchmarkCase:
+    key: str
+    label: str
+    color: str
+    marker: str
+    linestyle: str = "-"
 
 
 def timeout_cache_entry() -> dict[str, str]:
@@ -50,8 +61,15 @@ def timing_value_or_none(value) -> float | None:
 def run_with_timeout(
     run: Callable[[], T], timeout_s: float = SOLVE_TIMEOUT_SECONDS
 ) -> T:
-    del timeout_s
-    return run()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(run)
+    try:
+        return future.result(timeout=timeout_s)
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        raise BenchmarkTimeoutError(TIMEOUT_ERROR) from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def get_gpu_name() -> str:
@@ -113,6 +131,40 @@ def time_blocked(
     if timeout_s is not None:
         return run_with_timeout(time_once, timeout_s)
     return time_once()
+
+
+def time_blocked_ms(run: Callable[[], T], n_runs: int) -> float:
+    ms, _ = time_blocked(run, n_runs)
+    return ms
+
+
+def julia_solve_time_ms(
+    solve: Any,
+    system_name: str,
+    y0: Any,
+    t_span: Any,
+    params: Any,
+    **kwargs: Any,
+) -> float:
+    result = solve._julia_solve_with_timing(
+        system_name,
+        y0,
+        t_span,
+        params,
+        **kwargs,
+    )
+    return result.solve_time_s * 1000
+
+
+def drop_none_rows(
+    rows: Sequence[tuple[str, str, int, float | None]],
+    key: str,
+) -> tuple[list[int], list[float]]:
+    pairs = [(x, ms) for row_key, _, x, ms in rows if row_key == key and ms is not None]
+    if not pairs:
+        return [], []
+    xs, times = zip(*pairs)
+    return list(xs), list(times)
 
 
 def timed_solve(run: Callable[[], T], timeout_s: float = SOLVE_TIMEOUT_SECONDS) -> T:

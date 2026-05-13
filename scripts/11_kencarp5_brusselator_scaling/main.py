@@ -15,7 +15,7 @@ import csv
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -28,13 +28,16 @@ from reference.solvers.python.diffrax_kencarp5 import solve as diffrax_kencarp5_
 from reference.solvers.python.julia_kencarp5 import solve as julia_kencarp5_solve
 from reference.systems.python import brusselator
 from scripts.benchmark_common import (
+    BenchmarkCase,
     collect_timed_timing,
+    drop_none_rows,
     format_cached_timing,
     get_gpu_name,
     gpu_slug,
+    julia_solve_time_ms,
     load_cache,
     save_cache,
-    time_blocked,
+    time_blocked_ms,
     timing_value_or_none,
 )
 from solvers.kencarp5 import solve as kencarp5_solve
@@ -47,215 +50,197 @@ _N_GRID = 32
 _T_SPAN = brusselator.TIMES
 _ENSEMBLE_SIZES = (3, 10, 30, 100, 300, 1000, 3000, 10000, 30000)
 _N_RUNS = 1
-_JULIA_BACKENDS = ("EnsembleGPUArray",)
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
-
-# (key, label, color, marker, linear)
-_LOCAL_SOLVER_DEFS = [
-    ("local_kencarp5_linear", "my kencarp5 linear=True", "#2b7be0", "o", True),
-    ("local_kencarp5_newton", "my kencarp5 linear=False", "#e02b2b", "D", False),
-]
-_CUSTOM_KERNEL_SOLVER_DEFS = [
-    ("kencarp5ckn_linear", "numba-cuda kencarp5 linear=True", "#f0a202", "P", True),
-    ("kencarp5ckn_newton", "numba-cuda kencarp5 linear=False", "#d35400", "X", False),
-]
-_RODAS_SOLVER_DEFS = [
-    ("local_rodas5_fp64_lu", "my rodas5 fp64 LU", "#00a6a6", "v", "fp64"),
-]
-# (key, label, color, marker, solve_fn)
-_JAX_SOLVER_DEFS = [
-    ("diffrax_kencarp5", "diffrax kencarp5", "#2ba84a", "s", diffrax_kencarp5_solve),
-]
-# (key, label, solve_fn, color)
-_JULIA_SOLVER_DEFS = [
-    # DiffEqGPU 3.13 has no SplitODEProblem support on EnsembleGPUArray
-    # (see comment block at top of reference/solvers/julia/run_solver.jl),
-    # so this row is Julia KenCarp5 treating the combined RHS as fully
-    # implicit — *not* IMEX. Slower than my IMEX path; labelled accordingly.
-    (
-        "julia_kencarp5",
-        "julia kencarp5 (fully-implicit)",
-        julia_kencarp5_solve,
-        "#9b59b6",
-    ),
-]
-_JULIA_BACKEND_STYLES = {
-    "EnsembleGPUArray": ("array", "^", "-"),
-}
+_EXPLICIT_ODE_FN, _IMPLICIT_ODE_FN, _ODE_FN, _ = brusselator.make_system(_N_GRID)
 
 
 @dataclass(frozen=True)
-class SolverSpec:
-    key: str
-    label: str
-    color: str
-    marker: str
-    linestyle: str
-    timing_fn: Callable[[object, object], float]
+class Case(BenchmarkCase):
+    solve_fn: Callable[..., Any] | None = None
+    explicit_ode_fn: Callable[..., Any] | None = None
+    implicit_ode_fn: Callable[..., Any] | None = None
+    implicit_jac_fn: Callable[..., Any] | None = None
+    ode_fn: Callable[..., Any] | None = None
+    t_span: Any = None
+    kwargs: dict[str, Any] | None = None
+    linear: bool | None = None
+    lu_precision: str | None = None
+    coerce_jax: bool = False
+    coerce_numpy: bool = False
+    system_name: str | None = None
+    system_config: dict[str, Any] | None = None
+    ensemble_backend: str | None = None
+
+    @property
+    def is_julia(self) -> bool:
+        return self.system_name is not None
 
 
-def time_local_kencarp5(ex_fn, im_fn, y0, params, *, linear: bool) -> float:
-    y0_j = jnp.asarray(y0)
-    p_j = jnp.asarray(params)
-
-    def run():
-        return kencarp5_solve(
-            ex_fn, im_fn, y0_j, _T_SPAN, p_j, linear=linear, **_SOLVER_KWARGS
-        )
-
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_diffrax_kencarp5(ex_fn, im_fn, y0, params) -> float:
-    y0_j = jnp.asarray(y0)
-    p_j = jnp.asarray(params)
-
-    def run():
-        return diffrax_kencarp5_solve(
-            ex_fn, im_fn, y0_j, _T_SPAN, p_j, **_SOLVER_KWARGS
-        )
-
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_custom_kernel_kencarp5(y0, params, *, linear: bool) -> float:
-    def run():
-        return kencarp5ckn_solve(
-            brusselator.explicit_ode_fn_numba_cuda,
-            brusselator.implicit_ode_fn_numba_cuda,
-            brusselator.implicit_jac_fn_numba_cuda,
-            y0=np.asarray(y0),
-            t_span=_T_SPAN,
-            params=np.asarray(params),
-            linear=linear,
-            **_SOLVER_KWARGS,
-        )
-
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_local_rodas5(ode_fn, y0, params, *, lu_precision: str) -> float:
-    y0_j = jnp.asarray(y0)
-    p_j = jnp.asarray(params)
-
-    def run():
-        return rodas5_solve(
-            ode_fn,
-            y0_j,
-            _T_SPAN,
-            p_j,
-            lu_precision=lu_precision,
-            **_SOLVER_KWARGS,
-        )
-
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_julia_kencarp5(y0, params, *, ensemble_backend: str) -> float:
-    result = julia_kencarp5_solve._julia_solve_with_timing(
-        "brusselator",
-        np.asarray(y0),
-        _T_SPAN,
-        np.asarray(params),
+CASES: tuple[Case, ...] = (
+    Case(
+        key="local_kencarp5_linear",
+        label="my kencarp5 linear=True",
+        color="#2b7be0",
+        marker="o",
+        solve_fn=kencarp5_solve,
+        explicit_ode_fn=_EXPLICIT_ODE_FN,
+        implicit_ode_fn=_IMPLICIT_ODE_FN,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        linear=True,
+        coerce_jax=True,
+    ),
+    Case(
+        key="local_kencarp5_newton",
+        label="my kencarp5 linear=False",
+        color="#e02b2b",
+        marker="D",
+        solve_fn=kencarp5_solve,
+        explicit_ode_fn=_EXPLICIT_ODE_FN,
+        implicit_ode_fn=_IMPLICIT_ODE_FN,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        linear=False,
+        coerce_jax=True,
+    ),
+    Case(
+        key="kencarp5ckn_linear",
+        label="numba-cuda kencarp5 linear=True",
+        color="#f0a202",
+        marker="P",
+        solve_fn=kencarp5ckn_solve,
+        explicit_ode_fn=brusselator.explicit_ode_fn_numba_cuda,
+        implicit_ode_fn=brusselator.implicit_ode_fn_numba_cuda,
+        implicit_jac_fn=brusselator.implicit_jac_fn_numba_cuda,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        linear=True,
+        coerce_numpy=True,
+    ),
+    Case(
+        key="kencarp5ckn_newton",
+        label="numba-cuda kencarp5 linear=False",
+        color="#d35400",
+        marker="X",
+        solve_fn=kencarp5ckn_solve,
+        explicit_ode_fn=brusselator.explicit_ode_fn_numba_cuda,
+        implicit_ode_fn=brusselator.implicit_ode_fn_numba_cuda,
+        implicit_jac_fn=brusselator.implicit_jac_fn_numba_cuda,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        linear=False,
+        coerce_numpy=True,
+    ),
+    Case(
+        key="local_rodas5_fp64_lu",
+        label="my rodas5 fp64 LU",
+        color="#00a6a6",
+        marker="v",
+        linestyle="--",
+        solve_fn=rodas5_solve,
+        ode_fn=_ODE_FN,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        lu_precision="fp64",
+        coerce_jax=True,
+    ),
+    Case(
+        key="diffrax_kencarp5",
+        label="diffrax kencarp5",
+        color="#2ba84a",
+        marker="s",
+        solve_fn=diffrax_kencarp5_solve,
+        explicit_ode_fn=_EXPLICIT_ODE_FN,
+        implicit_ode_fn=_IMPLICIT_ODE_FN,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        coerce_jax=True,
+    ),
+    # DiffEqGPU 3.13 has no SplitODEProblem support on EnsembleGPUArray, so this
+    # row is fully implicit rather than IMEX.
+    Case(
+        key="julia_kencarp5_EnsembleGPUArray",
+        label="julia kencarp5 (fully-implicit) array",
+        color="#9b59b6",
+        marker="^",
+        solve_fn=julia_kencarp5_solve,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        coerce_numpy=True,
+        system_name="brusselator",
         system_config={"n_grid": _N_GRID},
-        ensemble_backend=ensemble_backend,
-        **_SOLVER_KWARGS,
-    )
-    return result.solve_time_s * 1000
+        ensemble_backend="EnsembleGPUArray",
+    ),
+)
 
 
-def make_solver_specs(ex_fn, im_fn, ode_fn) -> list[SolverSpec]:
-    specs: list[SolverSpec] = []
-    for key, label, color, marker, linear in _LOCAL_SOLVER_DEFS:
-        specs.append(
-            SolverSpec(
-                key=key,
-                label=label,
-                color=color,
-                marker=marker,
-                linestyle="-",
-                timing_fn=(
-                    lambda y0, params, linear=linear: time_local_kencarp5(
-                        ex_fn, im_fn, y0, params, linear=linear
-                    )
-                ),
-            )
+def time_case(case: Case, y0, params) -> float:
+    solve_y0 = y0
+    solve_params = params
+    if case.coerce_jax:
+        solve_y0 = jnp.asarray(solve_y0)
+        solve_params = jnp.asarray(solve_params)
+    if case.coerce_numpy:
+        solve_y0 = np.asarray(solve_y0)
+        solve_params = np.asarray(solve_params)
+
+    kwargs = case.kwargs or {}
+    if case.is_julia:
+        return julia_solve_time_ms(
+            case.solve_fn,
+            case.system_name,
+            solve_y0,
+            case.t_span,
+            solve_params,
+            system_config=case.system_config,
+            ensemble_backend=case.ensemble_backend,
+            **kwargs,
         )
-    for key, label, color, marker, linear in _CUSTOM_KERNEL_SOLVER_DEFS:
-        specs.append(
-            SolverSpec(
-                key=key,
-                label=label,
-                color=color,
-                marker=marker,
-                linestyle="-",
-                timing_fn=(
-                    lambda y0, params, linear=linear: time_custom_kernel_kencarp5(
-                        y0, params, linear=linear
-                    )
-                ),
+
+    assert case.solve_fn is not None
+
+    def run():
+        if case.implicit_jac_fn is not None:
+            return case.solve_fn(
+                case.explicit_ode_fn,
+                case.implicit_ode_fn,
+                case.implicit_jac_fn,
+                y0=solve_y0,
+                t_span=case.t_span,
+                params=solve_params,
+                linear=case.linear,
+                **kwargs,
             )
+        if case.ode_fn is not None:
+            return case.solve_fn(
+                case.ode_fn,
+                solve_y0,
+                case.t_span,
+                solve_params,
+                lu_precision=case.lu_precision,
+                **kwargs,
+            )
+        return case.solve_fn(
+            case.explicit_ode_fn,
+            case.implicit_ode_fn,
+            solve_y0,
+            case.t_span,
+            solve_params,
+            **({"linear": case.linear} if case.linear is not None else {}),
+            **kwargs,
         )
-    for key, label, color, marker, lu_precision in _RODAS_SOLVER_DEFS:
-        specs.append(
-            SolverSpec(
-                key=key,
-                label=label,
-                color=color,
-                marker=marker,
-                linestyle="--",
-                timing_fn=(
-                    lambda y0, params, precision=lu_precision: time_local_rodas5(
-                        ode_fn, y0, params, lu_precision=precision
-                    )
-                ),
-            )
-        )
-    for key, label, color, marker, _fn in _JAX_SOLVER_DEFS:
-        specs.append(
-            SolverSpec(
-                key=key,
-                label=label,
-                color=color,
-                marker=marker,
-                linestyle="-",
-                timing_fn=(
-                    lambda y0, params: time_diffrax_kencarp5(ex_fn, im_fn, y0, params)
-                ),
-            )
-        )
-    for solver_key, label, _solve, color in _JULIA_SOLVER_DEFS:
-        for backend in _JULIA_BACKENDS:
-            backend_id, marker, linestyle = _JULIA_BACKEND_STYLES[backend]
-            specs.append(
-                SolverSpec(
-                    key=f"{solver_key}_{backend}",
-                    label=f"{label} {backend_id}",
-                    color=color,
-                    marker=marker,
-                    linestyle=linestyle,
-                    timing_fn=(
-                        lambda y0, params, b=backend: time_julia_kencarp5(
-                            y0, params, ensemble_backend=b
-                        )
-                    ),
-                )
-            )
-    return specs
+
+    return time_blocked_ms(run, _N_RUNS)
 
 
-def collect_timing(spec: SolverSpec, size: int, y0, params):
+def collect_timing(case: Case, size: int, y0, params):
     return collect_timed_timing(
-        spec.label,
+        case.label,
         f"n={size:>7}",
-        lambda: spec.timing_fn(y0, params),
+        lambda: time_case(case, y0, params),
         label_width=28,
     )
 
@@ -263,39 +248,29 @@ def collect_timing(spec: SolverSpec, size: int, y0, params):
 _Row = tuple[str, str, int, float | None]
 
 
-def drop_none(rows: list[_Row], solver_key: str) -> tuple[list[int], list[float]]:
-    pairs = [
-        (size, ms) for key, _, size, ms in rows if key == solver_key and ms is not None
-    ]
-    if not pairs:
-        return [], []
-    sizes, times = zip(*pairs)
-    return list(sizes), list(times)
-
-
 def run_benchmarks(
-    specs: list[SolverSpec], gpu_name: str, cache: dict
+    cases: Sequence[Case], gpu_name: str, cache: dict
 ) -> dict[str, list[_Row]]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows_by_scenario: dict[str, list[_Row]] = {}
     for scenario in brusselator.SCENARIOS:
         print(f"\n=== {scenario} ===\n")
         rows: list[_Row] = []
-        for spec in specs:
-            print(f"{spec.label}:")
-            solver_cache = gpu_cache.setdefault(f"{scenario}_{spec.key}", {})
+        for case in cases:
+            print(f"{case.label}:")
+            solver_cache = gpu_cache.setdefault(f"{scenario}_{case.key}", {})
             for size in _ENSEMBLE_SIZES:
                 size_key = str(size)
                 if size_key in solver_cache:
                     ms = solver_cache[size_key]
                     ms_text = format_cached_timing(ms)
-                    print(f"  {spec.label:<28} n={size:>7} ... (cached) {ms_text}")
+                    print(f"  {case.label:<28} n={size:>7} ... (cached) {ms_text}")
                 else:
                     y0, params = brusselator.make_scenario(scenario, _N_GRID, size)
-                    ms = collect_timing(spec, size, y0, params)
+                    ms = collect_timing(case, size, y0, params)
                     solver_cache[size_key] = ms
                     save_cache(_CACHE_PATH, cache)
-                rows.append((spec.key, spec.label, size, timing_value_or_none(ms)))
+                rows.append((case.key, case.label, size, timing_value_or_none(ms)))
             print()
         rows_by_scenario[scenario] = rows
     return rows_by_scenario
@@ -311,23 +286,23 @@ def save_csv(rows: list[_Row], path: Path) -> None:
 
 def plot(
     rows: list[_Row],
-    specs: list[SolverSpec],
+    cases: Sequence[Case],
     gpu_name: str,
     scenario: str,
     output_path: Path,
 ) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
-    for spec in specs:
-        sizes, times_ms = drop_none(rows, spec.key)
+    for case in cases:
+        sizes, times_ms = drop_none_rows(rows, case.key)
         if not sizes:
             continue
         ax.plot(
             sizes,
             times_ms,
-            marker=spec.marker,
-            color=spec.color,
-            linestyle=spec.linestyle,
-            label=spec.label,
+            marker=case.marker,
+            color=case.color,
+            linestyle=case.linestyle,
+            label=case.label,
         )
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -349,17 +324,15 @@ def main() -> None:
     gpu_name = get_gpu_name()
     print(f"GPU: {gpu_name}\n")
 
-    ex_fn, im_fn, ode_fn, _y0 = brusselator.make_system(_N_GRID)
     cache = load_cache(_CACHE_PATH)
-    specs = make_solver_specs(ex_fn, im_fn, ode_fn)
-    rows_by_scenario = run_benchmarks(specs, gpu_name, cache)
+    rows_by_scenario = run_benchmarks(CASES, gpu_name, cache)
 
     slug = gpu_slug(gpu_name)
     for scenario, rows in rows_by_scenario.items():
         csv_path = _SCRIPT_DIR / f"results-{slug}-{scenario}.csv"
         plot_path = _SCRIPT_DIR / f"plot-{slug}-{scenario}.png"
         save_csv(rows, csv_path)
-        plot(rows, specs, gpu_name, scenario, plot_path)
+        plot(rows, CASES, gpu_name, scenario, plot_path)
 
 
 if __name__ == "__main__":

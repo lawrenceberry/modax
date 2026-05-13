@@ -13,7 +13,7 @@ import csv
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Sequence
 
 import jax
 import matplotlib.pyplot as plt
@@ -25,13 +25,16 @@ from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_
 from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from reference.systems.python import robertson
 from scripts.benchmark_common import (
+    BenchmarkCase,
     collect_timed_timing,
+    drop_none_rows,
     format_cached_timing,
     get_gpu_name,
     gpu_slug,
+    julia_solve_time_ms,
     load_cache,
     save_cache,
-    time_blocked,
+    time_blocked_ms,
     timing_value_or_none,
 )
 from solvers.rodas5 import solve as rodas5_solve
@@ -42,165 +45,163 @@ jax.config.update("jax_enable_x64", True)
 _T_SPAN = robertson.TIMES
 _ENSEMBLE_SIZES = (1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000)
 _N_RUNS = 10
-_JULIA_BACKENDS = ("EnsembleGPUArray", "EnsembleGPUKernel")
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
-# (key, label, color, marker, lu_precision)
-_LOCAL_SOLVER_DEFS = [
-    ("local_rodas5_fp32_lu", "my rodas5 fp32 LU", "#2b7be0", "o", "fp32"),
-    ("local_rodas5_fp64_lu", "my rodas5 fp64 LU", "#e02b2b", "D", "fp64"),
-]
-_CUSTOM_KERNEL_SOLVER_DEFS = [
-    ("rodas5ckn", "numba-cuda rodas5", "#f0a202", "P", rodas5ckn_solve),
-]
-# (key, label, color, marker, solve_fn)
-_JAX_SOLVER_DEFS = [
-    ("diffrax_kvaerno5", "diffrax kvaerno5", "#2ba84a", "s", diffrax_kvaerno5_solve),
-]
-# (key, label, solve_fn, color)
-_JULIA_SOLVER_DEFS = [
-    ("julia_rodas5", "julia rodas5", julia_rodas5_solve, "#9b59b6"),
-]
-# backend -> (label_suffix, marker, linestyle)
-_JULIA_BACKEND_STYLES = {
-    "EnsembleGPUArray": ("array", "^", "-"),
-    "EnsembleGPUKernel": ("kernel", "v", "--"),
-}
-
 
 @dataclass(frozen=True)
-class SolverSpec:
-    key: str
-    label: str
-    color: str
-    marker: str
-    linestyle: str
-    timing_fn: Callable[[object, object], float]
+class Case(BenchmarkCase):
+    solve_fn: Callable[..., Any] | None = None
+    ode_fn: Callable[..., Any] | None = None
+    jac_fn: Callable[..., Any] | None = None
+    y0: Any = None
+    t_span: Any = None
+    kwargs: dict[str, Any] | None = None
+    lu_precision: str | None = None
+    coerce_numpy: bool = False
+    system_name: str | None = None
+    ensemble_backend: str | None = None
+
+    @property
+    def is_julia(self) -> bool:
+        return self.system_name is not None
 
 
-def time_local_rodas5(y0, params, *, lu_precision: str) -> float:
+CASES: tuple[Case, ...] = (
+    Case(
+        key="local_rodas5_fp32_lu",
+        label="my rodas5 fp32 LU",
+        color="#2b7be0",
+        marker="o",
+        solve_fn=rodas5_solve,
+        ode_fn=robertson.ode_fn,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        lu_precision="fp32",
+    ),
+    Case(
+        key="local_rodas5_fp64_lu",
+        label="my rodas5 fp64 LU",
+        color="#e02b2b",
+        marker="D",
+        solve_fn=rodas5_solve,
+        ode_fn=robertson.ode_fn,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        lu_precision="fp64",
+    ),
+    Case(
+        key="rodas5ckn",
+        label="numba-cuda rodas5",
+        color="#f0a202",
+        marker="P",
+        solve_fn=rodas5ckn_solve,
+        ode_fn=robertson.ode_fn_numba_cuda,
+        jac_fn=robertson.jac_fn_numba_cuda,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        coerce_numpy=True,
+    ),
+    Case(
+        key="diffrax_kvaerno5",
+        label="diffrax kvaerno5",
+        color="#2ba84a",
+        marker="s",
+        solve_fn=diffrax_kvaerno5_solve,
+        ode_fn=robertson.ode_fn,
+        y0=robertson.Y0,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+    ),
+    Case(
+        key="julia_rodas5_EnsembleGPUArray",
+        label="julia rodas5 array",
+        color="#9b59b6",
+        marker="^",
+        solve_fn=julia_rodas5_solve,
+        y0=robertson.Y0,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        coerce_numpy=True,
+        system_name="robertson",
+        ensemble_backend="EnsembleGPUArray",
+    ),
+    Case(
+        key="julia_rodas5_EnsembleGPUKernel",
+        label="julia rodas5 kernel",
+        color="#9b59b6",
+        marker="v",
+        linestyle="--",
+        solve_fn=julia_rodas5_solve,
+        y0=robertson.Y0,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        coerce_numpy=True,
+        system_name="robertson",
+        ensemble_backend="EnsembleGPUKernel",
+    ),
+)
+
+
+def time_case(case: Case, y0, params) -> float:
+    solve_y0 = case.y0 if case.y0 is not None else y0
+    solve_params = params
+    if case.coerce_numpy:
+        solve_y0 = np.asarray(solve_y0)
+        solve_params = np.asarray(solve_params)
+
+    kwargs = case.kwargs or {}
+    if case.is_julia:
+        return julia_solve_time_ms(
+            case.solve_fn,
+            case.system_name,
+            solve_y0,
+            case.t_span,
+            solve_params,
+            ensemble_backend=case.ensemble_backend,
+            **kwargs,
+        )
+
+    assert case.solve_fn is not None
+    assert case.ode_fn is not None
+
     def run():
-        return rodas5_solve(
-            robertson.ode_fn,
-            y0,
-            _T_SPAN,
-            params,
-            lu_precision=lu_precision,
-            **_SOLVER_KWARGS,
-        )
-
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_custom_kernel_rodas5(y0, params, solve_fn) -> float:
-    def run():
-        return solve_fn(
-            robertson.ode_fn_numba_cuda,
-            robertson.jac_fn_numba_cuda,
-            y0=np.asarray(y0),
-            t_span=_T_SPAN,
-            params=np.asarray(params),
-            **_SOLVER_KWARGS,
-        )
-
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_reference_jax_solver(solve_fn, _y0, params) -> float:
-    def run():
-        return solve_fn(
-            robertson.ode_fn,
-            y0=robertson.Y0,
-            t_span=_T_SPAN,
-            params=params,
-            **_SOLVER_KWARGS,
-        )
-
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_julia_solver(solve, _y0, params, *, ensemble_backend: str) -> float:
-    """Return Julia's internal solve time in ms, excluding subprocess overhead."""
-    result = solve._julia_solve_with_timing(
-        "robertson",
-        robertson.Y0,
-        _T_SPAN,
-        np.asarray(params),
-        ensemble_backend=ensemble_backend,
-        **_SOLVER_KWARGS,
-    )
-    return result.solve_time_s * 1000
-
-
-def make_solver_specs() -> list[SolverSpec]:
-    specs = [
-        SolverSpec(
-            key=key,
-            label=label,
-            color=color,
-            marker=marker,
-            linestyle="-",
-            timing_fn=lambda y0, params, precision=lu_precision: time_local_rodas5(
-                y0, params, lu_precision=precision
-            ),
-        )
-        for key, label, color, marker, lu_precision in _LOCAL_SOLVER_DEFS
-    ]
-    specs.extend(
-        SolverSpec(
-            key=key,
-            label=label,
-            color=color,
-            marker=marker,
-            linestyle="-",
-            timing_fn=lambda y0, params, fn=fn: time_custom_kernel_rodas5(
-                y0, params, fn
-            ),
-        )
-        for key, label, color, marker, fn in _CUSTOM_KERNEL_SOLVER_DEFS
-    )
-    specs.extend(
-        SolverSpec(
-            key=key,
-            label=label,
-            color=color,
-            marker=marker,
-            linestyle="-",
-            timing_fn=lambda y0, params, fn=fn: time_reference_jax_solver(
-                fn, y0, params
-            ),
-        )
-        for key, label, color, marker, fn in _JAX_SOLVER_DEFS
-    )
-    for solver_key, label, solve, color in _JULIA_SOLVER_DEFS:
-        for backend in _JULIA_BACKENDS:
-            backend_id, marker, linestyle = _JULIA_BACKEND_STYLES[backend]
-            specs.append(
-                SolverSpec(
-                    key=f"{solver_key}_{backend}",
-                    label=f"{label} {backend_id}",
-                    color=color,
-                    marker=marker,
-                    linestyle=linestyle,
-                    timing_fn=lambda y0, params, s=solve, b=backend: time_julia_solver(
-                        s, y0, params, ensemble_backend=b
-                    ),
-                )
+        if case.jac_fn is not None:
+            return case.solve_fn(
+                case.ode_fn,
+                case.jac_fn,
+                y0=solve_y0,
+                t_span=case.t_span,
+                params=solve_params,
+                **kwargs,
             )
-    return specs
+        if case.lu_precision is not None:
+            return case.solve_fn(
+                case.ode_fn,
+                solve_y0,
+                case.t_span,
+                solve_params,
+                lu_precision=case.lu_precision,
+                **kwargs,
+            )
+        return case.solve_fn(
+            case.ode_fn,
+            solve_y0,
+            case.t_span,
+            solve_params,
+            **kwargs,
+        )
+
+    return time_blocked_ms(run, _N_RUNS)
 
 
-def collect_timing(spec: SolverSpec, size: int, y0, params):
+def collect_timing(case: Case, size: int, y0, params):
     return collect_timed_timing(
-        spec.label,
+        case.label,
         f"n={size:>7}",
-        lambda: spec.timing_fn(y0, params),
+        lambda: time_case(case, y0, params),
         label_width=24,
     )
 
@@ -208,42 +209,29 @@ def collect_timing(spec: SolverSpec, size: int, y0, params):
 _Row = tuple[str, str, int, float | None]
 
 
-def drop_none(
-    rows: list[_Row],
-    solver_key: str,
-) -> tuple[list[int], list[float]]:
-    pairs = [
-        (size, ms) for key, _, size, ms in rows if key == solver_key and ms is not None
-    ]
-    if not pairs:
-        return [], []
-    sizes, times = zip(*pairs)
-    return list(sizes), list(times)
-
-
 def run_benchmarks(
-    specs: list[SolverSpec], gpu_name: str, cache: dict
+    cases: Sequence[Case], gpu_name: str, cache: dict
 ) -> dict[str, list[_Row]]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows_by_scenario: dict[str, list[_Row]] = {}
     for scenario in robertson.SCENARIOS:
         print(f"\n=== {scenario} ===\n")
         rows: list[_Row] = []
-        for spec in specs:
-            print(f"{spec.label}:")
-            solver_cache = gpu_cache.setdefault(f"{scenario}_{spec.key}", {})
+        for case in cases:
+            print(f"{case.label}:")
+            solver_cache = gpu_cache.setdefault(f"{scenario}_{case.key}", {})
             for size in _ENSEMBLE_SIZES:
                 size_key = str(size)
                 if size_key in solver_cache:
                     ms = solver_cache[size_key]
                     ms_text = format_cached_timing(ms)
-                    print(f"  {spec.label:<24} n={size:>7} ... (cached) {ms_text}")
+                    print(f"  {case.label:<24} n={size:>7} ... (cached) {ms_text}")
                 else:
                     y0, params = robertson.make_scenario(scenario, size)
-                    ms = collect_timing(spec, size, y0, params)
+                    ms = collect_timing(case, size, y0, params)
                     solver_cache[size_key] = ms
                     save_cache(_CACHE_PATH, cache)
-                rows.append((spec.key, spec.label, size, timing_value_or_none(ms)))
+                rows.append((case.key, case.label, size, timing_value_or_none(ms)))
             print()
         rows_by_scenario[scenario] = rows
     return rows_by_scenario
@@ -259,23 +247,23 @@ def save_csv(rows: list[_Row], path: Path) -> None:
 
 def plot(
     rows: list[_Row],
-    specs: list[SolverSpec],
+    cases: Sequence[Case],
     gpu_name: str,
     scenario: str,
     output_path: Path,
 ) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
-    for spec in specs:
-        sizes, times_ms = drop_none(rows, spec.key)
+    for case in cases:
+        sizes, times_ms = drop_none_rows(rows, case.key)
         if not sizes:
             continue
         ax.plot(
             sizes,
             times_ms,
-            marker=spec.marker,
-            color=spec.color,
-            linestyle=spec.linestyle,
-            label=spec.label,
+            marker=case.marker,
+            color=case.color,
+            linestyle=case.linestyle,
+            label=case.label,
         )
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -296,15 +284,14 @@ def main() -> None:
     print(f"GPU: {gpu_name}\n")
 
     cache = load_cache(_CACHE_PATH)
-    specs = make_solver_specs()
-    rows_by_scenario = run_benchmarks(specs, gpu_name, cache)
+    rows_by_scenario = run_benchmarks(CASES, gpu_name, cache)
 
     slug = gpu_slug(gpu_name)
     for scenario, rows in rows_by_scenario.items():
         csv_path = _SCRIPT_DIR / f"results-{slug}-{scenario}.csv"
         plot_path = _SCRIPT_DIR / f"plot-{slug}-{scenario}.png"
         save_csv(rows, csv_path)
-        plot(rows, specs, gpu_name, scenario, plot_path)
+        plot(rows, CASES, gpu_name, scenario, plot_path)
 
 
 if __name__ == "__main__":

@@ -77,7 +77,7 @@ _CSV_FIELDS = (
 
 
 @dataclass(frozen=True)
-class SolverSpec:
+class Case:
     key: str
     label: str
     color: str
@@ -87,8 +87,8 @@ class SolverSpec:
     ensemble_backend: str | None = None
 
 
-_SOLVERS = (
-    SolverSpec(
+CASES = (
+    Case(
         "local_kencarp5_linear",
         "my kencarp5 linear=True",
         "#2b7be0",
@@ -96,7 +96,7 @@ _SOLVERS = (
         "stats",
         linear=True,
     ),
-    SolverSpec(
+    Case(
         "local_kencarp5_newton",
         "my kencarp5 linear=False",
         "#e02b2b",
@@ -104,14 +104,14 @@ _SOLVERS = (
         "stats",
         linear=False,
     ),
-    SolverSpec(
+    Case(
         "diffrax_kencarp5",
         "diffrax kencarp5",
         "#2ba84a",
         "s",
         "timing",
     ),
-    SolverSpec(
+    Case(
         "kencarp5ckn_linear",
         "numba-cuda kencarp5 linear=True",
         "#f0a202",
@@ -119,7 +119,7 @@ _SOLVERS = (
         "kencarp5ckn",
         linear=True,
     ),
-    SolverSpec(
+    Case(
         "kencarp5ckn_newton",
         "numba-cuda kencarp5 linear=False",
         "#d35400",
@@ -127,7 +127,7 @@ _SOLVERS = (
         "kencarp5ckn",
         linear=False,
     ),
-    SolverSpec(
+    Case(
         "local_rodas5_fp64_lu",
         "my rodas5 fp64 LU",
         "#00a6a6",
@@ -137,7 +137,7 @@ _SOLVERS = (
     # DiffEqGPU 3.13 has no SplitODEProblem support on EnsembleGPUArray,
     # so this Julia row is fully-implicit (no IMEX) — see the comment
     # block at top of reference/solvers/julia/run_solver.jl.
-    SolverSpec(
+    Case(
         "julia_kencarp5_EnsembleGPUArray",
         "julia kencarp5 GPUArray (fully-implicit)",
         "#9b59b6",
@@ -171,7 +171,7 @@ def solve_with_stats(linear: bool, y0: np.ndarray, params: np.ndarray):
     )
 
 
-def solve_timing_only(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
+def solve_timing_only(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key == "diffrax_kencarp5":
         return diffrax_kencarp5_solve(
             _EX_FN,
@@ -194,7 +194,7 @@ def solve_timing_only(solver: SolverSpec, y0: np.ndarray, params: np.ndarray):
 
 
 def time_solve(
-    solver: SolverSpec, y0: np.ndarray, params: np.ndarray
+    solver: Case, y0: np.ndarray, params: np.ndarray
 ) -> tuple[float, dict | None]:
     if solver.mode == "julia":
         result = julia_kencarp5_solve._julia_solve_with_timing(
@@ -284,7 +284,7 @@ def is_complete_row(value) -> bool:
 
 def collect_row(
     gpu_name: str,
-    solver: SolverSpec,
+    solver: Case,
     divergence: float,
     stats_summary: dict | None = None,
 ) -> dict | None:
@@ -346,7 +346,7 @@ def _jax_warmup() -> None:
 def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
-    for solver in _SOLVERS:
+    for solver in CASES:
         print(f"\n{solver.label}:")
         solver_cache = gpu_cache.setdefault(solver.key, {})
         for divergence in _DIVERGENCES:
@@ -392,7 +392,7 @@ def rows_for_solver(rows: list[dict], solver_key: str) -> list[dict]:
 
 def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(8, 5.5))
-    for solver in _SOLVERS:
+    for solver in CASES:
         solver_rows = rows_for_solver(rows, solver.key)
         if not solver_rows:
             continue

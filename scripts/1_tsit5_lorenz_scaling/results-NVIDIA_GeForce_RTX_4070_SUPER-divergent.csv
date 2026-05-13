@@ -1,51 +1,51 @@
 solver_key,solver,ensemble_size,solve_time_ms
-local_tsit5,my tsit5,3,14.620937407016754
-local_tsit5,my tsit5,10,21.025427407585084
-local_tsit5,my tsit5,30,21.880584489554167
-local_tsit5,my tsit5,100,22.728329803794622
-local_tsit5,my tsit5,300,22.647273493930697
-local_tsit5,my tsit5,1000,22.742757806554437
-local_tsit5,my tsit5,3000,29.50489700306207
-local_tsit5,my tsit5,10000,41.39935630373657
-local_tsit5,my tsit5,30000,77.33144632074982
-local_tsit5,my tsit5,100000,197.3730314988643
-tsit5ckn,numba-cuda tsit5,3,2.880920609459281
-tsit5ckn,numba-cuda tsit5,10,4.001796897500753
-tsit5ckn,numba-cuda tsit5,30,4.178625717759132
-tsit5ckn,numba-cuda tsit5,100,6.182141602039337
-tsit5ckn,numba-cuda tsit5,300,6.233795592561364
-tsit5ckn,numba-cuda tsit5,1000,6.2776335049420595
-tsit5ckn,numba-cuda tsit5,3000,6.2923504039645195
-tsit5ckn,numba-cuda tsit5,10000,12.041429802775383
-tsit5ckn,numba-cuda tsit5,30000,29.348788200877607
-tsit5ckn,numba-cuda tsit5,100000,81.27662688493729
-diffrax_tsit5,diffrax tsit5,3,78.03656558971852
-diffrax_tsit5,diffrax tsit5,10,78.5457180114463
-diffrax_tsit5,diffrax tsit5,30,81.47325122263283
-diffrax_tsit5,diffrax tsit5,100,101.07709800358862
-diffrax_tsit5,diffrax tsit5,300,110.18094050232321
-diffrax_tsit5,diffrax tsit5,1000,109.84338778071105
-diffrax_tsit5,diffrax tsit5,3000,124.12087279371917
-diffrax_tsit5,diffrax tsit5,10000,137.09739509504288
-diffrax_tsit5,diffrax tsit5,30000,195.20696399267763
-diffrax_tsit5,diffrax tsit5,100000,452.01919260434806
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,3,69.015195
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,10,68.88439000000001
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,30,70.63915
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,100,69.810676
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,300,968.049995
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,1000,972.964362
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,3000,146.27003
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,10000,256.348276
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,30000,2027.707166
-julia_tsit5_EnsembleGPUArray,julia tsit5 array,100000,28852.13031
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,3,4.855503
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,10,4.867542
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,30,4.867212
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,100,6.1743120000000005
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,300,6.965509
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,1000,8.119125
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,3000,13.378018
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,10000,925.590557
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,30000,1016.4236740000001
-julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,100000,420.620677
+local_tsit5,modax tsit5-jax,3,14.160157181322575
+local_tsit5,modax tsit5-jax,10,21.05153724551201
+local_tsit5,modax tsit5-jax,30,22.06055400893092
+local_tsit5,modax tsit5-jax,100,28.544245287775993
+local_tsit5,modax tsit5-jax,300,28.496786020696163
+local_tsit5,modax tsit5-jax,1000,28.556525241583586
+local_tsit5,modax tsit5-jax,3000,30.099837575107813
+local_tsit5,modax tsit5-jax,10000,42.04050591215491
+local_tsit5,modax tsit5-jax,30000,83.69777398183942
+local_tsit5,modax tsit5-jax,100000,196.5384897775948
+tsit5ckn,modax tsit5-numba,3,3.134105820208788
+tsit5ckn,modax tsit5-numba,10,4.144032020121813
+tsit5ckn,modax tsit5-numba,30,4.5186299830675125
+tsit5ckn,modax tsit5-numba,100,6.4473506063222885
+tsit5ckn,modax tsit5-numba,300,6.670000962913036
+tsit5ckn,modax tsit5-numba,1000,6.641890853643417
+tsit5ckn,modax tsit5-numba,3000,6.5333908423781395
+tsit5ckn,modax tsit5-numba,10000,12.125626672059298
+tsit5ckn,modax tsit5-numba,30000,29.206780716776848
+tsit5ckn,modax tsit5-numba,100000,80.74618503451347
+diffrax_tsit5,diffrax tsit5,3,113.5767730884254
+diffrax_tsit5,diffrax tsit5,10,120.57983409613371
+diffrax_tsit5,diffrax tsit5,30,83.56187585741282
+diffrax_tsit5,diffrax tsit5,100,130.26564102619886
+diffrax_tsit5,diffrax tsit5,300,131.6159856505692
+diffrax_tsit5,diffrax tsit5,1000,131.89048506319523
+diffrax_tsit5,diffrax tsit5,3000,133.03680019453168
+diffrax_tsit5,diffrax tsit5,10000,137.6310708001256
+diffrax_tsit5,diffrax tsit5,30000,195.5618099309504
+diffrax_tsit5,diffrax tsit5,100000,452.8204230591655
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,3,66.691112
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,10,67.56517099999999
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,30,67.92414099999999
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,100,68.80084000000001
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,300,75.35660499999999
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,1000,81.85412000000001
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,3000,102.048998
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,10000,324.15411900000004
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,30000,1946.7489170000001
+julia_tsit5_EnsembleGPUArray,julia tsit5 array,100000,26294.031047
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,3,5.30377
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,10,5.321009
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,30,5.331859000000001
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,100,6.5511040000000005
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,300,7.179162
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,1000,8.278119
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,3000,13.251119000000001
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,10000,36.689669
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,30000,130.18962100000002
+julia_tsit5_EnsembleGPUKernel,julia tsit5 kernel,100000,339.44521199999997

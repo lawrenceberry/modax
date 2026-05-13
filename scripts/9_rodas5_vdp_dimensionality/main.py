@@ -16,7 +16,7 @@ import csv
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -30,13 +30,16 @@ from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_
 from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from reference.systems.python import vdp
 from scripts.benchmark_common import (
+    BenchmarkCase,
     collect_timed_timing,
+    drop_none_rows,
     format_cached_timing,
     get_gpu_name,
     gpu_slug,
+    julia_solve_time_ms,
     load_cache,
     save_cache,
-    time_blocked,
+    time_blocked_ms,
     timing_value_or_none,
 )
 from solvers.rodas5 import solve as rodas5_solve
@@ -47,7 +50,6 @@ jax.config.update("jax_enable_x64", True)
 _T_SPAN = vdp.TIMES
 _ENSEMBLE_SIZE = 1000
 _N_RUNS = 10
-_JULIA_BACKENDS = ("EnsembleGPUArray", "EnsembleGPUKernel")
 
 # Powers of 2 from 2 to 128 (n_osc = dim // 2: 1, 2, 4, 8, 16, 32, 64)
 _DIMENSIONS = (2, 4, 6, 8, 10, 12, 16, 32, 64, 128)
@@ -56,37 +58,90 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
-# (key, label, color, marker, lu_precision)
-_LOCAL_SOLVER_DEFS = [
-    ("local_rodas5_fp32_lu", "my rodas5 fp32 LU", "#2b7be0", "o", "fp32"),
-    ("local_rodas5_fp64_lu", "my rodas5 fp64 LU", "#e02b2b", "D", "fp64"),
-]
-# (key, label, color, marker, solve_fn)
-_JAX_SOLVER_DEFS = [
-    ("diffrax_kvaerno5", "diffrax kvaerno5", "#2ba84a", "s", diffrax_kvaerno5_solve),
-]
-_CUSTOM_KERNEL_SOLVER_DEFS = [
-    ("rodas5ckn", "numba-cuda rodas5", "#f0a202", "P", rodas5ckn_solve),
-]
-# (key, label, solve_fn, color)
-_JULIA_SOLVER_DEFS = [
-    ("julia_rodas5", "julia rodas5", julia_rodas5_solve, "#9b59b6"),
-]
-# backend -> (label_suffix, marker, linestyle)
-_JULIA_BACKEND_STYLES = {
-    "EnsembleGPUArray": ("array", "^", "-"),
-    "EnsembleGPUKernel": ("kernel", "v", "--"),
-}
-
-
 @dataclass(frozen=True)
-class SolverSpec:
-    key: str
-    label: str
-    color: str
-    marker: str
-    linestyle: str
-    timing_fn: Callable[[int], float]
+class Case(BenchmarkCase):
+    solve_fn: Callable[..., Any] | None = None
+    mode: str = "jax"
+    t_span: Any = None
+    kwargs: dict[str, Any] | None = None
+    lu_precision: str | None = None
+    system_name: str | None = None
+    ensemble_backend: str | None = None
+
+    @property
+    def is_julia(self) -> bool:
+        return self.system_name is not None
+
+
+CASES: tuple[Case, ...] = (
+    Case(
+        key="local_rodas5_fp32_lu",
+        label="my rodas5 fp32 LU",
+        color="#2b7be0",
+        marker="o",
+        solve_fn=rodas5_solve,
+        mode="rodas",
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        lu_precision="fp32",
+    ),
+    Case(
+        key="local_rodas5_fp64_lu",
+        label="my rodas5 fp64 LU",
+        color="#e02b2b",
+        marker="D",
+        solve_fn=rodas5_solve,
+        mode="rodas",
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        lu_precision="fp64",
+    ),
+    Case(
+        key="rodas5ckn",
+        label="numba-cuda rodas5",
+        color="#f0a202",
+        marker="P",
+        solve_fn=rodas5ckn_solve,
+        mode="custom",
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+    ),
+    Case(
+        key="diffrax_kvaerno5",
+        label="diffrax kvaerno5",
+        color="#2ba84a",
+        marker="s",
+        solve_fn=diffrax_kvaerno5_solve,
+        mode="diffrax",
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+    ),
+    Case(
+        key="julia_rodas5_EnsembleGPUArray",
+        label="julia rodas5 array",
+        color="#9b59b6",
+        marker="^",
+        solve_fn=julia_rodas5_solve,
+        mode="julia",
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        system_name="vdp",
+        ensemble_backend="EnsembleGPUArray",
+    ),
+    Case(
+        key="julia_rodas5_EnsembleGPUKernel",
+        label="julia rodas5 kernel",
+        color="#9b59b6",
+        marker="v",
+        linestyle="--",
+        solve_fn=julia_rodas5_solve,
+        mode="julia",
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        system_name="vdp",
+        ensemble_backend="EnsembleGPUKernel",
+    ),
+)
 
 
 @cuda.jit(device=True)
@@ -130,166 +185,79 @@ def jac_fn_vdp_numba(y, t, p, jac, i):
             jac[i, 2 * k + 1, 2 * km1] = diffusion
 
 
-def time_local_rodas5(dim: int, *, lu_precision: str, scenario: str) -> float:
+def time_case(case: Case, dim: int, *, scenario: str) -> float:
     n_osc = dim // 2
-    ode_fn, _ = vdp.make_system(n_osc)
     y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
-    y0_batch = jnp.asarray(y0_batch)
-    params = jnp.asarray(params)
+    kwargs = case.kwargs or {}
 
-    def run():
-        return rodas5_solve(
-            ode_fn,
+    if case.is_julia:
+        return julia_solve_time_ms(
+            case.solve_fn,
+            case.system_name,
             y0_batch,
-            _T_SPAN,
+            case.t_span,
             params,
-            lu_precision=lu_precision,
-            **_SOLVER_KWARGS,
+            system_config={"n_osc": n_osc},
+            ensemble_backend=case.ensemble_backend,
+            **kwargs,
         )
 
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_custom_kernel_rodas5(dim: int, solve_fn, *, scenario: str) -> float:
-    n_osc = dim // 2
-    y0_batch, scale_params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
-    params = np.column_stack(
-        [
-            np.full(_ENSEMBLE_SIZE, float(n_osc), dtype=np.float64),
-            scale_params[:, 0],
-        ]
-    )
-
-    def run():
-        return solve_fn(
-            ode_fn_vdp_numba,
-            jac_fn_vdp_numba,
-            y0=y0_batch,
-            t_span=_T_SPAN,
-            params=params,
-            **_SOLVER_KWARGS,
+    if case.mode == "custom":
+        custom_params = np.column_stack(
+            [
+                np.full(_ENSEMBLE_SIZE, float(n_osc), dtype=np.float64),
+                params[:, 0],
+            ]
         )
 
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_diffrax(dim: int, solve_fn, *, scenario: str) -> float:
-    n_osc = dim // 2
-    ode_fn, _ = vdp.make_system(n_osc)
-    y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
-    y0_batch = jnp.asarray(y0_batch)
-    params = jnp.asarray(params)
-
-    def run():
-        return solve_fn(
-            ode_fn,
-            y0=y0_batch,
-            t_span=_T_SPAN,
-            params=params,
-            **_SOLVER_KWARGS,
-        )
-
-    ms, _ = time_blocked(run, _N_RUNS)
-    return ms
-
-
-def time_julia_solver(
-    dim: int, solve, *, ensemble_backend: str, scenario: str
-) -> float:
-    n_osc = dim // 2
-    y0_batch, params = vdp.make_scenario(scenario, n_osc, _ENSEMBLE_SIZE)
-    result = solve._julia_solve_with_timing(
-        "vdp",
-        y0_batch,
-        _T_SPAN,
-        params,
-        system_config={"n_osc": n_osc},
-        ensemble_backend=ensemble_backend,
-        **_SOLVER_KWARGS,
-    )
-    return result.solve_time_s * 1000
-
-
-def make_solver_specs(scenario: str) -> list[SolverSpec]:
-    specs = [
-        SolverSpec(
-            key=key,
-            label=label,
-            color=color,
-            marker=marker,
-            linestyle="-",
-            timing_fn=lambda dim, precision=lu_precision, sc=scenario: (
-                time_local_rodas5(dim, lu_precision=precision, scenario=sc)
-            ),
-        )
-        for key, label, color, marker, lu_precision in _LOCAL_SOLVER_DEFS
-    ]
-    specs.extend(
-        SolverSpec(
-            key=key,
-            label=label,
-            color=color,
-            marker=marker,
-            linestyle="-",
-            timing_fn=lambda dim, fn=fn, sc=scenario: time_custom_kernel_rodas5(
-                dim, fn, scenario=sc
-            ),
-        )
-        for key, label, color, marker, fn in _CUSTOM_KERNEL_SOLVER_DEFS
-    )
-    specs.extend(
-        SolverSpec(
-            key=key,
-            label=label,
-            color=color,
-            marker=marker,
-            linestyle="-",
-            timing_fn=lambda dim, fn=fn, sc=scenario: time_diffrax(
-                dim, fn, scenario=sc
-            ),
-        )
-        for key, label, color, marker, fn in _JAX_SOLVER_DEFS
-    )
-    for solver_key, label, solve, color in _JULIA_SOLVER_DEFS:
-        for backend in _JULIA_BACKENDS:
-            backend_id, marker, linestyle = _JULIA_BACKEND_STYLES[backend]
-            specs.append(
-                SolverSpec(
-                    key=f"{solver_key}_{backend}",
-                    label=f"{label} {backend_id}",
-                    color=color,
-                    marker=marker,
-                    linestyle=linestyle,
-                    timing_fn=lambda dim, s=solve, b=backend, sc=scenario: (
-                        time_julia_solver(dim, s, ensemble_backend=b, scenario=sc)
-                    ),
-                )
+        def run_custom():
+            return case.solve_fn(
+                ode_fn_vdp_numba,
+                jac_fn_vdp_numba,
+                y0=y0_batch,
+                t_span=case.t_span,
+                params=custom_params,
+                **kwargs,
             )
-    return specs
+
+        return time_blocked_ms(run_custom, _N_RUNS)
+
+    assert case.solve_fn is not None
+    ode_fn, _ = vdp.make_system(n_osc)
+    y0_j = jnp.asarray(y0_batch)
+    p_j = jnp.asarray(params)
+
+    def run():
+        if case.mode == "rodas":
+            return case.solve_fn(
+                ode_fn,
+                y0_j,
+                case.t_span,
+                p_j,
+                lu_precision=case.lu_precision,
+                **kwargs,
+            )
+        return case.solve_fn(
+            ode_fn,
+            y0=y0_j,
+            t_span=case.t_span,
+            params=p_j,
+            **kwargs,
+        )
+
+    return time_blocked_ms(run, _N_RUNS)
 
 
-def collect_timing(spec: SolverSpec, dim: int):
+def collect_timing(case: Case, dim: int, scenario: str):
     return collect_timed_timing(
-        spec.label,
+        case.label,
         f"dim={dim:>4}",
-        lambda: spec.timing_fn(dim),
+        lambda: time_case(case, dim, scenario=scenario),
         label_width=28,
     )
 
 
 _Row = tuple[str, str, int, float | None]
-
-
-def drop_none(rows: list[_Row], solver_key: str) -> tuple[list[int], list[float]]:
-    pairs = [
-        (dim, ms) for key, _, dim, ms in rows if key == solver_key and ms is not None
-    ]
-    if not pairs:
-        return [], []
-    dims, times = zip(*pairs)
-    return list(dims), list(times)
 
 
 def _migrate_cache(cache: dict) -> dict:
@@ -303,24 +271,24 @@ def _migrate_cache(cache: dict) -> dict:
 
 
 def run_benchmarks(
-    specs: list[SolverSpec], gpu_name: str, cache: dict, scenario: str
+    cases: Sequence[Case], gpu_name: str, cache: dict, scenario: str
 ) -> list[_Row]:
     scenario_cache = cache.setdefault(gpu_name, {}).setdefault(scenario, {})
     rows: list[_Row] = []
-    for spec in specs:
-        print(f"\n{spec.label}:")
-        solver_cache = scenario_cache.setdefault(spec.key, {})
+    for case in cases:
+        print(f"\n{case.label}:")
+        solver_cache = scenario_cache.setdefault(case.key, {})
         for dim in _DIMENSIONS:
             dim_key = str(dim)
             if dim_key in solver_cache:
                 ms = solver_cache[dim_key]
                 ms_text = format_cached_timing(ms)
-                print(f"  {spec.label:<28} dim={dim:>4} ... (cached) {ms_text}")
+                print(f"  {case.label:<28} dim={dim:>4} ... (cached) {ms_text}")
             else:
-                ms = collect_timing(spec, dim)
+                ms = collect_timing(case, dim, scenario)
                 solver_cache[dim_key] = ms
                 save_cache(_CACHE_PATH, cache)
-            rows.append((spec.key, spec.label, dim, timing_value_or_none(ms)))
+            rows.append((case.key, case.label, dim, timing_value_or_none(ms)))
         print()
     return rows
 
@@ -335,23 +303,23 @@ def save_csv(rows: list[_Row], path: Path) -> None:
 
 def plot(
     rows: list[_Row],
-    specs: list[SolverSpec],
+    cases: Sequence[Case],
     gpu_name: str,
     output_path: Path,
     scenario: str,
 ) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
-    for spec in specs:
-        dims, times_ms = drop_none(rows, spec.key)
+    for case in cases:
+        dims, times_ms = drop_none_rows(rows, case.key)
         if not dims:
             continue
         ax.plot(
             dims,
             times_ms,
-            marker=spec.marker,
-            color=spec.color,
-            linestyle=spec.linestyle,
-            label=spec.label,
+            marker=case.marker,
+            color=case.color,
+            linestyle=case.linestyle,
+            label=case.label,
         )
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -385,11 +353,10 @@ def main() -> None:
 
     for scenario in vdp.SCENARIOS:
         print(f"\n=== Scenario: {scenario} ===\n")
-        specs = make_solver_specs(scenario)
-        rows = run_benchmarks(specs, gpu_name, cache, scenario)
+        rows = run_benchmarks(CASES, gpu_name, cache, scenario)
         csv_path, plot_path = _scenario_output_paths(gpu_name, scenario)
         save_csv(rows, csv_path)
-        plot(rows, specs, gpu_name, plot_path, scenario)
+        plot(rows, CASES, gpu_name, plot_path, scenario)
 
 
 if __name__ == "__main__":
