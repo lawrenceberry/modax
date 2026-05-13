@@ -76,7 +76,6 @@ class Case(BenchmarkCase):
 CASES: tuple[Case, ...] = (
     Case(
         key="local_rodas5_fp32_lu",
-        label="my rodas5 fp32 LU",
         color="#2b7be0",
         marker="o",
         solve_fn=rodas5_solve,
@@ -87,7 +86,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="local_rodas5_fp64_lu",
-        label="my rodas5 fp64 LU",
         color="#e02b2b",
         marker="D",
         solve_fn=rodas5_solve,
@@ -98,7 +96,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="rodas5ckn",
-        label="numba-cuda rodas5",
         color="#f0a202",
         marker="P",
         solve_fn=rodas5ckn_solve,
@@ -110,7 +107,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="diffrax_kvaerno5",
-        label="diffrax kvaerno5",
         color="#2ba84a",
         marker="s",
         solve_fn=diffrax_kvaerno5_solve,
@@ -121,7 +117,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="julia_rodas5_EnsembleGPUArray",
-        label="julia rodas5 array",
         color="#9b59b6",
         marker="^",
         solve_fn=julia_rodas5_solve,
@@ -134,7 +129,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="julia_rodas5_EnsembleGPUKernel",
-        label="julia rodas5 kernel",
         color="#9b59b6",
         marker="v",
         linestyle="--",

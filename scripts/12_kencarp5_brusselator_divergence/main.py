@@ -79,18 +79,20 @@ _CSV_FIELDS = (
 @dataclass(frozen=True)
 class Case:
     key: str
-    label: str
     color: str
     marker: str
     mode: str  # "stats" | "timing" | "julia"
     linear: bool | None = None
     ensemble_backend: str | None = None
 
+    @property
+    def label(self) -> str:
+        return self.key
+
 
 CASES = (
     Case(
         "local_kencarp5_linear",
-        "my kencarp5 linear=True",
         "#2b7be0",
         "o",
         "stats",
@@ -98,7 +100,6 @@ CASES = (
     ),
     Case(
         "local_kencarp5_newton",
-        "my kencarp5 linear=False",
         "#e02b2b",
         "D",
         "stats",
@@ -106,14 +107,12 @@ CASES = (
     ),
     Case(
         "diffrax_kencarp5",
-        "diffrax kencarp5",
         "#2ba84a",
         "s",
         "timing",
     ),
     Case(
         "kencarp5ckn_linear",
-        "numba-cuda kencarp5 linear=True",
         "#f0a202",
         "P",
         "kencarp5ckn",
@@ -121,7 +120,6 @@ CASES = (
     ),
     Case(
         "kencarp5ckn_newton",
-        "numba-cuda kencarp5 linear=False",
         "#d35400",
         "X",
         "kencarp5ckn",
@@ -129,7 +127,6 @@ CASES = (
     ),
     Case(
         "local_rodas5_fp64_lu",
-        "my rodas5 fp64 LU",
         "#00a6a6",
         "v",
         "timing",
@@ -139,7 +136,6 @@ CASES = (
     # block at top of reference/solvers/julia/run_solver.jl.
     Case(
         "julia_kencarp5_EnsembleGPUArray",
-        "julia kencarp5 GPUArray (fully-implicit)",
         "#9b59b6",
         "^",
         "julia",

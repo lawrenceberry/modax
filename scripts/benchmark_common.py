@@ -26,10 +26,13 @@ class BenchmarkTimeoutError(TimeoutError):
 @dataclass(frozen=True, kw_only=True)
 class BenchmarkCase:
     key: str
-    label: str
     color: str
     marker: str
     linestyle: str = "-"
+
+    @property
+    def label(self) -> str:
+        return self.key
 
 
 def timeout_cache_entry() -> dict[str, str]:

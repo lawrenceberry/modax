@@ -81,7 +81,6 @@ class Case(BenchmarkCase):
 CASES: tuple[Case, ...] = (
     Case(
         key="local_tsit5",
-        label="modax tsit5-jax",
         color="#2b7be0",
         marker="o",
         linestyle="-",
@@ -93,7 +92,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="tsit5ckn",
-        label="modax tsit5-numba",
         color="#f0a202",
         marker="P",
         linestyle="-",
@@ -106,7 +104,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="diffrax_tsit5",
-        label="diffrax tsit5",
         color="#2ba84a",
         marker="s",
         linestyle="-",
@@ -118,7 +115,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="julia_tsit5_EnsembleGPUArray",
-        label="julia tsit5 array",
         color="#9b59b6",
         marker="^",
         linestyle="-",
@@ -133,7 +129,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="julia_tsit5_EnsembleGPUKernel",
-        label="julia tsit5 kernel",
         color="#9b59b6",
         marker="v",
         linestyle="--",

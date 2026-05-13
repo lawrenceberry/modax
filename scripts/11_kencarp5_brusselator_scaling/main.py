@@ -86,7 +86,6 @@ class Case(BenchmarkCase):
 CASES: tuple[Case, ...] = (
     Case(
         key="local_kencarp5_linear",
-        label="my kencarp5 linear=True",
         color="#2b7be0",
         marker="o",
         solve_fn=kencarp5_solve,
@@ -99,7 +98,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="local_kencarp5_newton",
-        label="my kencarp5 linear=False",
         color="#e02b2b",
         marker="D",
         solve_fn=kencarp5_solve,
@@ -112,7 +110,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="kencarp5ckn_linear",
-        label="numba-cuda kencarp5 linear=True",
         color="#f0a202",
         marker="P",
         solve_fn=kencarp5ckn_solve,
@@ -126,7 +123,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="kencarp5ckn_newton",
-        label="numba-cuda kencarp5 linear=False",
         color="#d35400",
         marker="X",
         solve_fn=kencarp5ckn_solve,
@@ -140,7 +136,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="local_rodas5_fp64_lu",
-        label="my rodas5 fp64 LU",
         color="#00a6a6",
         marker="v",
         linestyle="--",
@@ -153,7 +148,6 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="diffrax_kencarp5",
-        label="diffrax kencarp5",
         color="#2ba84a",
         marker="s",
         solve_fn=diffrax_kencarp5_solve,
@@ -167,7 +161,6 @@ CASES: tuple[Case, ...] = (
     # row is fully implicit rather than IMEX.
     Case(
         key="julia_kencarp5_EnsembleGPUArray",
-        label="julia kencarp5 (fully-implicit) array",
         color="#9b59b6",
         marker="^",
         solve_fn=julia_kencarp5_solve,

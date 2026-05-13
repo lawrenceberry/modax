@@ -86,20 +86,22 @@ _CSV_FIELDS = (
 @dataclass(frozen=True)
 class Case:
     key: str
-    label: str
     color: str
     marker: str
     mode: str
     ensemble_backend: str | None = None
     sort_by_steps: bool = False
 
+    @property
+    def label(self) -> str:
+        return self.key
+
 
 CASES = (
-    Case("tsit5", "JAX Tsit5", "#2b7be0", "o", "stats"),
-    Case("tsit5ckn", "numba-cuda Tsit5", "#f0a202", "s", "stats"),
+    Case("tsit5", "#2b7be0", "o", "stats"),
+    Case("tsit5ckn", "#f0a202", "s", "stats"),
     Case(
         "tsit5ckn_sorted",
-        "numba-cuda Tsit5 sorted",
         "#f0a202",
         "P",
         "stats",
@@ -116,7 +118,6 @@ CASES = (
     # ),
     Case(
         "julia_tsit5_EnsembleGPUKernel",
-        "Julia Tsit5 GPUKernel",
         "#d35400",
         "v",
         "julia",
@@ -124,7 +125,6 @@ CASES = (
     ),
     Case(
         "julia_tsit5_EnsembleGPUKernel_sorted",
-        "Julia Tsit5 GPUKernel sorted",
         "#d35400",
         "X",
         "julia",

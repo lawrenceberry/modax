@@ -78,20 +78,22 @@ _CSV_FIELDS = (
 @dataclass(frozen=True)
 class Case:
     key: str
-    label: str
     color: str
     marker: str
     mode: str
     ensemble_backend: str | None = None
     sort_by_steps: bool = False
 
+    @property
+    def label(self) -> str:
+        return self.key
+
 
 CASES = (
-    Case("rodas5_fp32_lu", "JAX Rodas5 fp32 LU", "#2b7be0", "o", "stats"),
-    Case("rodas5ckn", "numba-cuda Rodas5", "#f0a202", "s", "stats"),
+    Case("rodas5_fp32_lu", "#2b7be0", "o", "stats"),
+    Case("rodas5ckn", "#f0a202", "s", "stats"),
     Case(
         "rodas5ckn_sorted",
-        "numba-cuda Rodas5 sorted",
         "#f0a202",
         "P",
         "stats",
@@ -100,7 +102,6 @@ CASES = (
     # Case("diffrax_kvaerno5", "Diffrax Kvaerno5", "#2ba84a", "^", "timing"),
     Case(
         "julia_rodas5_EnsembleGPUArray",
-        "Julia Rodas5 GPUArray",
         "#9b59b6",
         "D",
         "julia",
