@@ -38,8 +38,6 @@ Usage:
 """
 
 import csv
-import json
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -53,6 +51,17 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.systems.python import robertson
+from scripts.benchmark_common import (
+    TIMEOUT_ERROR,
+    BenchmarkTimeoutError,
+    get_gpu_name,
+    gpu_slug,
+    is_timeout,
+    load_cache,
+    save_cache,
+    timed_solve,
+    timeout_cache_entry,
+)
 from solvers.rodas5 import solve as rodas5_solve
 
 jax.config.update("jax_enable_x64", True)
@@ -118,44 +127,6 @@ _CSV_FIELDS = (
     "max_batch_loop_iterations",
     "wasted_lane_iteration_ratio",
 )
-
-
-def get_gpu_name() -> str:
-    try:
-        out = (
-            subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                text=True,
-            )
-            .strip()
-            .splitlines()[0]
-            .strip()
-        )
-        if out:
-            return out
-    except Exception:
-        pass
-    try:
-        devices = jax.devices("gpu")
-        if devices:
-            return devices[0].device_kind
-    except Exception:
-        pass
-    return "unknown_GPU"
-
-
-def gpu_slug(name: str) -> str:
-    return name.replace(" ", "_").replace("/", "-")
-
-
-def load_cache() -> dict:
-    if _CACHE_PATH.exists():
-        return json.loads(_CACHE_PATH.read_text())
-    return {}
-
-
-def save_cache(cache: dict) -> None:
-    _CACHE_PATH.write_text(json.dumps(cache, indent=2))
 
 
 def make_initial_conditions(
@@ -274,7 +245,12 @@ def collect_row(
         flush=True,
     )
     try:
-        ms, stats = time_solve_with_stats(y0, scenario.params, batch_size)
+        ms, stats = timed_solve(
+            lambda: time_solve_with_stats(y0, scenario.params, batch_size)
+        )
+    except BenchmarkTimeoutError:
+        print(TIMEOUT_ERROR)
+        return timeout_cache_entry()
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
@@ -296,23 +272,34 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
         base_y0 = make_initial_conditions(scenario, _N_TRAJ)
         case_key = f"{scenario.key}_{grouping.key}"
         case_cache = gpu_cache.setdefault(case_key, {})
-        y0 = order_initial_conditions(base_y0, scenario, grouping)
         print(f"{scenario.label} / {grouping.label}:")
+        try:
+            y0 = timed_solve(
+                lambda: order_initial_conditions(base_y0, scenario, grouping)
+            )
+        except BenchmarkTimeoutError:
+            print(f"  ordering ... {TIMEOUT_ERROR}")
+            for bs in _BATCH_SIZES:
+                case_cache.setdefault(str(int(bs)), timeout_cache_entry())
+            save_cache(_CACHE_PATH, cache)
+            print()
+            continue
         for bs in _BATCH_SIZES:
             bs_key = str(int(bs))
             cached = case_cache.get(bs_key)
-            if is_complete_row(cached):
+            if is_complete_row(cached) or is_timeout(cached):
                 row = cached
+                text = TIMEOUT_ERROR if is_timeout(row) else format_stats(row)
                 print(
                     f"  {scenario.label:<12} {grouping.label:<6} "
                     f"batch_size={bs:>6} ... (cached) "
-                    f"{format_stats(row)}"
+                    f"{text}"
                 )
             else:
                 row = collect_row(gpu_name, scenario, grouping, y0, int(bs))
                 case_cache[bs_key] = row
-                save_cache(cache)
-            if row is not None:
+                save_cache(_CACHE_PATH, cache)
+            if row is not None and not is_timeout(row):
                 rows.append(row)
         print()
     return rows
@@ -395,7 +382,7 @@ def main() -> None:
     slug = gpu_slug(gpu_name)
     print(f"GPU: {gpu_name}\n")
 
-    cache = load_cache()
+    cache = load_cache(_CACHE_PATH)
     rows = run_benchmarks(gpu_name, cache)
 
     csv_path = _SCRIPT_DIR / f"results-{slug}.csv"

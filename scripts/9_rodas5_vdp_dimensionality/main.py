@@ -30,11 +30,14 @@ from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_
 from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
 from reference.systems.python import vdp
 from scripts.benchmark_common import (
+    collect_timed_timing,
+    format_cached_timing,
     get_gpu_name,
     gpu_slug,
     load_cache,
     save_cache,
     time_blocked,
+    timing_value_or_none,
 )
 from solvers.rodas5 import solve as rodas5_solve
 from solvers.rodas5ckn import solve as rodas5ckn_solve
@@ -261,15 +264,13 @@ def make_solver_specs(scenario: str) -> list[SolverSpec]:
     return specs
 
 
-def collect_timing(spec: SolverSpec, dim: int) -> float | None:
-    print(f"  {spec.label:<28} dim={dim:>4} ...", end=" ", flush=True)
-    try:
-        ms = spec.timing_fn(dim)
-    except Exception as exc:
-        print(f"FAILED ({exc})")
-        return None
-    print(f"{ms:.1f} ms")
-    return ms
+def collect_timing(spec: SolverSpec, dim: int):
+    return collect_timed_timing(
+        spec.label,
+        f"dim={dim:>4}",
+        lambda: spec.timing_fn(dim),
+        label_width=28,
+    )
 
 
 _Row = tuple[str, str, int, float | None]
@@ -307,13 +308,13 @@ def run_benchmarks(
             dim_key = str(dim)
             if dim_key in solver_cache:
                 ms = solver_cache[dim_key]
-                ms_text = f"{ms:.1f} ms" if ms is not None else "FAILED"
+                ms_text = format_cached_timing(ms)
                 print(f"  {spec.label:<28} dim={dim:>4} ... (cached) {ms_text}")
             else:
                 ms = collect_timing(spec, dim)
                 solver_cache[dim_key] = ms
                 save_cache(_CACHE_PATH, cache)
-            rows.append((spec.key, spec.label, dim, ms))
+            rows.append((spec.key, spec.label, dim, timing_value_or_none(ms)))
         print()
     return rows
 

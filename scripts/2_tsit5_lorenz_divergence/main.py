@@ -25,11 +25,16 @@ from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
 from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
 from reference.systems.python import lorenz
 from scripts.benchmark_common import (
+    TIMEOUT_ERROR,
+    BenchmarkTimeoutError,
     get_gpu_name,
+    is_timeout,
     load_cache,
     output_paths,
     save_cache,
     time_blocked,
+    timed_solve,
+    timeout_cache_entry,
 )
 from solvers.tsit5 import solve as tsit5_solve
 from solvers.tsit5ckn import prepare_solve as tsit5ckn_prepare_solve
@@ -274,6 +279,8 @@ def is_complete_row(value) -> bool:
 
 
 def is_current_cached_row(value, solver: SolverSpec) -> bool:
+    if is_timeout(value):
+        return True
     if not is_complete_row(value):
         return False
     if solver.mode == "julia":
@@ -292,40 +299,51 @@ def collect_row(
         end=" ",
         flush=True,
     )
-    y0, params = make_data(divergence)
-    if solver.sort_by_steps:
-        y0, params, sorted_stats_summary = sort_by_attempted_steps(y0, params)
-        if stats_summary is None:
-            stats_summary = sorted_stats_summary
-    try:
+
+    def run():
+        local_stats_summary = stats_summary
+        y0, params = make_data(divergence)
+        if solver.sort_by_steps:
+            y0, params, sorted_stats_summary = sort_by_attempted_steps(y0, params)
+            if local_stats_summary is None:
+                local_stats_summary = sorted_stats_summary
         ms, stats = time_solve(solver, y0, params)
+
+        if stats is not None:
+            local_stats_summary = summarize_stats(stats)
+        elif local_stats_summary is None:
+            _, stats = solve_with_stats(_SOLVERS[0], y0, params)
+            jax.block_until_ready(stats)
+            local_stats_summary = summarize_stats(stats)
+
+        normalized = (
+            ms / local_stats_summary["mean_steps"]
+            if local_stats_summary["mean_steps"]
+            else 0.0
+        )
+        row = {
+            "gpu": gpu_name,
+            "solver_key": solver.key,
+            "solver": solver.label,
+            "divergence": float(divergence),
+            "dim": _DIM,
+            "ensemble_size": _N_TRAJ,
+            "solve_time_ms": float(ms),
+            **local_stats_summary,
+            "normalized_solve_time_ms_per_step": float(normalized),
+        }
+        if solver.mode == "julia":
+            row["julia_cache_version"] = _JULIA_CACHE_VERSION
+        return row
+
+    try:
+        row = timed_solve(run)
+    except BenchmarkTimeoutError:
+        print(TIMEOUT_ERROR, flush=True)
+        return timeout_cache_entry()
     except Exception as exc:
         print(f"FAILED ({exc})", flush=True)
         return None
-
-    if stats is not None:
-        stats_summary = summarize_stats(stats)
-    elif stats_summary is None:
-        _, stats = solve_with_stats(_SOLVERS[0], y0, params)
-        jax.block_until_ready(stats)
-        stats_summary = summarize_stats(stats)
-
-    normalized = (
-        ms / stats_summary["mean_steps"] if stats_summary["mean_steps"] else 0.0
-    )
-    row = {
-        "gpu": gpu_name,
-        "solver_key": solver.key,
-        "solver": solver.label,
-        "divergence": float(divergence),
-        "dim": _DIM,
-        "ensemble_size": _N_TRAJ,
-        "solve_time_ms": float(ms),
-        **stats_summary,
-        "normalized_solve_time_ms_per_step": float(normalized),
-    }
-    if solver.mode == "julia":
-        row["julia_cache_version"] = _JULIA_CACHE_VERSION
     print(format_row(row), flush=True)
     return row
 
@@ -341,9 +359,13 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
             cached = solver_cache.get(divergence_key)
             if is_current_cached_row(cached, solver):
                 row = cached
+                if is_timeout(row):
+                    text = TIMEOUT_ERROR
+                else:
+                    text = format_row(row)
                 print(
                     f"  {solver.label:<16} divergence={divergence:>4.2f} ... "
-                    f"(cached) {format_row(row)}",
+                    f"(cached) {text}",
                     flush=True,
                 )
             else:
@@ -354,7 +376,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                 row = collect_row(gpu_name, solver, divergence, stats_summary)
                 solver_cache[divergence_key] = row
                 save_cache(_CACHE_PATH, cache)
-            if row is not None:
+            if row is not None and not is_timeout(row):
                 rows.append(row)
     return rows
 

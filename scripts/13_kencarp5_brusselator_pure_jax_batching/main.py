@@ -14,7 +14,6 @@ Usage:
 """
 
 import csv
-import json
 import sys
 import time
 from dataclasses import dataclass
@@ -28,7 +27,18 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.systems.python import brusselator
-from scripts.benchmark_common import get_gpu_name, gpu_slug, time_blocked
+from scripts.benchmark_common import (
+    TIMEOUT_ERROR,
+    BenchmarkTimeoutError,
+    get_gpu_name,
+    gpu_slug,
+    is_timeout,
+    load_cache,
+    save_cache,
+    time_blocked,
+    timed_solve,
+    timeout_cache_entry,
+)
 from solvers.kencarp5 import solve as kencarp5_solve
 from solvers.kencarp5ckn import solve as kencarp5ckn_solve
 from solvers.rodas5 import solve as rodas5_solve
@@ -130,16 +140,6 @@ _CSV_FIELDS = (
     "max_batch_loop_iterations",
     "wasted_lane_iteration_ratio",
 )
-
-
-def load_cache() -> dict:
-    if _CACHE_PATH.exists():
-        return json.loads(_CACHE_PATH.read_text())
-    return {}
-
-
-def save_cache(cache: dict) -> None:
-    _CACHE_PATH.write_text(json.dumps(cache, indent=2))
 
 
 def make_initial_data(scenario: Scenario) -> tuple[np.ndarray, np.ndarray]:
@@ -330,7 +330,12 @@ def collect_row(
         flush=True,
     )
     try:
-        ms, stats = time_solve_with_stats(y0, params, batch_size, linear.linear)
+        ms, stats = timed_solve(
+            lambda: time_solve_with_stats(y0, params, batch_size, linear.linear)
+        )
+    except BenchmarkTimeoutError:
+        print(TIMEOUT_ERROR)
+        return timeout_cache_entry()
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
@@ -365,7 +370,10 @@ def collect_baseline_row(
         flush=True,
     )
     try:
-        ms, stats = time_baseline_solver(solver, y0, params)
+        ms, stats = timed_solve(lambda: time_baseline_solver(solver, y0, params))
+    except BenchmarkTimeoutError:
+        print(TIMEOUT_ERROR)
+        return timeout_cache_entry()
     except Exception as exc:
         print(f"FAILED ({exc})")
         return None
@@ -384,18 +392,42 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
     last_scenario_grouping: tuple[str, str] | None = None
+    failed_orderings: set[tuple[str, str]] = set()
     base_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     ordered_data: tuple[np.ndarray, np.ndarray] | None = None
     for scenario, grouping, linear in iter_cases():
         if scenario.key not in base_data:
             base_data[scenario.key] = make_initial_data(scenario)
         cur = (scenario.key, grouping.key)
+        if cur in failed_orderings:
+            continue
         if cur != last_scenario_grouping:
-            ordered_data = order_data(
-                *base_data[scenario.key], scenario, grouping
-            )
             last_scenario_grouping = cur
             print(f"{scenario.label} / {grouping.label}:")
+            try:
+                ordered_data = timed_solve(
+                    lambda: order_data(*base_data[scenario.key], scenario, grouping)
+                )
+            except BenchmarkTimeoutError:
+                print(f"  ordering ... {TIMEOUT_ERROR}")
+                failed_orderings.add(cur)
+                ordered_data = None
+                for linear_for_cache in _LINEAR_SETTINGS:
+                    timeout_case_cache = gpu_cache.setdefault(
+                        case_key(scenario, grouping, linear_for_cache), {}
+                    )
+                    for bs in _BATCH_SIZES:
+                        timeout_case_cache.setdefault(
+                            str(int(bs)), timeout_cache_entry()
+                        )
+                for solver in _BASELINE_SOLVERS:
+                    gpu_cache.setdefault(
+                        baseline_case_key(scenario, grouping, solver),
+                        timeout_cache_entry(),
+                    )
+                save_cache(_CACHE_PATH, cache)
+                print()
+                continue
 
         assert ordered_data is not None
         y0, params = ordered_data
@@ -404,38 +436,40 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
         for bs in _BATCH_SIZES:
             bs_key = str(int(bs))
             cached = case_cache.get(bs_key)
-            if is_complete_row(cached):
+            if is_complete_row(cached) or is_timeout(cached):
                 row = cached
+                text = TIMEOUT_ERROR if is_timeout(row) else format_stats(row)
                 print(
                     f"  {scenario.label:<14} {grouping.label:<6} "
                     f"{linear.label:<14} batch_size={bs:>6} ... (cached) "
-                    f"{format_stats(row)}"
+                    f"{text}"
                 )
             else:
                 row = collect_row(
                     gpu_name, scenario, grouping, linear, y0, params, int(bs)
                 )
                 case_cache[bs_key] = row
-                save_cache(cache)
-            if row is not None:
+                save_cache(_CACHE_PATH, cache)
+            if row is not None and not is_timeout(row):
                 rows.append(row)
         if linear.key == _LINEAR_SETTINGS[-1].key:
             for solver in _BASELINE_SOLVERS:
                 bkey = baseline_case_key(scenario, grouping, solver)
                 cached = gpu_cache.get(bkey)
-                if is_complete_row(cached):
+                if is_complete_row(cached) or is_timeout(cached):
                     row = cached
+                    text = TIMEOUT_ERROR if is_timeout(row) else format_stats(row)
                     print(
                         f"  {scenario.label:<14} {grouping.label:<6} "
-                        f"{solver.label:<32} ... (cached) {format_stats(row)}"
+                        f"{solver.label:<32} ... (cached) {text}"
                     )
                 else:
                     row = collect_baseline_row(
                         gpu_name, scenario, grouping, solver, y0, params
                     )
                     gpu_cache[bkey] = row
-                    save_cache(cache)
-                if row is not None:
+                    save_cache(_CACHE_PATH, cache)
+                if row is not None and not is_timeout(row):
                     rows.append(row)
         print()
     return rows
@@ -545,7 +579,7 @@ def main() -> None:
     slug = gpu_slug(gpu_name)
     print(f"GPU: {gpu_name}\n")
 
-    cache = load_cache()
+    cache = load_cache(_CACHE_PATH)
     rows = run_benchmarks(gpu_name, cache)
 
     csv_path = _SCRIPT_DIR / f"results-{slug}.csv"

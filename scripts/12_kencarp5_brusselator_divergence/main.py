@@ -26,11 +26,16 @@ from reference.solvers.python.diffrax_kencarp5 import solve as diffrax_kencarp5_
 from reference.solvers.python.julia_kencarp5 import solve as julia_kencarp5_solve
 from reference.systems.python import brusselator
 from scripts.benchmark_common import (
+    TIMEOUT_ERROR,
+    BenchmarkTimeoutError,
     get_gpu_name,
+    is_timeout,
     load_cache,
     output_paths,
     save_cache,
     time_blocked,
+    timed_solve,
+    timeout_cache_entry,
 )
 from solvers.kencarp5 import solve as kencarp5_solve
 from solvers.kencarp5ckn import solve as kencarp5ckn_solve
@@ -288,35 +293,45 @@ def collect_row(
         end=" ",
         flush=True,
     )
-    y0, params = make_data(divergence)
-    try:
+
+    def run():
+        y0, params = make_data(divergence)
         ms, stats = time_solve(solver, y0, params)
+
+        local_stats_summary = stats_summary
+        if stats is not None:
+            local_stats_summary = summarize_stats(stats)
+        elif local_stats_summary is None:
+            _, stats = solve_with_stats(True, y0, params)
+            jax.block_until_ready(stats)
+            local_stats_summary = summarize_stats(stats)
+
+        normalized = (
+            ms / local_stats_summary["mean_steps"]
+            if local_stats_summary["mean_steps"]
+            else 0.0
+        )
+        return {
+            "gpu": gpu_name,
+            "solver_key": solver.key,
+            "solver": solver.label,
+            "divergence": float(divergence),
+            "dim": _DIM,
+            "n_grid": _N_GRID,
+            "ensemble_size": _ENSEMBLE_SIZE,
+            "solve_time_ms": float(ms),
+            **local_stats_summary,
+            "normalized_solve_time_ms_per_step": float(normalized),
+        }
+
+    try:
+        row = timed_solve(run)
+    except BenchmarkTimeoutError:
+        print(TIMEOUT_ERROR, flush=True)
+        return timeout_cache_entry()
     except Exception as exc:
         print(f"FAILED ({exc})", flush=True)
         return None
-
-    if stats is not None:
-        stats_summary = summarize_stats(stats)
-    elif stats_summary is None:
-        _, stats = solve_with_stats(True, y0, params)
-        jax.block_until_ready(stats)
-        stats_summary = summarize_stats(stats)
-
-    normalized = (
-        ms / stats_summary["mean_steps"] if stats_summary["mean_steps"] else 0.0
-    )
-    row = {
-        "gpu": gpu_name,
-        "solver_key": solver.key,
-        "solver": solver.label,
-        "divergence": float(divergence),
-        "dim": _DIM,
-        "n_grid": _N_GRID,
-        "ensemble_size": _ENSEMBLE_SIZE,
-        "solve_time_ms": float(ms),
-        **stats_summary,
-        "normalized_solve_time_ms_per_step": float(normalized),
-    }
     print(format_row(row), flush=True)
     return row
 
@@ -329,9 +344,6 @@ def _jax_warmup() -> None:
 
 
 def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
-    print("Warming up JAX solver...", end=" ", flush=True)
-    _jax_warmup()
-    print("done.", flush=True)
     gpu_cache = cache.setdefault(gpu_name, {})
     rows: list[dict] = []
     for solver in _SOLVERS:
@@ -340,11 +352,12 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
         for divergence in _DIVERGENCES:
             divergence_key = f"{divergence:.6g}"
             cached = solver_cache.get(divergence_key)
-            if is_complete_row(cached):
+            if is_complete_row(cached) or is_timeout(cached):
                 row = cached
+                text = TIMEOUT_ERROR if is_timeout(row) else format_row(row)
                 print(
                     f"  {solver.label:<28} divergence={divergence:>4.2f} ... "
-                    f"(cached) {format_row(row)}",
+                    f"(cached) {text}",
                     flush=True,
                 )
             else:
@@ -357,7 +370,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                 row = collect_row(gpu_name, solver, divergence, stats_summary)
                 solver_cache[divergence_key] = row
                 save_cache(_CACHE_PATH, cache)
-            if row is not None:
+            if row is not None and not is_timeout(row):
                 rows.append(row)
     return rows
 

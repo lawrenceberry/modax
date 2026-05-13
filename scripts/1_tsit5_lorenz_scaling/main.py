@@ -25,11 +25,14 @@ from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
 from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
 from reference.systems.python import lorenz
 from scripts.benchmark_common import (
+    collect_timed_timing,
+    format_cached_timing,
     get_gpu_name,
     gpu_slug,
     load_cache,
     save_cache,
     time_blocked,
+    timing_value_or_none,
 )
 from solvers.tsit5 import solve as tsit5_solve
 from solvers.tsit5ckn import solve as tsit5ckn_solve
@@ -187,15 +190,13 @@ def make_solver_specs() -> list[SolverSpec]:
     return specs
 
 
-def collect_timing(spec: SolverSpec, size: int, y0, params) -> float | None:
-    print(f"  {spec.label:<20} n={size:>7} ...", end=" ", flush=True)
-    try:
-        ms = spec.timing_fn(y0, params)
-    except Exception as exc:
-        print(f"FAILED ({exc})")
-        return None
-    print(f"{ms:.1f} ms")
-    return ms
+def collect_timing(spec: SolverSpec, size: int, y0, params):
+    return collect_timed_timing(
+        spec.label,
+        f"n={size:>7}",
+        lambda: spec.timing_fn(y0, params),
+        label_width=20,
+    )
 
 
 _Row = tuple[str, str, int, float | None]
@@ -229,14 +230,14 @@ def run_benchmarks(
                 size_key = str(size)
                 if size_key in solver_cache:
                     ms = solver_cache[size_key]
-                    ms_text = f"{ms:.1f} ms" if ms is not None else "FAILED"
+                    ms_text = format_cached_timing(ms)
                     print(f"  {spec.label:<20} n={size:>7} ... (cached) {ms_text}")
                 else:
                     y0, params = lorenz.make_scenario(scenario, size)
                     ms = collect_timing(spec, size, y0, params)
                     solver_cache[size_key] = ms
                     save_cache(_CACHE_PATH, cache)
-                rows.append((spec.key, spec.label, size, ms))
+                rows.append((spec.key, spec.label, size, timing_value_or_none(ms)))
             print()
         rows_by_scenario[scenario] = rows
     return rows_by_scenario
