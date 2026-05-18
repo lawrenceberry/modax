@@ -189,10 +189,10 @@
         "normalized_solve_time_ms_per_step": 0.4864246571612602
       }
     },
-    "tsit5ckn": {
+    "tsit5numba": {
       "0": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.0,
         "dim": 3,
@@ -209,7 +209,7 @@
       },
       "0.1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.1,
         "dim": 3,
@@ -226,7 +226,7 @@
       },
       "0.2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.2,
         "dim": 3,
@@ -243,7 +243,7 @@
       },
       "0.3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.3,
         "dim": 3,
@@ -260,7 +260,7 @@
       },
       "0.4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.4,
         "dim": 3,
@@ -277,7 +277,7 @@
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.5,
         "dim": 3,
@@ -294,7 +294,7 @@
       },
       "0.6": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.6,
         "dim": 3,
@@ -311,7 +311,7 @@
       },
       "0.7": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.7,
         "dim": 3,
@@ -328,7 +328,7 @@
       },
       "0.8": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.8,
         "dim": 3,
@@ -345,7 +345,7 @@
       },
       "0.9": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 0.9,
         "dim": 3,
@@ -362,7 +362,7 @@
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn",
+        "solver_key": "tsit5numba",
         "solver": "numba-cuda Tsit5",
         "divergence": 1.0,
         "dim": 3,
@@ -378,10 +378,10 @@
         "normalized_solve_time_ms_per_step": 0.19271125616111037
       }
     },
-    "tsit5ckn_sorted": {
+    "tsit5numba_sorted": {
       "0": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.0,
         "dim": 3,
@@ -398,7 +398,7 @@
       },
       "0.1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.1,
         "dim": 3,
@@ -415,7 +415,7 @@
       },
       "0.2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.2,
         "dim": 3,
@@ -432,7 +432,7 @@
       },
       "0.3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.3,
         "dim": 3,
@@ -449,7 +449,7 @@
       },
       "0.4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.4,
         "dim": 3,
@@ -466,7 +466,7 @@
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.5,
         "dim": 3,
@@ -483,7 +483,7 @@
       },
       "0.6": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.6,
         "dim": 3,
@@ -500,7 +500,7 @@
       },
       "0.7": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.7,
         "dim": 3,
@@ -517,7 +517,7 @@
       },
       "0.8": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.8,
         "dim": 3,
@@ -534,7 +534,7 @@
       },
       "0.9": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 0.9,
         "dim": 3,
@@ -551,7 +551,7 @@
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "tsit5ckn_sorted",
+        "solver_key": "tsit5numba_sorted",
         "solver": "numba-cuda Tsit5 sorted",
         "divergence": 1.0,
         "dim": 3,

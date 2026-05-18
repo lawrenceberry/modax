@@ -35,8 +35,8 @@ from scripts.benchmark_common import (
     time_blocked,
     timeout_cache_entry,
 )
-from solvers.rodas5 import solve as rodas5_solve
-from solvers.rodas5ckn import solve as rodas5ckn_solve
+from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5numba import solve as rodas5numba_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -148,18 +148,18 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key.startswith("modax rodas5 numba"):
-        ckn_params = np.column_stack(
+        numba_params = np.column_stack(
             [
                 np.full(y0.shape[0], float(_N_OSC), dtype=np.float64),
                 params[:, 0],
             ]
         )
-        return rodas5ckn_solve(
+        return rodas5numba_solve(
             ode_fn_vdp_numba,
             jac_fn_vdp_numba,
             y0=y0,
             t_span=_T_SPAN,
-            params=ckn_params,
+            params=numba_params,
             return_stats=True,
             **_SOLVER_KWARGS,
         )

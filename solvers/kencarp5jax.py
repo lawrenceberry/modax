@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from solvers._jax_solver_common import normalize_inputs, solve_adaptive_ensemble
+from solvers._jax_common import normalize_inputs, solve_adaptive_ensemble
 
 # fmt: off
 _GAMMA = 41.0 / 200.0

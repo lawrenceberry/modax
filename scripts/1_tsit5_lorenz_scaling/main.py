@@ -37,8 +37,8 @@ from scripts.benchmark_common import (
     time_blocked_ms,
     timing_value_or_none,
 )
-from solvers.tsit5 import solve as tsit5_solve
-from solvers.tsit5ckn import solve as tsit5ckn_solve
+from solvers.tsit5jax import solve as tsit5_solve
+from solvers.tsit5numba import solve as tsit5numba_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -95,7 +95,7 @@ CASES: tuple[Case, ...] = (
         color="#f0a202",
         marker="P",
         linestyle="-",
-        solve_fn=tsit5ckn_solve,
+        solve_fn=tsit5numba_solve,
         ode_fn=lorenz.ode_fn_numba_cuda,
         y0=None,
         t_span=_T_SPAN,

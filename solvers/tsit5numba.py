@@ -13,16 +13,14 @@ import jax.numpy as jnp
 import numpy as np
 from numba import cuda, types
 
-from solvers._ckn_common import (
-    CknWorkspace,
-    PreparedCknSolve,
+from solvers._numba_common import (
+    NumbaWorkspace,
+    PreparedNumbaSolve,
     copy_workspace_inputs,
     initial_step,
     jax_stats,
-    numpy_stats,
-)
-from solvers._ckn_common import (
     normalize_inputs as _normalize_inputs,
+    numpy_stats,
 )
 from solvers._jax_numba_custom_call import (
     ABI_ARRAY,
@@ -105,12 +103,12 @@ def clear_caches() -> None:
 
 
 @dataclass
-class Workspace(CknWorkspace):
+class Workspace(NumbaWorkspace):
     work: list[Any]
 
 
 @dataclass(frozen=True)
-class PreparedSolve(PreparedCknSolve):
+class PreparedSolve(PreparedNumbaSolve):
     workspace: Workspace
 
 

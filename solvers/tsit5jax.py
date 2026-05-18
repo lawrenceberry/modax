@@ -14,7 +14,7 @@ import functools
 import jax
 import jax.numpy as jnp
 
-from solvers._jax_solver_common import normalize_inputs, solve_adaptive_ensemble
+from solvers._jax_common import normalize_inputs, solve_adaptive_ensemble
 
 # fmt: off
 _C2 = 161.0 / 1000.0

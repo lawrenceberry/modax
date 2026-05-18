@@ -53,7 +53,7 @@ from scripts.benchmark_common import (
     load_cache,
     save_cache,
 )
-from solvers.tsit5 import solve as tsit5_solve
+from solvers.tsit5jax import solve as tsit5_solve
 
 jax.config.update("jax_enable_x64", True)
 

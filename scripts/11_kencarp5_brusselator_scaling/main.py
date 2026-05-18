@@ -40,9 +40,9 @@ from scripts.benchmark_common import (
     time_blocked_ms,
     timing_value_or_none,
 )
-from solvers.kencarp5 import solve as kencarp5_solve
-from solvers.kencarp5ckn import solve as kencarp5ckn_solve
-from solvers.rodas5 import solve as rodas5_solve
+from solvers.kencarp5jax import solve as kencarp5_solve
+from solvers.kencarp5numba import solve as kencarp5numba_solve
+from solvers.rodas5jax import solve as rodas5_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -112,7 +112,7 @@ CASES: tuple[Case, ...] = (
         key="modax kencarp5 numba linear",
         color="#f0a202",
         marker="P",
-        solve_fn=kencarp5ckn_solve,
+        solve_fn=kencarp5numba_solve,
         explicit_ode_fn=brusselator.explicit_ode_fn_numba_cuda,
         implicit_ode_fn=brusselator.implicit_ode_fn_numba_cuda,
         implicit_jac_fn=brusselator.implicit_jac_fn_numba_cuda,
@@ -125,7 +125,7 @@ CASES: tuple[Case, ...] = (
         key="modax kencarp5 numba newton",
         color="#d35400",
         marker="X",
-        solve_fn=kencarp5ckn_solve,
+        solve_fn=kencarp5numba_solve,
         explicit_ode_fn=brusselator.explicit_ode_fn_numba_cuda,
         implicit_ode_fn=brusselator.implicit_ode_fn_numba_cuda,
         implicit_jac_fn=brusselator.implicit_jac_fn_numba_cuda,

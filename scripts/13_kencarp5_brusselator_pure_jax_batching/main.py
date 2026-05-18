@@ -36,9 +36,9 @@ from scripts.benchmark_common import (
     save_cache,
     time_blocked,
 )
-from solvers.kencarp5 import solve as kencarp5_solve
-from solvers.kencarp5ckn import solve as kencarp5ckn_solve
-from solvers.rodas5 import solve as rodas5_solve
+from solvers.kencarp5jax import solve as kencarp5_solve
+from solvers.kencarp5numba import solve as kencarp5numba_solve
+from solvers.rodas5jax import solve as rodas5_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -214,10 +214,10 @@ def summarize_custom_kernel_stats(stats: dict) -> dict[str, float | int]:
 def time_baseline_solver(
     solver: BaselineSolver, y0: np.ndarray, params: np.ndarray
 ) -> tuple[float, dict[str, float | int]]:
-    if solver.mode == "kencarp5ckn":
+    if solver.mode == "kencarp5numba":
         assert solver.linear is not None
         ms, result = time_blocked(
-            lambda: kencarp5ckn_solve(
+            lambda: kencarp5numba_solve(
                 brusselator.explicit_ode_fn_numba_cuda,
                 brusselator.implicit_ode_fn_numba_cuda,
                 brusselator.implicit_jac_fn_numba_cuda,

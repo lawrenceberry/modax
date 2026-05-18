@@ -10,7 +10,7 @@ import numpy as np
 
 
 @dataclass
-class CknWorkspace:
+class NumbaWorkspace:
     y0_dev: Any
     times_dev: Any
     params_dev: Any
@@ -21,7 +21,7 @@ class CknWorkspace:
 
 
 @dataclass(frozen=True)
-class PreparedCknSolve:
+class PreparedNumbaSolve:
     kernel: Any
     workspace: Any
     dt0: np.float64

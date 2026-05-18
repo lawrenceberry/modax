@@ -1,16 +1,16 @@
 import jax.numpy as jnp
 import pytest
 
-from solvers.kencarp5 import solve as kencarp5_solve
-from solvers.kencarp5ckn import solve as kencarp5ckn_solve
-from solvers.rodas5 import solve as rodas5_solve
-from solvers.rodas5ckn import solve as rodas5ckn_solve
-from solvers.tsit5 import solve as tsit5_solve
-from solvers.tsit5ckn import solve as tsit5ckn_solve
+from solvers.kencarp5jax import solve as kencarp5_solve
+from solvers.kencarp5numba import solve as kencarp5numba_solve
+from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5numba import solve as rodas5numba_solve
+from solvers.tsit5jax import solve as tsit5_solve
+from solvers.tsit5numba import solve as tsit5numba_solve
 from tests.benchmark_helpers import (
     assert_case_output,
     benchmark_solve,
-    ckn_callbacks,
+    numba_callbacks,
     parametrize_system_cases,
 )
 
@@ -31,11 +31,11 @@ def test_tsit5_reference_system(benchmark, case):
 
 
 @parametrize_system_cases
-def test_tsit5ckn_reference_system(benchmark, case):
-    ode_fn, _, _, _, _ = ckn_callbacks(case.name)
+def test_tsit5numba_reference_system(benchmark, case):
+    ode_fn, _, _, _, _ = numba_callbacks(case.name)
     result = benchmark_solve(
         benchmark,
-        lambda: tsit5ckn_solve(
+        lambda: tsit5numba_solve(
             ode_fn,
             case.y0,
             case.t_span,
@@ -64,11 +64,11 @@ def test_kencarp5_reference_system(benchmark, case):
 
 
 @parametrize_system_cases
-def test_kencarp5ckn_reference_system(benchmark, case):
-    _, explicit_fn, implicit_fn, implicit_jac_fn, _ = ckn_callbacks(case.name)
+def test_kencarp5numba_reference_system(benchmark, case):
+    _, explicit_fn, implicit_fn, implicit_jac_fn, _ = numba_callbacks(case.name)
     result = benchmark_solve(
         benchmark,
-        lambda: kencarp5ckn_solve(
+        lambda: kencarp5numba_solve(
             explicit_fn,
             implicit_fn,
             implicit_jac_fn,
@@ -100,11 +100,11 @@ def test_rodas5_reference_system(benchmark, case, lu_precision):
 
 
 @parametrize_system_cases
-def test_rodas5ckn_reference_system(benchmark, case):
-    ode_fn, _, _, _, jac_fn = ckn_callbacks(case.name)
+def test_rodas5numba_reference_system(benchmark, case):
+    ode_fn, _, _, _, jac_fn = numba_callbacks(case.name)
     result = benchmark_solve(
         benchmark,
-        lambda: rodas5ckn_solve(
+        lambda: rodas5numba_solve(
             ode_fn,
             jac_fn,
             case.y0,

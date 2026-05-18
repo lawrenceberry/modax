@@ -34,10 +34,10 @@ from scripts.benchmark_common import (
     time_blocked,
     timeout_cache_entry,
 )
-from solvers.rodas5 import solve as rodas5_solve
-from solvers.rodas5ckn import prepare_solve as rodas5ckn_prepare_solve
-from solvers.rodas5ckn import run_prepared as rodas5ckn_run_prepared
-from solvers.rodas5ckn import solve as rodas5ckn_solve
+from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5numba import prepare_solve as rodas5numba_prepare_solve
+from solvers.rodas5numba import run_prepared as rodas5numba_run_prepared
+from solvers.rodas5numba import solve as rodas5numba_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -153,7 +153,7 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key.startswith("modax rodas5 numba"):
-        return rodas5ckn_solve(
+        return rodas5numba_solve(
             robertson.ode_fn_numba_cuda,
             robertson.jac_fn_numba_cuda,
             y0=y0,
@@ -203,7 +203,7 @@ def time_solve(
         ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
         return ms, None
     if solver.key.startswith("modax rodas5 numba"):
-        prepared = rodas5ckn_prepare_solve(
+        prepared = rodas5numba_prepare_solve(
             robertson.ode_fn_numba_cuda,
             robertson.jac_fn_numba_cuda,
             y0=y0,
@@ -212,7 +212,7 @@ def time_solve(
             **_SOLVER_KWARGS,
         )
         ms, result = time_blocked(
-            lambda: rodas5ckn_run_prepared(
+            lambda: rodas5numba_run_prepared(
                 prepared,
                 return_stats=True,
                 copy_solution=False,

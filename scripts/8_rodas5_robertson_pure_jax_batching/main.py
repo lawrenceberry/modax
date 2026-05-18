@@ -59,7 +59,7 @@ from scripts.benchmark_common import (
     load_cache,
     save_cache,
 )
-from solvers.rodas5 import solve as rodas5_solve
+from solvers.rodas5jax import solve as rodas5_solve
 
 jax.config.update("jax_enable_x64", True)
 

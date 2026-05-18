@@ -15,7 +15,7 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 
-from solvers._jax_solver_common import normalize_inputs, solve_adaptive_ensemble
+from solvers._jax_common import normalize_inputs, solve_adaptive_ensemble
 
 # fmt: off
 # Rodas5 W-transformed coefficients

@@ -33,9 +33,9 @@ from scripts.benchmark_common import (
     time_blocked,
     timeout_cache_entry,
 )
-from solvers.tsit5 import solve as tsit5_solve
-from solvers.tsit5ckn import prepare_solve as tsit5ckn_prepare_solve
-from solvers.tsit5ckn import run_prepared as tsit5ckn_run_prepared
+from solvers.tsit5jax import solve as tsit5_solve
+from solvers.tsit5numba import prepare_solve as tsit5numba_prepare_solve
+from solvers.tsit5numba import run_prepared as tsit5numba_run_prepared
 
 jax.config.update("jax_enable_x64", True)
 
@@ -127,14 +127,14 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key.startswith("modax tsit5 numba"):
-        prepared = tsit5ckn_prepare_solve(
+        prepared = tsit5numba_prepare_solve(
             lorenz.ode_fn_numba_cuda,
             y0=y0,
             t_span=lorenz.TIMES,
             params=params,
             **_SOLVER_KWARGS,
         )
-        return tsit5ckn_run_prepared(
+        return tsit5numba_run_prepared(
             prepared,
             return_stats=True,
             copy_solution=False,
@@ -168,7 +168,7 @@ def time_solve(
         ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
         return ms, None
     if solver.key.startswith("modax tsit5 numba"):
-        prepared = tsit5ckn_prepare_solve(
+        prepared = tsit5numba_prepare_solve(
             lorenz.ode_fn_numba_cuda,
             y0=y0,
             t_span=lorenz.TIMES,
@@ -176,7 +176,7 @@ def time_solve(
             **_SOLVER_KWARGS,
         )
         ms, result = time_blocked(
-            lambda: tsit5ckn_run_prepared(
+            lambda: tsit5numba_run_prepared(
                 prepared,
                 return_stats=True,
                 copy_solution=False,

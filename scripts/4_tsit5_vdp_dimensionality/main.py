@@ -45,10 +45,10 @@ from scripts.benchmark_common import (
     time_blocked_ms,
     timing_value_or_none,
 )
-from solvers.tsit5 import solve as tsit5_solve
-from solvers.tsit5ckn import clear_caches as tsit5ckn_clear_caches
-from solvers.tsit5ckn import prepare_solve as tsit5ckn_prepare_solve
-from solvers.tsit5ckn import run_prepared as tsit5ckn_run_prepared
+from solvers.tsit5jax import solve as tsit5_solve
+from solvers.tsit5numba import clear_caches as tsit5numba_clear_caches
+from solvers.tsit5numba import prepare_solve as tsit5numba_prepare_solve
+from solvers.tsit5numba import run_prepared as tsit5numba_run_prepared
 
 jax.config.update("jax_enable_x64", True)
 
@@ -182,7 +182,7 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
                 params[:, 0],
             ]
         )
-        prepared = tsit5ckn_prepare_solve(
+        prepared = tsit5numba_prepare_solve(
             ode_fn_vdp_numba,
             y0=y0_batch,
             t_span=case.t_span,
@@ -191,14 +191,14 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
         )
 
         def run_custom():
-            return tsit5ckn_run_prepared(prepared, copy_solution=False)
+            return tsit5numba_run_prepared(prepared, copy_solution=False)
 
         try:
             return time_blocked_ms(run_custom, _N_RUNS)
         finally:
             # Release per-dimension workspaces and compiled kernels before the
             # next dimension allocates its own.
-            tsit5ckn_clear_caches()
+            tsit5numba_clear_caches()
 
     assert case.solve_fn is not None
     ode_fn, _ = vdp.make_system(n_osc, mu=_MU_NONSTIFF)

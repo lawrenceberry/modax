@@ -37,8 +37,8 @@ from scripts.benchmark_common import (
     time_blocked_ms,
     timing_value_or_none,
 )
-from solvers.rodas5 import solve as rodas5_solve
-from solvers.rodas5ckn import solve as rodas5ckn_solve
+from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5numba import solve as rodas5numba_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -98,7 +98,7 @@ CASES: tuple[Case, ...] = (
         key="modax rodas5 numba",
         color="#f0a202",
         marker="P",
-        solve_fn=rodas5ckn_solve,
+        solve_fn=rodas5numba_solve,
         ode_fn=robertson.ode_fn_numba_cuda,
         jac_fn=robertson.jac_fn_numba_cuda,
         t_span=_T_SPAN,

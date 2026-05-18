@@ -13,18 +13,16 @@ import numpy as np
 from numba import cuda, types
 from nvmath.device import LUPivotSolver
 
-from solvers._ckn_common import (
-    CknWorkspace,
-    PreparedCknSolve,
+from solvers._numba_common import (
+    NumbaWorkspace,
+    PreparedNumbaSolve,
     as_launch_block_dim,
     block_threads_x,
     copy_workspace_inputs,
     initial_step,
     jax_stats,
-    numpy_stats,
-)
-from solvers._ckn_common import (
     normalize_inputs as _normalize_inputs,
+    numpy_stats,
 )
 from solvers._jax_numba_custom_call import (
     ABI_ARRAY,
@@ -110,13 +108,13 @@ _WORKSPACE_CACHE: dict[tuple[int, int, int, int], object] = {}
 
 
 @dataclass
-class Workspace(CknWorkspace):
+class Workspace(NumbaWorkspace):
     work: list[Any]
     jac_dev: Any
 
 
 @dataclass(frozen=True)
-class PreparedSolve(PreparedCknSolve):
+class PreparedSolve(PreparedNumbaSolve):
     kernel: Any
     lu_solver: Any
     workspace: Workspace

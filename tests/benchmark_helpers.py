@@ -241,8 +241,8 @@ def assert_case_output(output, case: SystemCase):
     case.assert_solution(out, case)
 
 
-def ckn_callbacks(case_name: str):
-    return _CKN_CALLBACKS[case_name]
+def numba_callbacks(case_name: str):
+    return _NUMBA_CALLBACKS[case_name]
 
 
 @cuda.jit(device=True)
@@ -258,7 +258,7 @@ def _zero_jac_cuda(y, t, p, jac, i):
             jac[i, row, col] = 0.0
 
 
-_CKN_CALLBACKS = {
+_NUMBA_CALLBACKS = {
     "bateman": (
         bateman.ode_fn_numba_cuda,
         _zero_cuda,
