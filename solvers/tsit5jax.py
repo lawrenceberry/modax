@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 
 from solvers._jax_common import (
+    build_error_weights,
     make_custom_vmap_solver,
     normalize_inputs,
     solve_adaptive_ensemble,
@@ -76,6 +77,7 @@ _SAFETY = 0.9
 _FACTOR_MIN = 0.2
 _FACTOR_MAX = 10.0
 
+
 def solve(
     ode_fn,
     y0,
@@ -88,6 +90,8 @@ def solve(
     first_step=None,
     max_steps=100000,
     return_stats=False,
+    error_weights=None,
+    error_norm_fn=None,
 ):
     """Tsit5 ensemble solver for nonlinear ODEs."""
 
@@ -103,6 +107,8 @@ def solve(
             first_step=first_step,
             max_steps=max_steps,
             return_stats=return_stats,
+            error_weights=error_weights,
+            error_norm_fn=error_norm_fn,
         )
 
     return make_custom_vmap_solver(solve_impl, return_stats=return_stats)(
@@ -112,7 +118,13 @@ def solve(
 
 @functools.partial(
     jax.jit,
-    static_argnames=("ode_fn", "batch_size", "max_steps", "return_stats"),
+    static_argnames=(
+        "ode_fn",
+        "batch_size",
+        "max_steps",
+        "return_stats",
+        "error_norm_fn",
+    ),
 )
 def _solve_impl(
     ode_fn,
@@ -126,6 +138,8 @@ def _solve_impl(
     first_step=None,
     max_steps=100000,
     return_stats=False,
+    error_weights=None,
+    error_norm_fn=None,
 ):
     """Tsit5 ensemble solver implementation.
 
@@ -156,6 +170,17 @@ def _solve_impl(
     return_stats : bool
         If True, return ``(solution, stats)`` where ``stats`` contains
         step-count and lane-utilization diagnostics.
+    error_weights : array or None
+        Per-component weights for the step-size error norm, shape ``(n_vars,)``
+        or ``(N, n_vars)``. ``None`` (default) weights every component equally;
+        a weight of 0 excludes that component from step-size control. Passed
+        through to a custom ``error_norm_fn``.
+    error_norm_fn : callable or None
+        Custom error norm with signature ``error_norm_fn(y, y_new, err_est,
+        rtol, atol, error_weights) -> scalar``, where ``error_weights`` is the
+        per-trajectory row. Must be a traceable
+        JAX reduction returning a scalar where ``<= 1`` means "accept". ``None``
+        (default) uses the built-in weighted RMS norm.
 
     Returns
     -------
@@ -163,9 +188,10 @@ def _solve_impl(
         Solution at each save time for each trajectory. If ``return_stats`` is
         True, returns ``(solution, stats)``.
     """
-    y0_arr, times, params_arr, _, n_vars, _, dt0, bs, n_chunks = normalize_inputs(
+    y0_arr, times, params_arr, n, n_vars, _, dt0, bs, n_chunks = normalize_inputs(
         y0, t_span, params, first_step, batch_size
     )
+    error_weights_arr = build_error_weights(error_weights, n, n_vars)
 
     def step_factory(params_one):
         extra_init = (
@@ -238,4 +264,6 @@ def _solve_impl(
         safety=_SAFETY,
         factor_min=_FACTOR_MIN,
         factor_max=_FACTOR_MAX,
+        error_weights_arr=error_weights_arr,
+        error_norm_fn=error_norm_fn,
     )

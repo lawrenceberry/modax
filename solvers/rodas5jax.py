@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 
 from solvers._jax_common import (
+    build_error_weights,
     make_custom_vmap_solver,
     normalize_inputs,
     solve_adaptive_ensemble,
@@ -72,6 +73,8 @@ def solve(
     first_step=None,
     max_steps=100000,
     return_stats=False,
+    error_weights=None,
+    error_norm_fn=None,
 ):
     """Rodas5 ensemble solver for nonlinear ODEs."""
 
@@ -88,6 +91,8 @@ def solve(
             first_step=first_step,
             max_steps=max_steps,
             return_stats=return_stats,
+            error_weights=error_weights,
+            error_norm_fn=error_norm_fn,
         )
 
     return make_custom_vmap_solver(solve_impl, return_stats=return_stats)(
@@ -103,6 +108,7 @@ def solve(
         "batch_size",
         "max_steps",
         "return_stats",
+        "error_norm_fn",
     ),
 )
 def _solve_impl(
@@ -118,6 +124,8 @@ def _solve_impl(
     first_step=None,
     max_steps=100000,
     return_stats=False,
+    error_weights=None,
+    error_norm_fn=None,
 ):
     """Rodas5 ensemble solver implementation.
 
@@ -150,6 +158,18 @@ def _solve_impl(
     return_stats : bool
         If True, return ``(solution, stats)`` where ``stats`` contains raw
         per-lane step counters and per-batch loop diagnostics.
+    error_weights : array or None
+        Per-component weights for the step-size error norm, shape ``(n_vars,)``
+        or ``(N, n_vars)``. ``None`` (default) weights every component equally.
+        A weight of 0 excludes that component from step-size control. Consumed
+        by the default error norm and passed through to a custom
+        ``error_norm_fn``.
+    error_norm_fn : callable or None
+        Custom error norm with signature ``error_norm_fn(y, y_new, err_est,
+        rtol, atol, error_weights) -> scalar``, where ``error_weights`` is the
+        per-trajectory row. Must be a traceable
+        JAX reduction returning a scalar where ``<= 1`` means "accept". ``None``
+        (default) uses the built-in weighted RMS norm.
 
     Returns
     -------
@@ -161,9 +181,10 @@ def _solve_impl(
     jac_fn = jax.jacfwd(ode_fn, argnums=0)
     dT_fn = jax.jacfwd(ode_fn, argnums=1)
 
-    y0_arr, times, params_arr, _, n_vars, _, dt0, bs, n_chunks = normalize_inputs(
+    y0_arr, times, params_arr, n, n_vars, _, dt0, bs, n_chunks = normalize_inputs(
         y0, t_span, params, first_step, batch_size
     )
+    error_weights_arr = build_error_weights(error_weights, n, n_vars)
 
     eye = jnp.eye(n_vars, dtype=lu_dtype)
 
@@ -267,4 +288,6 @@ def _solve_impl(
         safety=0.9,
         factor_min=0.2,
         factor_max=6.0,
+        error_weights_arr=error_weights_arr,
+        error_norm_fn=error_norm_fn,
     )

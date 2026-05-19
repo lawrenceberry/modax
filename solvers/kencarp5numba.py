@@ -19,23 +19,26 @@ from solvers._jax_common import (
     normalize_y0_params,
     per_trajectory_stats_postprocess,
 )
-from solvers._numba_common import (
-    NumbaWorkspace,
-    PreparedNumbaSolve,
-    as_launch_block_dim,
-    block_threads_x,
-    copy_workspace_inputs,
-    initial_step,
-    jax_stats,
-    normalize_inputs as _normalize_inputs,
-    numpy_stats,
-)
 from solvers._jax_numba_custom_call import (
     ABI_ARRAY,
     ABI_SCALAR_F64,
     ABI_SCALAR_I32,
     ffi_abi_call,
     make_launch,
+)
+from solvers._numba_common import (
+    NumbaWorkspace,
+    PreparedNumbaSolve,
+    as_launch_block_dim,
+    block_threads_x,
+    build_error_weights,
+    copy_workspace_inputs,
+    initial_step,
+    jax_stats,
+    numpy_stats,
+)
+from solvers._numba_common import (
+    normalize_inputs as _normalize_inputs,
 )
 
 GAMMA = 41.0 / 200.0
@@ -66,6 +69,21 @@ C5 = 24.0 / 100.0
 C6 = 3.0 / 5.0
 C7 = 1.0
 
+
+@cuda.jit(device=True)
+def _default_err_contrib(y_old, y_new, err_est, rtol, atol, weight):
+    """Default per-component squared error contribution (weighted RMS).
+
+    Returns ``(weight * err_est / scale)**2`` for one solution component; the
+    kernel sums these over components and takes ``sqrt(sum / n_vars)``. With the
+    default unit weights this reproduces the standard ``atol + rtol*max(|y|)``
+    error norm exactly.
+    """
+    scale = atol + rtol * max(math.fabs(y_old), math.fabs(y_new))
+    r = weight * err_est / scale
+    return r * r
+
+
 SAFETY = 0.9
 FACTOR_MIN = 0.2
 FACTOR_MAX = 10.0
@@ -92,6 +110,7 @@ class Workspace(NumbaWorkspace):
     stage_fe_dev: Any
     stage_fi_dev: Any
     jac_dev: Any
+    weights_dev: Any
 
 
 @dataclass(frozen=True)
@@ -143,6 +162,7 @@ def get_workspace(
         stage_fe_dev=cuda.device_array((n, 8, n_vars), dtype=np.float64),
         stage_fi_dev=cuda.device_array((n, 8, n_vars), dtype=np.float64),
         jac_dev=cuda.device_array((n, n_vars, n_vars), dtype=np.float64),
+        weights_dev=cuda.device_array((n, n_vars), dtype=np.float64),
     )
     cache[key] = workspace
     return workspace
@@ -357,7 +377,9 @@ def _clear_jac(jac, i, n_vars):
 
 
 @functools.cache
-def _make_kernel(explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars: int):
+def _make_kernel(
+    explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars: int, err_contrib_fn
+):
     lu_solver = make_lu_solver(n_vars, batches_per_block=1)
     batches_per_block = int(lu_solver.batches_per_block)
 
@@ -377,6 +399,7 @@ def _make_kernel(explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars: int)
         rtol,
         atol,
         max_steps,
+        weights,
         hist,
         accepted_out,
         rejected_out,
@@ -610,9 +633,9 @@ def _make_kernel(explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars: int)
                         * _b_err(stage)
                         * (stage_fe[i, stage, j] + stage_fi[i, stage, j])
                     )
-                scale = atol + rtol * max(math.fabs(y[i, j]), math.fabs(y_new))
-                ratio = err_est / scale
-                err_norm_acc += ratio * ratio
+                err_norm_acc += err_contrib_fn(
+                    y[i, j], y_new, err_est, rtol, atol, weights[i, j]
+                )
                 if not math.isfinite(y_new) or not math.isfinite(err_est):
                     failed = True
             smem_delta[tx] = err_norm_acc
@@ -689,19 +712,25 @@ def prepare_solve(
     atol=1e-10,
     first_step=None,
     max_steps=100000,
+    error_weights=None,
+    err_contrib_fn=None,
 ):
+    if err_contrib_fn is None:
+        err_contrib_fn = _default_err_contrib
     y0_arr, times, params_arr, dt0 = _normalize_inputs(
         y0, t_span, params, first_step, solver_name="KenCarp5"
     )
     n, n_vars = y0_arr.shape
     n_save = times.shape[0]
     n_params = params_arr.shape[1]
+    weights_arr = build_error_weights(error_weights, n, n_vars)
 
     workspace = get_workspace(_WORKSPACE_CACHE, n, n_vars, n_save, n_params)
     copy_workspace_inputs(workspace, y0_arr, times, params_arr)
+    workspace.weights_dev.copy_to_device(weights_arr)
 
     kernel, lu_solver = _make_kernel(
-        explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars
+        explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars, err_contrib_fn
     )
     threads = as_launch_block_dim(lu_solver.block_dim)
     batches_per_block = int(lu_solver.batches_per_block)
@@ -732,6 +761,7 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
         prepared.rtol,
         prepared.atol,
         prepared.max_steps,
+        workspace.weights_dev,
         workspace.hist_dev,
         workspace.accepted_dev,
         workspace.rejected_dev,
@@ -769,9 +799,10 @@ def _make_jax_launch(
     n_vars: int,
     n_save: int,
     n_params: int,
+    err_contrib_fn,
 ):
     kernel, lu_solver = _make_kernel(
-        explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars
+        explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars, err_contrib_fn
     )
     f64_2d = types.float64[:, ::1]
     f64_1d = types.float64[::1]
@@ -786,6 +817,7 @@ def _make_jax_launch(
         types.float64,
         types.float64,
         types.int32,
+        f64_2d,
         f64_3d,
         i32_1d,
         i32_1d,
@@ -820,8 +852,23 @@ def solve(
     first_step=None,
     max_steps=100000,
     return_stats=False,
+    error_weights=None,
+    err_contrib_fn=None,
 ):
-    """JAX-callable KenCarp5 custom-kernel solve."""
+    """JAX-callable KenCarp5 custom-kernel solve.
+
+    ``error_weights`` is an optional per-component weight array, shape
+    ``(n_vars,)`` or ``(N, n_vars)``, read as the ``weight`` argument of the
+    error-contribution device function. ``err_contrib_fn`` is an optional
+    ``@cuda.jit(device=True)`` callable
+    ``err_contrib_fn(y_old, y_new, err_est, rtol, atol, weight) -> float`` that
+    returns one component's squared error contribution; the kernel sums these
+    over components and takes ``sqrt(sum / n_vars)``. When ``None``, a default
+    weighted-RMS contribution reproduces the standard error norm.
+    """
+
+    if err_contrib_fn is None:
+        err_contrib_fn = _default_err_contrib
 
     def solve_impl(y0_arr, t_span_arr, params_arr):
         return _solve_impl(
@@ -837,6 +884,8 @@ def solve(
             first_step=first_step,
             max_steps=max_steps,
             return_stats=return_stats,
+            error_weights=error_weights,
+            err_contrib_fn=err_contrib_fn,
         )
 
     return make_custom_vmap_solver(
@@ -860,15 +909,27 @@ def _solve_impl(
     first_step=None,
     max_steps=100000,
     return_stats=False,
+    error_weights=None,
+    err_contrib_fn=None,
 ):
+    if err_contrib_fn is None:
+        err_contrib_fn = _default_err_contrib
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
     n_save = times.shape[0]
     n_params = params_arr.shape[1]
     dt0 = initial_step(times, first_step)
+    weights_arr = jnp.asarray(build_error_weights(error_weights, n, n_vars))
 
     launch = _make_jax_launch(
-        explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n, n_vars, n_save, n_params
+        explicit_ode_fn,
+        implicit_ode_fn,
+        implicit_jac_fn,
+        n,
+        n_vars,
+        n_save,
+        n_params,
+        err_contrib_fn,
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
@@ -892,7 +953,7 @@ def _solve_impl(
     )
     result = ffi_abi_call(
         launch,
-        (y0_arr, times, params_arr),
+        (y0_arr, times, params_arr, weights_arr),
         output_specs,
         input_kinds=(
             ABI_ARRAY,
@@ -903,6 +964,7 @@ def _solve_impl(
             ABI_SCALAR_F64,
             ABI_SCALAR_F64,
             ABI_SCALAR_I32,
+            ABI_ARRAY,
         ),
         output_kinds=(ABI_ARRAY,) * len(output_specs),
         scalar_f64_values=(dt0, rtol, atol),

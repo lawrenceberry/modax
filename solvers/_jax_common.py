@@ -61,9 +61,28 @@ def initial_history(y_init, n_save: int, n_vars: int):
     return jnp.zeros((n_save, n_vars), dtype=jnp.float64).at[0, :].set(y_init)
 
 
-def error_norm(y, y_new, err_est, rtol, atol):
+def error_norm(y, y_new, err_est, rtol, atol, error_weights):
     scale = atol + rtol * jnp.maximum(jnp.abs(y), jnp.abs(y_new))
-    return jnp.sqrt(jnp.mean((err_est / scale) ** 2))
+    scaled_error = (err_est / scale) * error_weights
+    denom = jnp.maximum(jnp.sum(error_weights != 0), 1)
+    return jnp.sqrt(jnp.sum(scaled_error**2) / denom)
+
+
+def build_error_weights(error_weights, n: int, n_vars: int):
+    """Broadcast a user ``error_weights`` argument to ``(n, n_vars)``.
+
+    ``None`` yields all-ones (every component weighted equally); a 1-D array of
+    length ``n_vars`` is broadcast across trajectories; a 2-D ``(n, n_vars)``
+    array is used as-is. This per-trajectory ``error_weights`` row is consumed
+    by the default :func:`error_norm`; custom ``error_norm_fn`` callables
+    receive the same array and may interpret it however they like.
+    """
+    if error_weights is None:
+        return jnp.ones((n, n_vars), dtype=jnp.float64)
+    weights = jnp.asarray(error_weights, dtype=jnp.float64)
+    if weights.ndim == 1:
+        return jnp.broadcast_to(weights, (n, n_vars))
+    return weights
 
 
 def step_size_factor(
@@ -228,13 +247,22 @@ def solve_adaptive_ensemble(
     safety: float,
     factor_min: float,
     factor_max: float,
+    error_weights_arr=None,
+    error_norm_fn: Callable | None = None,
 ):
     n = y0_arr.shape[0]
     n_vars = y0_arr.shape[1]
     n_save = times.shape[0]
     tf = times[-1]
 
-    def _solve_one(params_one, y0_one):
+    # ``error_weights`` are supplied per-trajectory to ``error_norm_fn``, which
+    # by default is the per-component weighted :func:`error_norm`.
+    if error_norm_fn is None:
+        error_norm_fn = error_norm
+    if error_weights_arr is None:
+        error_weights_arr = jnp.ones((n, n_vars), dtype=jnp.float64)
+
+    def _solve_one(params_one, y0_one, error_weights_one):
         y_init = y0_one.copy()
         hist_init = initial_history(y_init, n_save, n_vars)
         step_one, extra_init, update_extra = step_factory(params_one)
@@ -259,7 +287,7 @@ def solve_adaptive_ensemble(
             dt_use = jnp.maximum(jnp.minimum(dt, next_target - t), 1e-30)
 
             y_new, err_est, failed, extra_candidate = step_one(y, t, dt_use, extra)
-            err_norm = error_norm(y, y_new, err_est, rtol, atol)
+            err_norm = error_norm_fn(y, y_new, err_est, rtol, atol, error_weights_one)
 
             accept = (err_norm <= 1.0) & ~jnp.isnan(err_norm) & ~failed
             t_new = jnp.where(accept, t + dt_use, t)
@@ -328,7 +356,7 @@ def solve_adaptive_ensemble(
 
     results, trajectory_stats = jax.lax.map(
         lambda xs: _solve_one(*xs),
-        (params_arr, y0_arr),
+        (params_arr, y0_arr, error_weights_arr),
         batch_size=batch_size,
     )
     if not return_stats:

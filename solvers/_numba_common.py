@@ -70,6 +70,23 @@ def normalize_inputs(y0, t_span, params, first_step, *, solver_name: str):
     return y0_arr, times, params_arr, initial_step(times, first_step)
 
 
+def build_error_weights(error_weights, n: int, n_vars: int) -> np.ndarray:
+    """Broadcast a user ``error_weights`` argument to a ``(n, n_vars)`` array.
+
+    ``None`` yields all-ones (every component weighted equally); a 1-D array of
+    length ``n_vars`` is broadcast across trajectories; a 2-D ``(n, n_vars)``
+    array is used as-is. This array is copied to the device and read per
+    component as the ``weight`` argument of the kernel's error-contribution
+    device function.
+    """
+    if error_weights is None:
+        return np.ones((n, n_vars), dtype=np.float64)
+    weights = np.asarray(error_weights, dtype=np.float64)
+    if weights.ndim == 1:
+        weights = np.broadcast_to(weights, (n, n_vars))
+    return np.ascontiguousarray(weights, dtype=np.float64)
+
+
 def initial_step(times, first_step):
     return (
         np.float64(first_step)
