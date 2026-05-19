@@ -36,6 +36,10 @@ dev = [
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 addopts = "-m 'not slow'"
 
+[tool.setuptools.packages.find]
+include = ["solvers*"]
+exclude = ["reference*", "tests*", "scripts*"]
+
 [tool.ruff.lint]
 # On top of the default `select`, enable imports sorting
 extend-select = ["I"]
