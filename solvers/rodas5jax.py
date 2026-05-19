@@ -47,7 +47,17 @@ _c3 = 0.3878509998321533
 _c4 = 0.4839718937873840
 _c5 = 0.4570477008819580
 # c6 = c7 = c8 = 1.0
+
+# Time-derivative ("d_i") coefficients for non-autonomous ODEs. The stage RHS
+# carries an additional dt*d_i*df/dt term (Hairer-Wanner II.7); without it,
+# the method drops below order 5 when df/dt is nonzero. d6 = d7 = d8 = 0.
+_d1 = _gamma
+_d2 = -0.1823079225333714636
+_d3 = -0.319231832186874912
+_d4 =  0.3449828624725343
+_d5 = -0.377417564392089818
 # fmt: on
+
 
 def solve(
     ode_fn,
@@ -149,6 +159,7 @@ def _solve_impl(
     """
     lu_dtype = jnp.float32 if lu_precision == "fp32" else jnp.float64
     jac_fn = jax.jacfwd(ode_fn, argnums=0)
+    dT_fn = jax.jacfwd(ode_fn, argnums=1)
 
     y0_arr, times, params_arr, _, n_vars, _, dt0, bs, n_chunks = normalize_inputs(
         y0, t_span, params, first_step, batch_size
@@ -160,6 +171,7 @@ def _solve_impl(
         def _step_one(y, t, dt, extra):
             del extra
             jac = jac_fn(y, t, params_one).astype(lu_dtype)
+            dT = dT_fn(y, t, params_one)
             dtgamma_inv = (1.0 / (dt * _gamma)).astype(lu_dtype)
             lu = jax.scipy.linalg.lu_factor(dtgamma_inv * eye - jac)
             inv_dt = 1.0 / dt
@@ -172,23 +184,29 @@ def _solve_impl(
                 return sol.astype(jnp.float64)
 
             dy = f_eval(y, t)
-            k1 = lu_solve(dy)
+            k1 = lu_solve(dy + dt * _d1 * dT)
 
             u = y + _a21 * k1
             du = f_eval(u, t + _c2 * dt)
-            k2 = lu_solve(du + _C21 * k1 * inv_dt)
+            k2 = lu_solve(du + dt * _d2 * dT + _C21 * k1 * inv_dt)
 
             u = y + _a31 * k1 + _a32 * k2
             du = f_eval(u, t + _c3 * dt)
-            k3 = lu_solve(du + (_C31 * k1 + _C32 * k2) * inv_dt)
+            k3 = lu_solve(du + dt * _d3 * dT + (_C31 * k1 + _C32 * k2) * inv_dt)
 
             u = y + _a41 * k1 + _a42 * k2 + _a43 * k3
             du = f_eval(u, t + _c4 * dt)
-            k4 = lu_solve(du + (_C41 * k1 + _C42 * k2 + _C43 * k3) * inv_dt)
+            k4 = lu_solve(
+                du + dt * _d4 * dT + (_C41 * k1 + _C42 * k2 + _C43 * k3) * inv_dt
+            )
 
             u = y + _a51 * k1 + _a52 * k2 + _a53 * k3 + _a54 * k4
             du = f_eval(u, t + _c5 * dt)
-            k5 = lu_solve(du + (_C51 * k1 + _C52 * k2 + _C53 * k3 + _C54 * k4) * inv_dt)
+            k5 = lu_solve(
+                du
+                + dt * _d5 * dT
+                + (_C51 * k1 + _C52 * k2 + _C53 * k3 + _C54 * k4) * inv_dt
+            )
 
             t_end = t + dt
             u = y + _a61 * k1 + _a62 * k2 + _a63 * k3 + _a64 * k4 + _a65 * k5

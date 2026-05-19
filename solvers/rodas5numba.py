@@ -98,7 +98,23 @@ C3 = 0.3878509998321533
 C4 = 0.4839718937873840
 C5 = 0.4570477008819580
 # C6 = C7 = C8 = 1.0
+
+# Time-derivative ("d_i") coefficients. The stage RHS carries an additional
+# dt*d_i*df/dt term (Hairer-Wanner II.7); without it, the method drops below
+# order 5 when df/dt is nonzero. d6 = d7 = d8 = 0.
+D1 = GAMMA
+D2 = -0.1823079225333714636
+D3 = -0.319231832186874912
+D4 =  0.3449828624725343
+D5 = -0.377417564392089818
 # fmt: on
+
+
+@cuda.jit(device=True)
+def _zero_dT_device(y, t, params, dT, i):
+    for j in range(dT.shape[1]):
+        dT[i, j] = 0.0
+
 
 SAFETY = 0.9
 FACTOR_MIN = 0.2
@@ -111,6 +127,7 @@ _WORKSPACE_CACHE: dict[tuple[int, int, int, int], object] = {}
 class Workspace(NumbaWorkspace):
     work: list[Any]
     jac_dev: Any
+    dT_dev: Any
 
 
 @dataclass(frozen=True)
@@ -154,13 +171,14 @@ def get_workspace(
         loop_dev=cuda.device_array(n, dtype=np.int32),
         work=[cuda.device_array((n, n_vars), dtype=np.float64) for _ in range(10)],
         jac_dev=cuda.device_array((n, n_vars, n_vars), dtype=np.float64),
+        dT_dev=cuda.device_array((n, n_vars), dtype=np.float64),
     )
     cache[key] = workspace
     return workspace
 
 
 @functools.cache
-def _make_kernel(ode_fn, jac_fn, n_vars: int):
+def _make_kernel(ode_fn, jac_fn, time_jac_fn, n_vars: int):
     lu_solver = make_lu_solver(n_vars)
     batches_per_block = int(lu_solver.batches_per_block)
 
@@ -188,6 +206,7 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
         u_global,
         work_global,
         jac,
+        dT_global,
     ):
         tx = cuda.threadIdx.x
         batch = tx % batches_per_block
@@ -291,6 +310,7 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             cuda.syncthreads()
             if lane == 0 and active:
                 jac_fn(y_global, smem_t[batch], params, jac, i)
+                time_jac_fn(y_global, smem_t[batch], params, dT_global, i)
             cuda.syncthreads()
 
             dtgamma_inv = 1.0 / (smem_dt_use[batch] * GAMMA)
@@ -317,7 +337,9 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
-                    smem_rhs[b_offset + j] = np.float32(work_global[i, j])
+                    smem_rhs[b_offset + j] = np.float32(
+                        work_global[i, j] + smem_dt_use[batch] * D1 * dT_global[i, j]
+                    )
             cuda.syncthreads()
             lu_solver.solve(smem_lu, smem_ipiv, smem_rhs)
             cuda.syncthreads()
@@ -345,6 +367,7 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
                 for j in range(lane, n_vars, batch_lanes):
                     smem_rhs[b_offset + j] = np.float32(
                         work_global[i, j]
+                        + smem_dt_use[batch] * D2 * dT_global[i, j]
                         + C21 * smem_k1[v_offset + j] * smem_inv_dt[batch]
                     )
             cuda.syncthreads()
@@ -374,6 +397,7 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
                 for j in range(lane, n_vars, batch_lanes):
                     smem_rhs[b_offset + j] = np.float32(
                         work_global[i, j]
+                        + smem_dt_use[batch] * D3 * dT_global[i, j]
                         + (C31 * smem_k1[v_offset + j] + C32 * smem_k2[v_offset + j])
                         * smem_inv_dt[batch]
                     )
@@ -406,6 +430,7 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
                 for j in range(lane, n_vars, batch_lanes):
                     smem_rhs[b_offset + j] = np.float32(
                         work_global[i, j]
+                        + smem_dt_use[batch] * D4 * dT_global[i, j]
                         + (
                             C41 * smem_k1[v_offset + j]
                             + C42 * smem_k2[v_offset + j]
@@ -443,6 +468,7 @@ def _make_kernel(ode_fn, jac_fn, n_vars: int):
                 for j in range(lane, n_vars, batch_lanes):
                     smem_rhs[b_offset + j] = np.float32(
                         work_global[i, j]
+                        + smem_dt_use[batch] * D5 * dT_global[i, j]
                         + (
                             C51 * smem_k1[v_offset + j]
                             + C52 * smem_k2[v_offset + j]
@@ -642,6 +668,7 @@ def prepare_solve(
     t_span,
     params,
     *,
+    time_jac_fn=None,
     batch_size=None,
     rtol=1e-8,
     atol=1e-10,
@@ -649,6 +676,8 @@ def prepare_solve(
     max_steps=100000,
 ):
     del batch_size
+    if time_jac_fn is None:
+        time_jac_fn = _zero_dT_device
     y0_arr, times, params_arr, dt0 = _normalize_inputs(
         y0, t_span, params, first_step, solver_name="Rodas5"
     )
@@ -659,7 +688,7 @@ def prepare_solve(
     workspace = get_workspace(_WORKSPACE_CACHE, n, n_vars, n_save, n_params)
     copy_workspace_inputs(workspace, y0_arr, times, params_arr)
 
-    kernel, lu_solver = _make_kernel(ode_fn, jac_fn, n_vars)
+    kernel, lu_solver = _make_kernel(ode_fn, jac_fn, time_jac_fn, n_vars)
     batches_per_block = int(lu_solver.batches_per_block)
     threads = as_launch_block_dim(lu_solver.block_dim)
     blocks = (n + batches_per_block - 1) // batches_per_block
@@ -695,6 +724,7 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
         workspace.work[1],
         workspace.work[2],
         workspace.jac_dev,
+        workspace.dT_dev,
     )
     cuda.synchronize()
 
@@ -711,8 +741,10 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
 
 
 @functools.cache
-def _make_jax_launch(ode_fn, jac_fn, n: int, n_vars: int, n_save: int, n_params: int):
-    kernel, lu_solver = _make_kernel(ode_fn, jac_fn, n_vars)
+def _make_jax_launch(
+    ode_fn, jac_fn, time_jac_fn, n: int, n_vars: int, n_save: int, n_params: int
+):
+    kernel, lu_solver = _make_kernel(ode_fn, jac_fn, time_jac_fn, n_vars)
     f64_2d = types.float64[:, ::1]
     f64_1d = types.float64[::1]
     i32_1d = types.int32[::1]
@@ -732,6 +764,7 @@ def _make_jax_launch(ode_fn, jac_fn, n: int, n_vars: int, n_save: int, n_params:
         f64_2d,
         f64_2d,
         types.float64[:, :, ::1],
+        f64_2d,
     )
     batches_per_block = int(lu_solver.batches_per_block)
     threads = as_launch_block_dim(lu_solver.block_dim)
@@ -746,6 +779,7 @@ def solve(
     t_span,
     params,
     *,
+    time_jac_fn=None,
     batch_size=None,
     rtol=1e-8,
     atol=1e-10,
@@ -753,8 +787,17 @@ def solve(
     max_steps=100000,
     return_stats=False,
 ):
-    """JAX-callable Rodas5 custom-kernel solve."""
+    """JAX-callable Rodas5 custom-kernel solve.
 
+    ``time_jac_fn`` is the partial time derivative ``df/dt`` of the ODE
+    right-hand side, with CUDA-device signature ``(y, t, params, dT, i) -> None``
+    that writes the vector into ``dT[i, :]``. Required for non-autonomous
+    systems to preserve fifth-order accuracy. When ``None``, defaults to a
+    zero stub — correct only for autonomous problems (``df/dt = 0``).
+    """
+
+    if time_jac_fn is None:
+        time_jac_fn = _zero_dT_device
     del batch_size
     y0_arr = jnp.asarray(y0, dtype=jnp.float64)
     params_arr = jnp.asarray(params, dtype=jnp.float64)
@@ -770,13 +813,15 @@ def solve(
     n_params = params_arr.shape[1]
     dt0 = initial_step(times, first_step)
 
-    launch = _make_jax_launch(ode_fn, jac_fn, n, n_vars, n_save, n_params)
+    launch = _make_jax_launch(ode_fn, jac_fn, time_jac_fn, n, n_vars, n_save, n_params)
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
     work_spec = jax.ShapeDtypeStruct((n, n_vars), jnp.float64)
     jac_spec = jax.ShapeDtypeStruct((n, n_vars, n_vars), jnp.float64)
     output_specs = (
-        (hist_spec, int_spec, int_spec, int_spec) + (work_spec,) * 3 + (jac_spec,)
+        (hist_spec, int_spec, int_spec, int_spec)
+        + (work_spec,) * 3
+        + (jac_spec, work_spec)
     )
     result = ffi_abi_call(
         launch,
