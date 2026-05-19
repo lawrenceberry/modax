@@ -9,10 +9,16 @@ import jax.numpy as jnp
 from jax.custom_batching import custom_vmap
 
 
-def normalize_inputs(y0, t_span, params, first_step, batch_size):
+def normalize_y0_params(y0, params):
+    """Broadcast ``y0`` / ``params`` to a consistent ``(N, …)`` ensemble layout.
+
+    Accepts either 1-D (``(n_vars,)`` / ``(n_params,)``) or 2-D
+    (``(N, n_vars)`` / ``(N, n_params)``) inputs and returns 2-D arrays with a
+    common leading axis. Used by both pure-JAX and numba-cuda solvers so they
+    share the same calling convention.
+    """
     y0_in = jnp.asarray(y0, dtype=jnp.float64)
     params_arr = jnp.asarray(params)
-    times = jnp.asarray(t_span, dtype=jnp.float64)
 
     if y0_in.ndim == 1 and params_arr.ndim == 1:
         n = 1
@@ -35,6 +41,12 @@ def normalize_inputs(y0, t_span, params, first_step, batch_size):
                 f"shape (N, n_vars); got y0.shape={y0_in.shape} and "
                 f"params.shape={params_arr.shape}"
             )
+    return y0_arr, params_arr, n, n_vars
+
+
+def normalize_inputs(y0, t_span, params, first_step, batch_size):
+    y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
+    times = jnp.asarray(t_span, dtype=jnp.float64)
 
     n_save = times.shape[0]
     dt0 = jnp.float64(
@@ -112,14 +124,60 @@ def _broadcast_for_vmap(arg, is_batched: bool, axis_size: int, name: str):
     return jnp.broadcast_to(arr, (axis_size,) + arr.shape)
 
 
-def make_custom_vmap_solver(solve_impl: Callable, *, return_stats: bool):
+def _jax_stats_postprocess(stats, axis_size):
+    """Default stats reshape for JAX-solver ``build_batch_stats`` output.
+
+    ``batch_loop_iterations`` and ``valid_lanes`` are chunk-level in the JAX
+    solvers (shape ``(n_chunks,)``), so under vmap we re-synthesise per-
+    trajectory equivalents to match the public ``(axis_size, 1)`` shape.
+    """
+    accepted = stats["accepted_steps"]
+    rejected = stats["rejected_steps"]
+    loop_steps = accepted + rejected
+    stats_out = {
+        "accepted_steps": accepted[:, None],
+        "rejected_steps": rejected[:, None],
+        "batch_loop_iterations": loop_steps[:, None],
+        "valid_lanes": jnp.ones((axis_size, 1), dtype=stats["valid_lanes"].dtype),
+    }
+    stats_batched = jax.tree_util.tree_map(lambda _: True, stats_out)
+    return stats_out, stats_batched
+
+
+def per_trajectory_stats_postprocess(stats, axis_size):
+    """Stats reshape when every key already has shape ``(axis_size,)``.
+
+    Used by the numba-cuda solvers whose kernels emit per-trajectory counters
+    for every stats field.
+    """
+    del axis_size
+    stats_out = jax.tree_util.tree_map(lambda x: x[:, None], stats)
+    stats_batched = jax.tree_util.tree_map(lambda _: True, stats_out)
+    return stats_out, stats_batched
+
+
+def make_custom_vmap_solver(
+    solve_impl: Callable,
+    *,
+    return_stats: bool,
+    stats_postprocess: Callable | None = None,
+):
     """Wrap a solver implementation so outer ``jax.vmap`` becomes one ensemble call.
 
     ``solve_impl`` must accept ``(y0, t_span, params)`` and return the normal
     public solver result for those arrays.  The custom batching rule supports
     vmapping scalar solves over ``y0`` and/or ``params`` and lowers that vmap to
     a single native ensemble solve with a leading trajectory axis.
+
+    ``stats_postprocess`` is used to reshape the stats pytree after the
+    ensemble solve. Defaults to the JAX-solver layout
+    (chunk-level ``batch_loop_iterations`` / ``valid_lanes`` synthesised into
+    per-trajectory equivalents). Pass ``per_trajectory_stats_postprocess`` for
+    solvers whose stats are already per-trajectory.
     """
+
+    if stats_postprocess is None:
+        stats_postprocess = _jax_stats_postprocess
 
     @custom_vmap
     def _solve(y0, t_span, params):
@@ -147,25 +205,8 @@ def make_custom_vmap_solver(solve_impl: Callable, *, return_stats: bool):
             return result[:, None, :, :], True
 
         sol, stats = result
-        accepted = stats["accepted_steps"]
-        rejected = stats["rejected_steps"]
-        loop_steps = accepted + rejected
-        stats_out = {
-            "accepted_steps": accepted[:, None],
-            "rejected_steps": rejected[:, None],
-            "batch_loop_iterations": loop_steps[:, None],
-            "valid_lanes": jnp.ones((axis_size, 1), dtype=stats["valid_lanes"].dtype),
-        }
-        out_batched = (
-            True,
-            {
-                "accepted_steps": True,
-                "rejected_steps": True,
-                "batch_loop_iterations": True,
-                "valid_lanes": True,
-            },
-        )
-        return (sol[:, None, :, :], stats_out), out_batched
+        stats_out, stats_batched = stats_postprocess(stats, axis_size)
+        return (sol[:, None, :, :], stats_out), (True, stats_batched)
 
     return _solve
 

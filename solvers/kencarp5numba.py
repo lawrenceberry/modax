@@ -14,6 +14,11 @@ import numpy as np
 from numba import cuda, types
 from nvmath.device import LUPivotSolver
 
+from solvers._jax_common import (
+    make_custom_vmap_solver,
+    normalize_y0_params,
+    per_trajectory_stats_postprocess,
+)
 from solvers._numba_common import (
     NumbaWorkspace,
     PreparedNumbaSolve,
@@ -818,16 +823,46 @@ def solve(
 ):
     """JAX-callable KenCarp5 custom-kernel solve."""
 
-    y0_arr = jnp.asarray(y0, dtype=jnp.float64)
-    params_arr = jnp.asarray(params, dtype=jnp.float64)
+    def solve_impl(y0_arr, t_span_arr, params_arr):
+        return _solve_impl(
+            explicit_ode_fn,
+            implicit_ode_fn,
+            implicit_jac_fn,
+            y0_arr,
+            t_span_arr,
+            params_arr,
+            linear=linear,
+            rtol=rtol,
+            atol=atol,
+            first_step=first_step,
+            max_steps=max_steps,
+            return_stats=return_stats,
+        )
+
+    return make_custom_vmap_solver(
+        solve_impl,
+        return_stats=return_stats,
+        stats_postprocess=per_trajectory_stats_postprocess,
+    )(y0, t_span, params)
+
+
+def _solve_impl(
+    explicit_ode_fn,
+    implicit_ode_fn,
+    implicit_jac_fn,
+    y0,
+    t_span,
+    params,
+    *,
+    linear: bool = False,
+    rtol=1e-8,
+    atol=1e-10,
+    first_step=None,
+    max_steps=100000,
+    return_stats=False,
+):
+    y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
-    if y0_arr.ndim != 2:
-        raise ValueError("custom-kernel KenCarp5 expects y0 shape (N, n_vars)")
-    if params_arr.ndim != 2:
-        raise ValueError("custom-kernel KenCarp5 expects params shape (N, n_params)")
-    n, n_vars = y0_arr.shape
-    if params_arr.shape[0] != n:
-        raise ValueError("params and y0 must have the same batch size")
     n_save = times.shape[0]
     n_params = params_arr.shape[1]
     dt0 = initial_step(times, first_step)

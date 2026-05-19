@@ -13,14 +13,10 @@ import jax.numpy as jnp
 import numpy as np
 from numba import cuda, types
 
-from solvers._numba_common import (
-    NumbaWorkspace,
-    PreparedNumbaSolve,
-    copy_workspace_inputs,
-    initial_step,
-    jax_stats,
-    normalize_inputs as _normalize_inputs,
-    numpy_stats,
+from solvers._jax_common import (
+    make_custom_vmap_solver,
+    normalize_y0_params,
+    per_trajectory_stats_postprocess,
 )
 from solvers._jax_numba_custom_call import (
     ABI_ARRAY,
@@ -28,6 +24,17 @@ from solvers._jax_numba_custom_call import (
     ABI_SCALAR_I32,
     ffi_abi_call,
     make_launch,
+)
+from solvers._numba_common import (
+    NumbaWorkspace,
+    PreparedNumbaSolve,
+    copy_workspace_inputs,
+    initial_step,
+    jax_stats,
+    numpy_stats,
+)
+from solvers._numba_common import (
+    normalize_inputs as _normalize_inputs,
 )
 
 # fmt: off
@@ -402,17 +409,43 @@ def solve(
     autodiff.
     """
 
+    def solve_impl(y0_arr, t_span_arr, params_arr):
+        return _solve_impl(
+            ode_fn,
+            y0_arr,
+            t_span_arr,
+            params_arr,
+            batch_size=batch_size,
+            rtol=rtol,
+            atol=atol,
+            first_step=first_step,
+            max_steps=max_steps,
+            return_stats=return_stats,
+        )
+
+    return make_custom_vmap_solver(
+        solve_impl,
+        return_stats=return_stats,
+        stats_postprocess=per_trajectory_stats_postprocess,
+    )(y0, t_span, params)
+
+
+def _solve_impl(
+    ode_fn,
+    y0,
+    t_span,
+    params,
+    *,
+    batch_size=None,
+    rtol=1e-8,
+    atol=1e-10,
+    first_step=None,
+    max_steps=100000,
+    return_stats=False,
+):
     del batch_size
-    y0_arr = jnp.asarray(y0, dtype=jnp.float64)
-    params_arr = jnp.asarray(params, dtype=jnp.float64)
+    y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
-    if y0_arr.ndim != 2:
-        raise ValueError("custom-kernel Tsit5 expects y0 shape (N, n_vars)")
-    if params_arr.ndim != 2:
-        raise ValueError("custom-kernel Tsit5 expects params shape (N, n_params)")
-    n, n_vars = y0_arr.shape
-    if params_arr.shape[0] != n:
-        raise ValueError("params and y0 must have the same batch size")
     n_save = times.shape[0]
     n_params = params_arr.shape[1]
     dt0 = initial_step(times, first_step)
