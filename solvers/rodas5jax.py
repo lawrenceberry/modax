@@ -15,7 +15,11 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 
-from solvers._jax_common import normalize_inputs, solve_adaptive_ensemble
+from solvers._jax_common import (
+    make_custom_vmap_solver,
+    normalize_inputs,
+    solve_adaptive_ensemble,
+)
 
 # fmt: off
 # Rodas5 W-transformed coefficients
@@ -45,17 +49,6 @@ _c5 = 0.4570477008819580
 # c6 = c7 = c8 = 1.0
 # fmt: on
 
-
-@functools.partial(
-    jax.jit,
-    static_argnames=(
-        "ode_fn",
-        "lu_precision",
-        "batch_size",
-        "max_steps",
-        "return_stats",
-    ),
-)
 def solve(
     ode_fn,
     y0,
@@ -70,7 +63,53 @@ def solve(
     max_steps=100000,
     return_stats=False,
 ):
-    """Rodas5 ensemble solver for nonlinear ODEs.
+    """Rodas5 ensemble solver for nonlinear ODEs."""
+
+    def solve_impl(y0_arr, t_span_arr, params_arr):
+        return _solve_impl(
+            ode_fn,
+            y0_arr,
+            t_span_arr,
+            params_arr,
+            lu_precision=lu_precision,
+            batch_size=batch_size,
+            rtol=rtol,
+            atol=atol,
+            first_step=first_step,
+            max_steps=max_steps,
+            return_stats=return_stats,
+        )
+
+    return make_custom_vmap_solver(solve_impl, return_stats=return_stats)(
+        y0, t_span, params
+    )
+
+
+@functools.partial(
+    jax.jit,
+    static_argnames=(
+        "ode_fn",
+        "lu_precision",
+        "batch_size",
+        "max_steps",
+        "return_stats",
+    ),
+)
+def _solve_impl(
+    ode_fn,
+    y0,
+    t_span,
+    params,
+    *,
+    lu_precision: Literal["fp32", "fp64"] = "fp64",
+    batch_size=None,
+    rtol=1e-8,
+    atol=1e-10,
+    first_step=None,
+    max_steps=100000,
+    return_stats=False,
+):
+    """Rodas5 ensemble solver implementation.
 
     Parameters
     ----------

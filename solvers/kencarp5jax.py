@@ -22,7 +22,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from solvers._jax_common import normalize_inputs, solve_adaptive_ensemble
+from solvers._jax_common import (
+    make_custom_vmap_solver,
+    normalize_inputs,
+    solve_adaptive_ensemble,
+)
 
 # fmt: off
 _GAMMA = 41.0 / 200.0
@@ -178,17 +182,6 @@ def _make_reduced_implicit_solver(n_vars):
     return _solve_masked
 
 
-@functools.partial(
-    jax.jit,
-    static_argnames=(
-        "explicit_ode_fn",
-        "implicit_ode_fn",
-        "linear",
-        "batch_size",
-        "max_steps",
-        "return_stats",
-    ),
-)
 def solve(
     explicit_ode_fn,
     implicit_ode_fn,
@@ -204,7 +197,56 @@ def solve(
     max_steps=100000,
     return_stats=False,
 ):
-    """KenCarp5 ensemble solver for split IMEX ODEs.
+    """KenCarp5 ensemble solver for split IMEX ODEs."""
+
+    def solve_impl(y0_arr, t_span_arr, params_arr):
+        return _solve_impl(
+            explicit_ode_fn,
+            implicit_ode_fn,
+            y0_arr,
+            t_span_arr,
+            params_arr,
+            linear=linear,
+            batch_size=batch_size,
+            rtol=rtol,
+            atol=atol,
+            first_step=first_step,
+            max_steps=max_steps,
+            return_stats=return_stats,
+        )
+
+    return make_custom_vmap_solver(solve_impl, return_stats=return_stats)(
+        y0, t_span, params
+    )
+
+
+@functools.partial(
+    jax.jit,
+    static_argnames=(
+        "explicit_ode_fn",
+        "implicit_ode_fn",
+        "linear",
+        "batch_size",
+        "max_steps",
+        "return_stats",
+    ),
+)
+def _solve_impl(
+    explicit_ode_fn,
+    implicit_ode_fn,
+    y0,
+    t_span,
+    params,
+    *,
+    linear: bool = False,
+    batch_size=None,
+    rtol=1e-8,
+    atol=1e-10,
+    first_step=None,
+    max_steps=100000,
+    return_stats=False,
+):
+    """KenCarp5 ensemble solver implementation.
 
     Parameters
     ----------
