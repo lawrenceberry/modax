@@ -85,21 +85,52 @@ def build_error_weights(error_weights, n: int, n_vars: int):
     return weights
 
 
-def step_size_factor(
-    err_norm,
-    *,
-    failed=False,
-    exponent: float,
-    safety: float,
-    factor_min: float,
-    factor_max: float,
-):
-    safe_err = jnp.where(
+def clamp_err_norm(err_norm, failed=False):
+    """Clamp an error norm to a finite, strictly-positive range.
+
+    Non-finite or huge errors map to ``1e18`` (forcing a shrink); zero maps to
+    ``1e-18`` (avoiding division by zero). Used both for the current step and
+    for the stored history feeding the PID controller.
+    """
+    return jnp.where(
         failed | jnp.isnan(err_norm) | (err_norm > 1e18),
         1e18,
         jnp.where(err_norm == 0.0, 1e-18, err_norm),
     )
-    return jnp.clip(safety * safe_err**exponent, factor_min, factor_max)
+
+
+def step_size_factor(
+    err_norm,
+    err_prev=1.0,
+    err_prev2=1.0,
+    *,
+    failed=False,
+    exponent: float,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    safety: float,
+    factor_min: float,
+    factor_max: float,
+):
+    """PID step-size factor (Soderlind digital-filter form).
+
+    ``exponent`` is the elementary I-controller exponent ``-1/k`` (``k`` the
+    error order); the proportional and derivative terms are expressed relative
+    to it. The defaults ``pcoeff=0, icoeff=1, dcoeff=0`` reduce this exactly to
+    the classic I-controller ``clip(safety * err**exponent, ...)``.
+
+    ``err_prev`` and ``err_prev2`` are the clamped error norms from the previous
+    two accepted steps (see :func:`clamp_err_norm`); they must already be finite
+    and positive. With the default coefficients their exponents are zero, so the
+    history is ignored.
+    """
+    safe_err = clamp_err_norm(err_norm, failed)
+    e1 = exponent * (icoeff + pcoeff + dcoeff)
+    e2 = -exponent * (pcoeff + 2.0 * dcoeff)
+    e3 = exponent * dcoeff
+    factor = safety * safe_err**e1 * err_prev**e2 * err_prev2**e3
+    return jnp.clip(factor, factor_min, factor_max)
 
 
 def build_batch_stats(trajectory_stats, *, n: int, n_chunks: int, batch_size: int):
@@ -247,6 +278,9 @@ def solve_adaptive_ensemble(
     safety: float,
     factor_min: float,
     factor_max: float,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
     error_weights_arr=None,
     error_norm_fn: Callable | None = None,
 ):
@@ -268,7 +302,7 @@ def solve_adaptive_ensemble(
         step_one, extra_init, update_extra = step_factory(params_one)
 
         def cond_fn(state):
-            t, _, _, _, save_idx, n_steps, _, _, _ = state
+            t, _, _, _, save_idx, n_steps, _, _, _, _, _ = state
             return (save_idx < n_save) & (t < tf) & (n_steps < max_steps)
 
         def body_fn(state):
@@ -282,6 +316,8 @@ def solve_adaptive_ensemble(
                 accepted_steps,
                 rejected_steps,
                 extra,
+                err_prev,
+                err_prev2,
             ) = state
             next_target = times[save_idx]
             dt_use = jnp.maximum(jnp.minimum(dt, next_target - t), 1e-30)
@@ -303,8 +339,13 @@ def solve_adaptive_ensemble(
 
             factor = step_size_factor(
                 err_norm,
+                err_prev,
+                err_prev2,
                 failed=failed,
                 exponent=error_exponent,
+                pcoeff=pcoeff,
+                icoeff=icoeff,
+                dcoeff=dcoeff,
                 safety=safety,
                 factor_min=factor_min,
                 factor_max=factor_max,
@@ -312,6 +353,12 @@ def solve_adaptive_ensemble(
             dt_new = dt_use * factor
             rejected = ~accept
             extra_new = update_extra(extra, extra_candidate, accept)
+
+            # Advance the PID error history only on accepted steps, so a
+            # rejected attempt is retried from the same controller state.
+            err_clamped = clamp_err_norm(err_norm, failed)
+            err_prev_new = jnp.where(accept, err_clamped, err_prev)
+            err_prev2_new = jnp.where(accept, err_prev, err_prev2)
 
             return (
                 t_new,
@@ -323,6 +370,8 @@ def solve_adaptive_ensemble(
                 accepted_steps + accept.astype(jnp.int32),
                 rejected_steps + rejected.astype(jnp.int32),
                 extra_new,
+                err_prev_new,
+                err_prev2_new,
             )
 
         init = (
@@ -335,6 +384,8 @@ def solve_adaptive_ensemble(
             jnp.int32(0),
             jnp.int32(0),
             extra_init,
+            jnp.float64(1.0),
+            jnp.float64(1.0),
         )
         (
             _,
@@ -345,6 +396,8 @@ def solve_adaptive_ensemble(
             loop_steps,
             accepted_steps,
             rejected_steps,
+            _,
+            _,
             _,
         ) = jax.lax.while_loop(cond_fn, body_fn, init)
         stats = {

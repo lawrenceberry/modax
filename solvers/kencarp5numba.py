@@ -88,6 +88,9 @@ SAFETY = 0.9
 FACTOR_MIN = 0.2
 FACTOR_MAX = 10.0
 NEWTON_MAX_ITERS = 10
+# Elementary I-controller exponent (-1/k, k the error order). The PID terms in
+# the kernel are expressed relative to this.
+EXPONENT = -1.0 / 5.0
 
 _WORKSPACE_CACHE: dict[tuple[int, int, int, int], object] = {}
 
@@ -378,8 +381,20 @@ def _clear_jac(jac, i, n_vars):
 
 @functools.cache
 def _make_kernel(
-    explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars: int, err_contrib_fn
+    explicit_ode_fn,
+    implicit_ode_fn,
+    implicit_jac_fn,
+    n_vars: int,
+    err_contrib_fn,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
 ):
+    # PID step-control exponents (Soderlind). Defaults (0, 1, 0) give E1=EXPONENT
+    # and E2=E3=0, recovering the elementary I-controller exactly.
+    e1 = EXPONENT * (icoeff + pcoeff + dcoeff)
+    e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
+    e3 = EXPONENT * dcoeff
     lu_solver = make_lu_solver(n_vars, batches_per_block=1)
     batches_per_block = int(lu_solver.batches_per_block)
 
@@ -449,6 +464,9 @@ def _make_kernel(
         n_steps = 0
         accepted = 0
         rejected = 0
+        # PID error history (only lane 0 reads/writes these).
+        err_prev = 1.0
+        err_prev2 = 1.0
 
         while i < y0.shape[0] and save_idx < n_save and t < tf and n_steps < max_steps:
             next_target = times[save_idx]
@@ -660,7 +678,11 @@ def _make_kernel(
                     safe_err = 1e-18
                 else:
                     safe_err = err_norm
-                factor = SAFETY * safe_err ** (-1.0 / 5.0)
+                factor = SAFETY * safe_err**e1 * err_prev**e2 * err_prev2**e3
+                # Advance the PID error history only on accepted steps.
+                if accept:
+                    err_prev2 = err_prev
+                    err_prev = safe_err
                 if factor < FACTOR_MIN:
                     factor = FACTOR_MIN
                 elif factor > FACTOR_MAX:
@@ -714,6 +736,9 @@ def prepare_solve(
     max_steps=100000,
     error_weights=None,
     err_contrib_fn=None,
+    pcoeff=0.0,
+    icoeff=1.0,
+    dcoeff=0.0,
 ):
     if err_contrib_fn is None:
         err_contrib_fn = _default_err_contrib
@@ -730,7 +755,14 @@ def prepare_solve(
     workspace.weights_dev.copy_to_device(weights_arr)
 
     kernel, lu_solver = _make_kernel(
-        explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars, err_contrib_fn
+        explicit_ode_fn,
+        implicit_ode_fn,
+        implicit_jac_fn,
+        n_vars,
+        err_contrib_fn,
+        pcoeff,
+        icoeff,
+        dcoeff,
     )
     threads = as_launch_block_dim(lu_solver.block_dim)
     batches_per_block = int(lu_solver.batches_per_block)
@@ -800,9 +832,19 @@ def _make_jax_launch(
     n_save: int,
     n_params: int,
     err_contrib_fn,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
 ):
     kernel, lu_solver = _make_kernel(
-        explicit_ode_fn, implicit_ode_fn, implicit_jac_fn, n_vars, err_contrib_fn
+        explicit_ode_fn,
+        implicit_ode_fn,
+        implicit_jac_fn,
+        n_vars,
+        err_contrib_fn,
+        pcoeff,
+        icoeff,
+        dcoeff,
     )
     f64_2d = types.float64[:, ::1]
     f64_1d = types.float64[::1]
@@ -854,6 +896,9 @@ def solve(
     return_stats=False,
     error_weights=None,
     err_contrib_fn=None,
+    pcoeff=0.0,
+    icoeff=1.0,
+    dcoeff=0.0,
 ):
     """JAX-callable KenCarp5 custom-kernel solve.
 
@@ -865,6 +910,9 @@ def solve(
     returns one component's squared error contribution; the kernel sums these
     over components and takes ``sqrt(sum / n_vars)``. When ``None``, a default
     weighted-RMS contribution reproduces the standard error norm.
+
+    ``pcoeff``/``icoeff``/``dcoeff`` are the PID step-controller gains; the
+    default ``(0, 1, 0)`` is the classic I-controller.
     """
 
     if err_contrib_fn is None:
@@ -886,6 +934,9 @@ def solve(
             return_stats=return_stats,
             error_weights=error_weights,
             err_contrib_fn=err_contrib_fn,
+            pcoeff=pcoeff,
+            icoeff=icoeff,
+            dcoeff=dcoeff,
         )
 
     return make_custom_vmap_solver(
@@ -911,6 +962,9 @@ def _solve_impl(
     return_stats=False,
     error_weights=None,
     err_contrib_fn=None,
+    pcoeff=0.0,
+    icoeff=1.0,
+    dcoeff=0.0,
 ):
     if err_contrib_fn is None:
         err_contrib_fn = _default_err_contrib
@@ -930,6 +984,9 @@ def _solve_impl(
         n_save,
         n_params,
         err_contrib_fn,
+        pcoeff,
+        icoeff,
+        dcoeff,
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)

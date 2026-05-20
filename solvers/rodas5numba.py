@@ -141,6 +141,9 @@ def _default_err_contrib(y_old, y_new, err_est, rtol, atol, weight):
 SAFETY = 0.9
 FACTOR_MIN = 0.2
 FACTOR_MAX = 6.0
+# Elementary I-controller exponent (-1/k, k the error order). The PID terms in
+# the kernel are expressed relative to this.
+EXPONENT = -1.0 / 6.0
 
 _WORKSPACE_CACHE: dict[tuple[int, int, int, int], object] = {}
 
@@ -202,7 +205,21 @@ def get_workspace(
 
 
 @functools.cache
-def _make_kernel(ode_fn, jac_fn, time_jac_fn, n_vars: int, err_contrib_fn):
+def _make_kernel(
+    ode_fn,
+    jac_fn,
+    time_jac_fn,
+    n_vars: int,
+    err_contrib_fn,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+):
+    # PID step-control exponents (Soderlind). Defaults (0, 1, 0) give E1=EXPONENT
+    # and E2=E3=0, recovering the elementary I-controller exactly.
+    e1 = EXPONENT * (icoeff + pcoeff + dcoeff)
+    e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
+    e3 = EXPONENT * dcoeff
     lu_solver = make_lu_solver(n_vars)
     batches_per_block = int(lu_solver.batches_per_block)
 
@@ -265,6 +282,8 @@ def _make_kernel(ode_fn, jac_fn, time_jac_fn, n_vars: int, err_contrib_fn):
         smem_k8 = cuda.shared.array(shape=vec_size, dtype=np.float64)
 
         smem_err = cuda.shared.array(shape=block_threads, dtype=np.float64)
+        smem_err_prev = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
+        smem_err_prev2 = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
         smem_t = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
         smem_dt = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
         smem_dt_use = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
@@ -299,6 +318,8 @@ def _make_kernel(ode_fn, jac_fn, time_jac_fn, n_vars: int, err_contrib_fn):
             smem_rejected[batch] = 0
             smem_accept[batch] = 0
             smem_reached[batch] = 0
+            smem_err_prev[batch] = 1.0
+            smem_err_prev2[batch] = 1.0
         if tx == 0:
             smem_continue[0] = 1
         cuda.syncthreads()
@@ -643,7 +664,16 @@ def _make_kernel(ode_fn, jac_fn, time_jac_fn, n_vars: int, err_contrib_fn):
                         safe_err = 1e-18
                     else:
                         safe_err = err_norm
-                    factor = SAFETY * safe_err ** (-1.0 / 6.0)
+                    factor = (
+                        SAFETY
+                        * safe_err**e1
+                        * smem_err_prev[batch] ** e2
+                        * smem_err_prev2[batch] ** e3
+                    )
+                    # Advance the PID error history only on accepted steps.
+                    if accept:
+                        smem_err_prev2[batch] = smem_err_prev[batch]
+                        smem_err_prev[batch] = safe_err
                     if factor < FACTOR_MIN:
                         factor = FACTOR_MIN
                     elif factor > FACTOR_MAX:
@@ -704,6 +734,9 @@ def prepare_solve(
     max_steps=100000,
     error_weights=None,
     err_contrib_fn=None,
+    pcoeff=0.0,
+    icoeff=1.0,
+    dcoeff=0.0,
 ):
     del batch_size
     if time_jac_fn is None:
@@ -723,7 +756,7 @@ def prepare_solve(
     workspace.weights_dev.copy_to_device(weights_arr)
 
     kernel, lu_solver = _make_kernel(
-        ode_fn, jac_fn, time_jac_fn, n_vars, err_contrib_fn
+        ode_fn, jac_fn, time_jac_fn, n_vars, err_contrib_fn, pcoeff, icoeff, dcoeff
     )
     batches_per_block = int(lu_solver.batches_per_block)
     threads = as_launch_block_dim(lu_solver.block_dim)
@@ -787,9 +820,12 @@ def _make_jax_launch(
     n_save: int,
     n_params: int,
     err_contrib_fn,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
 ):
     kernel, lu_solver = _make_kernel(
-        ode_fn, jac_fn, time_jac_fn, n_vars, err_contrib_fn
+        ode_fn, jac_fn, time_jac_fn, n_vars, err_contrib_fn, pcoeff, icoeff, dcoeff
     )
     f64_2d = types.float64[:, ::1]
     f64_1d = types.float64[::1]
@@ -835,6 +871,9 @@ def solve(
     return_stats=False,
     error_weights=None,
     err_contrib_fn=None,
+    pcoeff=0.0,
+    icoeff=1.0,
+    dcoeff=0.0,
 ):
     """JAX-callable Rodas5 custom-kernel solve.
 
@@ -852,6 +891,9 @@ def solve(
     returns one component's squared error contribution; the kernel sums these
     over components and takes ``sqrt(sum / n_vars)``. When ``None``, a default
     weighted-RMS contribution reproduces the standard error norm.
+
+    ``pcoeff``/``icoeff``/``dcoeff`` are the PID step-controller gains; the
+    default ``(0, 1, 0)`` is the classic I-controller.
     """
 
     if time_jac_fn is None:
@@ -875,6 +917,9 @@ def solve(
             return_stats=return_stats,
             error_weights=error_weights,
             err_contrib_fn=err_contrib_fn,
+            pcoeff=pcoeff,
+            icoeff=icoeff,
+            dcoeff=dcoeff,
         )
 
     return make_custom_vmap_solver(
@@ -900,6 +945,9 @@ def _solve_impl(
     return_stats=False,
     error_weights=None,
     err_contrib_fn=None,
+    pcoeff=0.0,
+    icoeff=1.0,
+    dcoeff=0.0,
 ):
     del batch_size
     if err_contrib_fn is None:
@@ -912,7 +960,17 @@ def _solve_impl(
     weights_arr = jnp.asarray(build_error_weights(error_weights, n, n_vars))
 
     launch = _make_jax_launch(
-        ode_fn, jac_fn, time_jac_fn, n, n_vars, n_save, n_params, err_contrib_fn
+        ode_fn,
+        jac_fn,
+        time_jac_fn,
+        n,
+        n_vars,
+        n_save,
+        n_params,
+        err_contrib_fn,
+        pcoeff,
+        icoeff,
+        dcoeff,
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)

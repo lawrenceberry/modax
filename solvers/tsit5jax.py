@@ -92,6 +92,9 @@ def solve(
     return_stats=False,
     error_weights=None,
     error_norm_fn=None,
+    pcoeff=0.0,
+    icoeff=1.0,
+    dcoeff=0.0,
 ):
     """Tsit5 ensemble solver for nonlinear ODEs."""
 
@@ -109,6 +112,9 @@ def solve(
             return_stats=return_stats,
             error_weights=error_weights,
             error_norm_fn=error_norm_fn,
+            pcoeff=pcoeff,
+            icoeff=icoeff,
+            dcoeff=dcoeff,
         )
 
     return make_custom_vmap_solver(solve_impl, return_stats=return_stats)(
@@ -124,6 +130,9 @@ def solve(
         "max_steps",
         "return_stats",
         "error_norm_fn",
+        "pcoeff",
+        "icoeff",
+        "dcoeff",
     ),
 )
 def _solve_impl(
@@ -140,6 +149,9 @@ def _solve_impl(
     return_stats=False,
     error_weights=None,
     error_norm_fn=None,
+    pcoeff=0.0,
+    icoeff=1.0,
+    dcoeff=0.0,
 ):
     """Tsit5 ensemble solver implementation.
 
@@ -181,6 +193,12 @@ def _solve_impl(
         per-trajectory row. Must be a traceable
         JAX reduction returning a scalar where ``<= 1`` means "accept". ``None``
         (default) uses the built-in weighted RMS norm.
+    pcoeff, icoeff, dcoeff : float
+        Proportional/integral/derivative gains of the PID step-size controller.
+        The default ``(0, 1, 0)`` is the classic I-controller (current
+        behavior). ``(0.4, 0.3, 0)`` is a typical PI controller that smooths the
+        step sequence on moderately stiff problems; set ``dcoeff`` for a full
+        PID. See Soderlind's digital-filter step control.
 
     Returns
     -------
@@ -264,6 +282,9 @@ def _solve_impl(
         safety=_SAFETY,
         factor_min=_FACTOR_MIN,
         factor_max=_FACTOR_MAX,
+        pcoeff=pcoeff,
+        icoeff=icoeff,
+        dcoeff=dcoeff,
         error_weights_arr=error_weights_arr,
         error_norm_fn=error_norm_fn,
     )
