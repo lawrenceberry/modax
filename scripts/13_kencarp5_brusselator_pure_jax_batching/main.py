@@ -52,7 +52,7 @@ _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 
-_EX_FN, _IM_FN, _ODE_FN, _ = brusselator.make_system(_N_GRID)
+_EX_FN, _IM_FN, _ODE_FN, _, _IM_JAC_FN, _ = brusselator.make_system(_N_GRID)
 
 
 @dataclass(frozen=True)
@@ -218,9 +218,9 @@ def time_baseline_solver(
         assert solver.linear is not None
         ms, result = time_blocked(
             lambda: kencarp5numba_solve(
-                brusselator.explicit_ode_fn_numba_cuda,
-                brusselator.implicit_ode_fn_numba_cuda,
-                brusselator.implicit_jac_fn_numba_cuda,
+                _EX_FN,
+                _IM_FN,
+                _IM_JAC_FN,
                 y0=y0,
                 t_span=_T_SPAN,
                 params=params,

@@ -154,8 +154,8 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key.startswith("modax rodas5 numba"):
         return rodas5numba_solve(
-            robertson.ode_fn_numba_cuda,
-            robertson.jac_fn_numba_cuda,
+            robertson.ode_fn,
+            robertson.jac_fn,
             y0=y0,
             t_span=_T_SPAN,
             params=params,
@@ -204,8 +204,8 @@ def time_solve(
         return ms, None
     if solver.key.startswith("modax rodas5 numba"):
         prepared = rodas5numba_prepare_solve(
-            robertson.ode_fn_numba_cuda,
-            robertson.jac_fn_numba_cuda,
+            robertson.ode_fn,
+            robertson.jac_fn,
             y0=y0,
             t_span=_T_SPAN,
             params=params,

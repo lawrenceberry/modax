@@ -34,6 +34,9 @@ from solvers._numba_common import (
     copy_workspace_inputs,
     initial_step,
     jax_stats,
+    make_cuda_matrix_writer,
+    make_cuda_vector_writer,
+    make_cuda_zero_vector_writer,
     numpy_stats,
 )
 from solvers._numba_common import (
@@ -118,12 +121,6 @@ D5 = -0.377417564392089818
 # fmt: on
 
 
-@cuda.jit(device=True)
-def _zero_dT_device(y, t, params, dT, i):
-    for j in range(dT.shape[1]):
-        dT[i, j] = 0.0
-
-
 SAFETY = 0.9
 FACTOR_MIN = 0.2
 FACTOR_MAX = 6.0
@@ -206,6 +203,13 @@ def _make_kernel(
     e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
     e3 = EXPONENT * dcoeff
     lu_solver = make_lu_solver(n_vars)
+    ode_write = make_cuda_vector_writer(ode_fn, n_vars)
+    jac_write = make_cuda_matrix_writer(jac_fn, n_vars)
+    time_jac_write = (
+        make_cuda_zero_vector_writer(n_vars)
+        if time_jac_fn is None
+        else make_cuda_vector_writer(time_jac_fn, n_vars)
+    )
     batches_per_block = int(lu_solver.batches_per_block)
 
     block_dim = as_launch_block_dim(lu_solver.block_dim)
@@ -340,8 +344,8 @@ def _make_kernel(
                     y_global[i, j] = smem_y[v_offset + j]
             cuda.syncthreads()
             if lane == 0 and active:
-                jac_fn(y_global, smem_t[batch], params, jac, i)
-                time_jac_fn(y_global, smem_t[batch], params, dT_global, i)
+                jac_write(y_global, smem_t[batch], params, jac, i)
+                time_jac_write(y_global, smem_t[batch], params, dT_global, i)
             cuda.syncthreads()
 
             dtgamma_inv = 1.0 / (smem_dt_use[batch] * GAMMA)
@@ -364,7 +368,7 @@ def _make_kernel(
             cuda.syncthreads()
 
             if lane == 0 and active:
-                ode_fn(y_global, smem_t[batch], params, work_global, i)
+                ode_write(y_global, smem_t[batch], params, work_global, i)
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -386,7 +390,7 @@ def _make_kernel(
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
             if lane == 0 and active:
-                ode_fn(
+                ode_write(
                     u_global,
                     smem_t[batch] + C2 * smem_dt_use[batch],
                     params,
@@ -416,7 +420,7 @@ def _make_kernel(
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
             if lane == 0 and active:
-                ode_fn(
+                ode_write(
                     u_global,
                     smem_t[batch] + C3 * smem_dt_use[batch],
                     params,
@@ -449,7 +453,7 @@ def _make_kernel(
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
             if lane == 0 and active:
-                ode_fn(
+                ode_write(
                     u_global,
                     smem_t[batch] + C4 * smem_dt_use[batch],
                     params,
@@ -487,7 +491,7 @@ def _make_kernel(
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
             if lane == 0 and active:
-                ode_fn(
+                ode_write(
                     u_global,
                     smem_t[batch] + C5 * smem_dt_use[batch],
                     params,
@@ -527,7 +531,7 @@ def _make_kernel(
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
             if lane == 0 and active:
-                ode_fn(u_global, smem_t_end[batch], params, work_global, i)
+                ode_write(u_global, smem_t_end[batch], params, work_global, i)
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -553,7 +557,7 @@ def _make_kernel(
             cuda.syncthreads()
 
             if lane == 0 and active:
-                ode_fn(u_global, smem_t_end[batch], params, work_global, i)
+                ode_write(u_global, smem_t_end[batch], params, work_global, i)
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -580,7 +584,7 @@ def _make_kernel(
             cuda.syncthreads()
 
             if lane == 0 and active:
-                ode_fn(u_global, smem_t_end[batch], params, work_global, i)
+                ode_write(u_global, smem_t_end[batch], params, work_global, i)
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -720,8 +724,6 @@ def prepare_solve(
     dcoeff=0.0,
 ):
     del batch_size
-    if time_jac_fn is None:
-        time_jac_fn = _zero_dT_device
     y0_arr, times, params_arr, dt0 = _normalize_inputs(
         y0, t_span, params, first_step, solver_name="Rodas5"
     )
@@ -855,8 +857,8 @@ def solve(
     """JAX-callable Rodas5 custom-kernel solve.
 
     ``time_jac_fn`` is the partial time derivative ``df/dt`` of the ODE
-    right-hand side, with CUDA-device signature ``(y, t, params, dT, i) -> None``
-    that writes the vector into ``dT[i, :]``. Required for non-autonomous
+    right-hand side, with pure CUDA-device signature
+    ``(y_row, t, p_row) -> dT_row``. Required for non-autonomous
     systems to preserve fifth-order accuracy. When ``None``, defaults to a
     zero stub — correct only for autonomous problems (``df/dt = 0``).
 
@@ -867,9 +869,6 @@ def solve(
     ``pcoeff``/``icoeff``/``dcoeff`` are the PID step-controller gains; the
     default ``(0, 1, 0)`` is the classic I-controller.
     """
-
-    if time_jac_fn is None:
-        time_jac_fn = _zero_dT_device
 
     def solve_impl(y0_arr, t_span_arr, params_arr):
         return _solve_impl(

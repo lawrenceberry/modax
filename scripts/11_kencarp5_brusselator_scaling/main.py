@@ -54,7 +54,14 @@ _N_RUNS = 1
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
-_EXPLICIT_ODE_FN, _IMPLICIT_ODE_FN, _ODE_FN, _ = brusselator.make_system(_N_GRID)
+(
+    _EXPLICIT_ODE_FN,
+    _IMPLICIT_ODE_FN,
+    _ODE_FN,
+    _,
+    _IMPLICIT_JAC_FN,
+    _,
+) = brusselator.make_system(_N_GRID)
 _SCENARIOS = (
     ("identical", 0.0),
     ("divergent", 1.0),
@@ -113,9 +120,9 @@ CASES: tuple[Case, ...] = (
         color="#f0a202",
         marker="P",
         solve_fn=kencarp5numba_solve,
-        explicit_ode_fn=brusselator.explicit_ode_fn_numba_cuda,
-        implicit_ode_fn=brusselator.implicit_ode_fn_numba_cuda,
-        implicit_jac_fn=brusselator.implicit_jac_fn_numba_cuda,
+        explicit_ode_fn=_EXPLICIT_ODE_FN,
+        implicit_ode_fn=_IMPLICIT_ODE_FN,
+        implicit_jac_fn=_IMPLICIT_JAC_FN,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
         linear=True,
@@ -126,9 +133,9 @@ CASES: tuple[Case, ...] = (
         color="#d35400",
         marker="X",
         solve_fn=kencarp5numba_solve,
-        explicit_ode_fn=brusselator.explicit_ode_fn_numba_cuda,
-        implicit_ode_fn=brusselator.implicit_ode_fn_numba_cuda,
-        implicit_jac_fn=brusselator.implicit_jac_fn_numba_cuda,
+        explicit_ode_fn=_EXPLICIT_ODE_FN,
+        implicit_ode_fn=_IMPLICIT_ODE_FN,
+        implicit_jac_fn=_IMPLICIT_JAC_FN,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
         linear=False,

@@ -16,6 +16,7 @@ import jax.numpy as jnp
 
 from solvers._jax_common import (
     build_error_weights,
+    eval_ode_fn,
     make_custom_vmap_solver,
     normalize_inputs,
     solve_adaptive_ensemble,
@@ -211,7 +212,7 @@ def _solve_impl(
             return jax.lax.cond(
                 has_fsal,
                 lambda _: k_fsal,
-                lambda _: ode_fn(y, t, params_one),
+                lambda _: eval_ode_fn(ode_fn, y, t, params_one),
                 operand=None,
             )
 
@@ -220,24 +221,24 @@ def _solve_impl(
             k1 = _fresh_k1(y, t, k_fsal, has_fsal)
 
             u = y + dt * (_A21 * k1)
-            k2 = ode_fn(u, t + _C2 * dt, params_one)
+            k2 = eval_ode_fn(ode_fn, u, t + _C2 * dt, params_one)
 
             u = y + dt * (_A31 * k1 + _A32 * k2)
-            k3 = ode_fn(u, t + _C3 * dt, params_one)
+            k3 = eval_ode_fn(ode_fn, u, t + _C3 * dt, params_one)
 
             u = y + dt * (_A41 * k1 + _A42 * k2 + _A43 * k3)
-            k4 = ode_fn(u, t + _C4 * dt, params_one)
+            k4 = eval_ode_fn(ode_fn, u, t + _C4 * dt, params_one)
 
             u = y + dt * (_A51 * k1 + _A52 * k2 + _A53 * k3 + _A54 * k4)
-            k5 = ode_fn(u, t + _C5 * dt, params_one)
+            k5 = eval_ode_fn(ode_fn, u, t + _C5 * dt, params_one)
 
             u = y + dt * (_A61 * k1 + _A62 * k2 + _A63 * k3 + _A64 * k4 + _A65 * k5)
-            k6 = ode_fn(u, t + _C6 * dt, params_one)
+            k6 = eval_ode_fn(ode_fn, u, t + _C6 * dt, params_one)
 
             y_new = y + dt * (
                 _B1 * k1 + _B2 * k2 + _B3 * k3 + _B4 * k4 + _B5 * k5 + _B6 * k6
             )
-            k7 = ode_fn(y_new, t + _C7 * dt, params_one)
+            k7 = eval_ode_fn(ode_fn, y_new, t + _C7 * dt, params_one)
 
             err_est = dt * (
                 _E1 * k1

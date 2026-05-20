@@ -23,7 +23,6 @@ These bounds are the signature of a solver that stays on the manifold.
 
 import jax.numpy as jnp
 import numpy as np
-from numba import cuda
 
 TIMES = (0.0, 5.0)
 
@@ -34,44 +33,25 @@ PARAMS = jnp.array([0.5], dtype=np.float64)
 N_PARAMS = 1
 
 
-def _rhs(y0, y1, y2, rho):
+def ode_fn(y, t, p):
     sigma = 10.0
     beta = 8.0 / 3.0
     return (
-        sigma * (y1 - y0),
-        y0 * (rho - y2) - y1,
-        y0 * y1 - beta * y2,
+        sigma * (y[1] - y[0]),
+        y[0] * (p[0] - y[2]) - y[1],
+        y[0] * y[1] - beta * y[2],
     )
 
 
-_rhs_cuda = cuda.jit(device=True)(_rhs)
-
-
-def ode_fn(y, t, p):
-    del t
-    dy0, dy1, dy2 = _rhs(y[0], y[1], y[2], p[0])
-    return jnp.array([dy0, dy1, dy2])
-
-
-@cuda.jit(device=True)
-def ode_fn_numba_cuda(y, t, p, dy, i):
-    dy[i, 0], dy[i, 1], dy[i, 2] = _rhs_cuda(y[i, 0], y[i, 1], y[i, 2], p[i, 0])
-
-
-@cuda.jit(device=True)
-def jac_fn_numba_cuda(y, t, p, jac, i):
+def jac_fn(y, t, p):
     sigma = 10.0
     beta = 8.0 / 3.0
-    rho = p[i, 0]
-    jac[i, 0, 0] = -sigma
-    jac[i, 0, 1] = sigma
-    jac[i, 0, 2] = 0.0
-    jac[i, 1, 0] = rho - y[i, 2]
-    jac[i, 1, 1] = -1.0
-    jac[i, 1, 2] = -y[i, 0]
-    jac[i, 2, 0] = y[i, 1]
-    jac[i, 2, 1] = y[i, 0]
-    jac[i, 2, 2] = -beta
+    rho = p[0]
+    return (
+        (-sigma, sigma, 0.0),
+        (rho - y[2], -1.0, -y[0]),
+        (y[1], y[0], -beta),
+    )
 
 
 def make_params(size: int, seed: int = 42) -> jnp.ndarray:

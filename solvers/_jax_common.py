@@ -44,6 +44,11 @@ def normalize_y0_params(y0, params):
     return y0_arr, params_arr, n, n_vars
 
 
+def eval_ode_fn(fn: Callable, y, t, params):
+    """Evaluate an ODE callback and normalize tuple/list outputs to an array."""
+    return jnp.asarray(fn(y, t, params))
+
+
 def normalize_inputs(y0, t_span, params, first_step, batch_size):
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)

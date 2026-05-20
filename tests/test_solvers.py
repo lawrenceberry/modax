@@ -10,7 +10,6 @@ from solvers.tsit5numba import solve as tsit5numba_solve
 from tests.benchmark_helpers import (
     assert_case_output,
     benchmark_solve,
-    numba_callbacks,
     parametrize_system_cases,
 )
 
@@ -32,11 +31,10 @@ def test_tsit5_reference_system(benchmark, case):
 
 @parametrize_system_cases
 def test_tsit5numba_reference_system(benchmark, case):
-    ode_fn, _, _, _, _ = numba_callbacks(case.name)
     result = benchmark_solve(
         benchmark,
         lambda: tsit5numba_solve(
-            ode_fn,
+            case.ode_fn,
             case.y0,
             case.t_span,
             case.params,
@@ -65,13 +63,12 @@ def test_kencarp5_reference_system(benchmark, case):
 
 @parametrize_system_cases
 def test_kencarp5numba_reference_system(benchmark, case):
-    _, explicit_fn, implicit_fn, implicit_jac_fn, _ = numba_callbacks(case.name)
     result = benchmark_solve(
         benchmark,
         lambda: kencarp5numba_solve(
-            explicit_fn,
-            implicit_fn,
-            implicit_jac_fn,
+            case.explicit_ode_fn,
+            case.implicit_ode_fn,
+            case.implicit_jac_fn,
             case.y0,
             case.t_span,
             case.params,
@@ -101,12 +98,11 @@ def test_rodas5_reference_system(benchmark, case, lu_precision):
 
 @parametrize_system_cases
 def test_rodas5numba_reference_system(benchmark, case):
-    ode_fn, _, _, _, jac_fn = numba_callbacks(case.name)
     result = benchmark_solve(
         benchmark,
         lambda: rodas5numba_solve(
-            ode_fn,
-            jac_fn,
+            case.ode_fn,
+            case.jac_fn,
             case.y0,
             case.t_span,
             case.params,

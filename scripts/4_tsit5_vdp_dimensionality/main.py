@@ -201,7 +201,7 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
             tsit5numba_clear_caches()
 
     assert case.solve_fn is not None
-    ode_fn, _ = vdp.make_system(n_osc, mu=_MU_NONSTIFF)
+    ode_fn, _, _ = vdp.make_system(n_osc, mu=_MU_NONSTIFF)
     y0_j = jnp.asarray(y0_batch)
     p_j = jnp.asarray(params)
 

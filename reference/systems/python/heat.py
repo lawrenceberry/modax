@@ -25,7 +25,8 @@ fp64 and vary only LU precision.
 
 import jax.numpy as jnp
 import numpy as np
-from numba import cuda
+
+from reference.systems.python._tuple_codegen import make_matrix_callback, make_tuple_callback
 
 TIMES = jnp.array((0.0, 0.025, 0.05, 0.075, 0.1), dtype=jnp.float64)
 
@@ -42,58 +43,45 @@ def make_system(n_vars):
         + np.diag(inv_dx2 * np.ones(n_vars - 1), 1)
         + np.diag(inv_dx2 * np.ones(n_vars - 1), -1)
     )
-    M = jnp.array(M_np, dtype=jnp.float64)
-
     x = np.arange(1, n_vars + 1) * dx
     y0 = jnp.array(np.sin(np.pi * x), dtype=jnp.float64)
 
-    def ode_fn(y, t, p):
-        del t
-        return p[0] * (M @ y)
+    values = []
+    for i in range(n_vars):
+        terms = [f"{M_np[i, j]:.17g} * y[{j}]" for j in range(n_vars) if M_np[i, j]]
+        values.append(f"p[0] * ({' + '.join(terms)})")
 
-    def explicit_ode_fn(y, t, p):
-        del y, t, p
-        return jnp.zeros_like(y0)
-
-    def implicit_ode_fn(y, t, p):
-        return ode_fn(y, t, p)
+    ode_fn = make_tuple_callback("ode_fn", [], values)
+    zero_fn = make_tuple_callback("zero_ode_fn", [], ["0.0"] * n_vars)
+    jac_fn = make_matrix_callback(
+        "jac_fn",
+        [],
+        [
+            [
+                f"p[0] * {M_np[row, col]:.17g}" if M_np[row, col] else "0.0"
+                for col in range(n_vars)
+            ]
+            for row in range(n_vars)
+        ],
+    )
 
     return {
         "n_vars": n_vars,
         "ode_fn": ode_fn,
-        "explicit_ode_fn": explicit_ode_fn,
-        "implicit_ode_fn": implicit_ode_fn,
+        "explicit_ode_fn": zero_fn,
+        "implicit_ode_fn": ode_fn,
+        "jac_fn": jac_fn,
+        "implicit_jac_fn": jac_fn,
         "y0": y0,
     }
 
 
-@cuda.jit(device=True)
-def ode_fn_numba_cuda(y, t, p, dy, i):
-    """Hardcoded for n=4 (inv_dx2=25)."""
-    scale = p[i, 0] * 25.0
-    dy[i, 0] = scale * (-2.0 * y[i, 0] + y[i, 1])
-    dy[i, 1] = scale * (y[i, 0] - 2.0 * y[i, 1] + y[i, 2])
-    dy[i, 2] = scale * (y[i, 1] - 2.0 * y[i, 2] + y[i, 3])
-    dy[i, 3] = scale * (y[i, 2] - 2.0 * y[i, 3])
-
-
-@cuda.jit(device=True)
-def jac_fn_numba_cuda(y, t, p, jac, i):
-    """Hardcoded for n=4 (inv_dx2=25)."""
-    for r in range(4):
-        for c in range(4):
-            jac[i, r, c] = 0.0
-    scale = p[i, 0] * 25.0
-    jac[i, 0, 0] = -2.0 * scale
-    jac[i, 0, 1] = scale
-    jac[i, 1, 0] = scale
-    jac[i, 1, 1] = -2.0 * scale
-    jac[i, 1, 2] = scale
-    jac[i, 2, 1] = scale
-    jac[i, 2, 2] = -2.0 * scale
-    jac[i, 2, 3] = scale
-    jac[i, 3, 2] = scale
-    jac[i, 3, 3] = -2.0 * scale
+_DEFAULT = make_system(4)
+ode_fn = _DEFAULT["ode_fn"]
+explicit_ode_fn = _DEFAULT["explicit_ode_fn"]
+implicit_ode_fn = _DEFAULT["implicit_ode_fn"]
+jac_fn = _DEFAULT["jac_fn"]
+implicit_jac_fn = _DEFAULT["implicit_jac_fn"]
 
 
 def make_params(size, seed=42):

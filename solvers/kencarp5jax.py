@@ -24,6 +24,7 @@ import numpy as np
 
 from solvers._jax_common import (
     build_error_weights,
+    eval_ode_fn,
     make_custom_vmap_solver,
     normalize_inputs,
     solve_adaptive_ensemble,
@@ -314,7 +315,9 @@ def _solve_impl(
         Solution at each save time for each trajectory. If ``return_stats`` is
         True, returns ``(solution, stats)``.
     """
-    implicit_jac_fn = jax.jacfwd(implicit_ode_fn, argnums=0)
+    explicit_eval = functools.partial(eval_ode_fn, explicit_ode_fn)
+    implicit_eval = functools.partial(eval_ode_fn, implicit_ode_fn)
+    implicit_jac_fn = jax.jacfwd(implicit_eval, argnums=0)
 
     y0_arr, times, params_arr, n, n_vars, _, dt0, bs, n_chunks = normalize_inputs(
         y0, t_span, params, first_step, batch_size
@@ -325,10 +328,10 @@ def _solve_impl(
 
     def step_factory(params_one):
         def f_explicit(u, t_stage):
-            return explicit_ode_fn(u, t_stage, params_one)
+            return explicit_eval(u, t_stage, params_one)
 
         def f_implicit(u, t_stage):
-            return implicit_ode_fn(u, t_stage, params_one)
+            return implicit_eval(u, t_stage, params_one)
 
         def jac_implicit(u, t_stage):
             return implicit_jac_fn(u, t_stage, params_one)

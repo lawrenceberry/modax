@@ -32,6 +32,7 @@ from solvers._numba_common import (
     copy_workspace_inputs,
     initial_step,
     jax_stats,
+    make_cuda_vector_writer,
     numpy_stats,
 )
 from solvers._numba_common import (
@@ -161,6 +162,7 @@ def _make_kernel(
     e1 = EXPONENT * (icoeff + pcoeff + dcoeff)
     e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
     e3 = EXPONENT * dcoeff
+    ode_write = make_cuda_vector_writer(ode_fn, n_vars)
 
     @cuda.jit
     def kernel(
@@ -219,27 +221,27 @@ def _make_kernel(
                 for j in range(n_vars):
                     k1[i, j] = k7[i, j]
             else:
-                ode_fn(y, t, params, k1, i)
+                ode_write(y, t, params, k1, i)
 
             for j in range(n_vars):
                 u[i, j] = y[i, j] + dt_use * (A21 * k1[i, j])
-            ode_fn(u, t + C2 * dt_use, params, k2, i)
+            ode_write(u, t + C2 * dt_use, params, k2, i)
 
             for j in range(n_vars):
                 u[i, j] = y[i, j] + dt_use * (A31 * k1[i, j] + A32 * k2[i, j])
-            ode_fn(u, t + C3 * dt_use, params, k3, i)
+            ode_write(u, t + C3 * dt_use, params, k3, i)
 
             for j in range(n_vars):
                 u[i, j] = y[i, j] + dt_use * (
                     A41 * k1[i, j] + A42 * k2[i, j] + A43 * k3[i, j]
                 )
-            ode_fn(u, t + C4 * dt_use, params, k4, i)
+            ode_write(u, t + C4 * dt_use, params, k4, i)
 
             for j in range(n_vars):
                 u[i, j] = y[i, j] + dt_use * (
                     A51 * k1[i, j] + A52 * k2[i, j] + A53 * k3[i, j] + A54 * k4[i, j]
                 )
-            ode_fn(u, t + C5 * dt_use, params, k5, i)
+            ode_write(u, t + C5 * dt_use, params, k5, i)
 
             for j in range(n_vars):
                 u[i, j] = y[i, j] + dt_use * (
@@ -249,7 +251,7 @@ def _make_kernel(
                     + A64 * k4[i, j]
                     + A65 * k5[i, j]
                 )
-            ode_fn(u, t + C6 * dt_use, params, k6, i)
+            ode_write(u, t + C6 * dt_use, params, k6, i)
 
             for j in range(n_vars):
                 u[i, j] = y[i, j] + dt_use * (
@@ -260,7 +262,7 @@ def _make_kernel(
                     + B5 * k5[i, j]
                     + B6 * k6[i, j]
                 )
-            ode_fn(u, t + C7 * dt_use, params, k7, i)
+            ode_write(u, t + C7 * dt_use, params, k7, i)
 
             err_sum = 0.0
             for j in range(n_vars):

@@ -6,9 +6,8 @@ addition to evaluating ``f`` at the stage time.  These tests use a linear
 non-autonomous problem with a closed-form solution to verify both the JAX
 and the numba/CUDA Rodas5 implementations.
 
-Reference ODE:  dy/dt = -lambda * y + cos(omega * t),   y(0) = 0
-Closed form:    y(t) = (lambda * cos(omega t) + omega * sin(omega t)
-                       - lambda * exp(-lambda t)) / (lambda**2 + omega**2)
+Reference ODE:  dy/dt = -lambda * y + forcing * t,   y(0) = 0
+Closed form:    y(t) = forcing * (lambda * t - 1 + exp(-lambda t)) / lambda**2
 """
 
 import jax
@@ -23,49 +22,39 @@ from solvers.rodas5numba import solve as rodas5numba_solve
 jax.config.update("jax_enable_x64", True)
 
 LAMBDA = 10.0
-OMEGA = 5.0
+FORCING = 5.0
 T_FINAL = 1.0
 N_SAVE = 11
 
 
-def _exact(t, lam, omega):
-    return (
-        lam * np.cos(omega * t) + omega * np.sin(omega * t) - lam * np.exp(-lam * t)
-    ) / (lam**2 + omega**2)
+def _exact(t, lam, forcing):
+    return forcing * (lam * t - 1.0 + np.exp(-lam * t)) / (lam**2)
 
 
-def _ode_jax(y, t, p):
-    lam, omega = p[0], p[1]
-    return -lam * y + jnp.cos(omega * t)
+def ode_fn(y, t, p):
+    return (-p[0] * y[0] + p[1] * t,)
 
 
-@cuda.jit(device=True)
-def _ode_cuda(y, t, p, dy, i):
-    dy[i, 0] = -p[i, 0] * y[i, 0] + np.cos(p[i, 1] * t)
+def jac_fn(y, t, p):
+    return ((-p[0],),)
 
 
-@cuda.jit(device=True)
-def _jac_cuda(y, t, p, jac, i):
-    jac[i, 0, 0] = -p[i, 0]
-
-
-@cuda.jit(device=True)
-def _time_jac_cuda(y, t, p, dT, i):
-    dT[i, 0] = -p[i, 1] * np.sin(p[i, 1] * t)
+def time_jac_fn(y, t, p):
+    return (p[1],)
 
 
 def _setup():
     y0 = np.zeros((1, 1), dtype=np.float64)
     t_span = np.linspace(0.0, T_FINAL, N_SAVE, dtype=np.float64)
-    params = np.array([[LAMBDA, OMEGA]], dtype=np.float64)
-    exact = _exact(t_span, LAMBDA, OMEGA)
+    params = np.array([[LAMBDA, FORCING]], dtype=np.float64)
+    exact = _exact(t_span, LAMBDA, FORCING)
     return y0, t_span, params, exact
 
 
 def test_rodas5jax_nonautonomous_matches_analytical():
     y0, t_span, params, exact = _setup()
     sol = rodas5jax_solve(
-        _ode_jax,
+        ode_fn,
         jnp.asarray(y0),
         jnp.asarray(t_span),
         jnp.asarray(params),
@@ -89,7 +78,7 @@ def test_rodas5jax_nonautonomous_convergence():
     errs = []
     for rtol in (1e-4, 1e-6, 1e-8):
         sol = rodas5jax_solve(
-            _ode_jax,
+            ode_fn,
             jnp.asarray(y0),
             jnp.asarray(t_span),
             jnp.asarray(params),
@@ -110,12 +99,12 @@ def test_rodas5jax_nonautonomous_convergence():
 def test_rodas5numba_nonautonomous_matches_analytical():
     y0, t_span, params, exact = _setup()
     sol = rodas5numba_solve(
-        _ode_cuda,
-        _jac_cuda,
+        ode_fn,
+        jac_fn,
         y0,
         t_span,
         params,
-        time_jac_fn=_time_jac_cuda,
+        time_jac_fn=time_jac_fn,
         rtol=1e-9,
         atol=1e-11,
         first_step=1e-3,
@@ -132,16 +121,15 @@ def test_rodas5numba_autonomous_default_unchanged():
     autonomous problem correctly: the kernel uses a zero-stub for dT and
     every ``D_i * dT`` term contributes zero.
     """
-    # Re-use the same RHS with omega=0, so f = -lambda*y + cos(0) = -lambda*y + 1.
-    # Equilibrium 1/lambda, exact: y(t) = 1/lambda + (1 - 1/lambda) exp(-lambda*t).
+    # Re-use the same RHS with zero forcing, so f = -lambda*y.
     y0 = np.ones((1, 1), dtype=np.float64)
     t_span = np.linspace(0.0, 1.0, 6, dtype=np.float64)
     params = np.array([[LAMBDA, 0.0]], dtype=np.float64)
-    exact = 1.0 / LAMBDA + (1.0 - 1.0 / LAMBDA) * np.exp(-LAMBDA * t_span)
+    exact = np.exp(-LAMBDA * t_span)
 
     sol = rodas5numba_solve(
-        _ode_cuda,
-        _jac_cuda,
+        ode_fn,
+        jac_fn,
         y0,
         t_span,
         params,

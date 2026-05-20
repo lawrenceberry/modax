@@ -98,7 +98,8 @@ trajectory that exercises both halves of the IMEX split.
 
 import jax.numpy as jnp
 import numpy as np
-from numba import cuda
+
+from reference.systems.python._tuple_codegen import make_matrix_callback, make_tuple_callback
 
 N_GRID = 32
 N_VARS = 2 * N_GRID
@@ -125,34 +126,6 @@ def _equilibrium(n_grid: int, a: float = A, b: float = B):
 Y0 = jnp.asarray(_equilibrium(N_GRID), dtype=jnp.float64)
 
 
-def _explicit_rhs_cell(u, v, a_eff, b_eff):
-    u2v = u * u * v
-    return (
-        a_eff + u2v - (b_eff + 1.0) * u,
-        b_eff * u - u2v,
-    )
-
-
-def _implicit_rhs_cell(u, v, u_left, u_right, v_left, v_right, diff_coeff):
-    return (
-        diff_coeff * (u_left - 2.0 * u + u_right),
-        diff_coeff * (v_left - 2.0 * v + v_right),
-    )
-
-
-def _rhs_cell(u, v, u_left, u_right, v_left, v_right, a_eff, b_eff, diff_coeff):
-    u2v = u * u * v
-    return (
-        a_eff + u2v - (b_eff + 1.0) * u + diff_coeff * (u_left - 2.0 * u + u_right),
-        b_eff * u - u2v + diff_coeff * (v_left - 2.0 * v + v_right),
-    )
-
-
-_explicit_rhs_cell_cuda = cuda.jit(device=True)(_explicit_rhs_cell)
-_implicit_rhs_cell_cuda = cuda.jit(device=True)(_implicit_rhs_cell)
-_rhs_cell_cuda = cuda.jit(device=True)(_rhs_cell)
-
-
 def make_system(
     n_grid: int,
     *,
@@ -170,186 +143,63 @@ def make_system(
     diff_coeff = alpha / (dx * dx)
     y0 = jnp.asarray(_equilibrium(n_grid, a, b), dtype=jnp.float64)
 
-    def explicit_ode_fn(y, t, p):
-        del t
-        u = y[0::2]
-        v = y[1::2]
-        du, dv = _explicit_rhs_cell(u, v, p[0] * a, p[0] * b)
-        return jnp.stack([du, dv], axis=1).ravel()
-
-    def implicit_ode_fn(y, t, p):
-        del t, p
-        u = y[0::2]
-        v = y[1::2]
-        du, dv = _implicit_rhs_cell(
-            u,
-            v,
-            jnp.roll(u, 1),
-            jnp.roll(u, -1),
-            jnp.roll(v, 1),
-            jnp.roll(v, -1),
-            diff_coeff,
-        )
-        return jnp.stack([du, dv], axis=1).ravel()
-
-    def ode_fn(y, t, p):
-        del t
-        u = y[0::2]
-        v = y[1::2]
-        du, dv = _rhs_cell(
-            u,
-            v,
-            jnp.roll(u, 1),
-            jnp.roll(u, -1),
-            jnp.roll(v, 1),
-            jnp.roll(v, -1),
-            p[0] * a,
-            p[0] * b,
-            diff_coeff,
-        )
-        return jnp.stack([du, dv], axis=1).ravel()
-
-    return explicit_ode_fn, implicit_ode_fn, ode_fn, y0
-
-
-_DEFAULT_EXPLICIT, _DEFAULT_IMPLICIT, _DEFAULT_ODE, _ = make_system(N_GRID)
-
-
-def explicit_ode_fn(y, t, p):
-    return _DEFAULT_EXPLICIT(y, t, p)
-
-
-def implicit_ode_fn(y, t, p):
-    return _DEFAULT_IMPLICIT(y, t, p)
-
-
-def ode_fn(y, t, p):
-    return _DEFAULT_ODE(y, t, p)
-
-
-@cuda.jit(device=True)
-def ode_fn_numba_cuda(y, t, p, dy, i):
-    scale = p[i, 0]
-    a_eff = scale * A
-    b_eff = scale * B
-    n_grid = y.shape[1] // 2
-    dx = L / n_grid
-    diff_coeff = ALPHA / (dx * dx)
+    explicit_values = []
+    implicit_values = []
+    ode_values = []
+    n_vars = 2 * n_grid
+    implicit_jac_rows = [["0.0" for _ in range(n_vars)] for _ in range(n_vars)]
+    jac_rows = [["0.0" for _ in range(n_vars)] for _ in range(n_vars)]
     for g in range(n_grid):
-        left = g - 1
-        if left < 0:
-            left = n_grid - 1
-        right = g + 1
-        if right >= n_grid:
-            right = 0
-        u = y[i, 2 * g]
-        v = y[i, 2 * g + 1]
-        dy[i, 2 * g], dy[i, 2 * g + 1] = _rhs_cell_cuda(
-            u,
-            v,
-            y[i, 2 * left],
-            y[i, 2 * right],
-            y[i, 2 * left + 1],
-            y[i, 2 * right + 1],
-            a_eff,
-            b_eff,
-            diff_coeff,
-        )
+        left = (g - 1) % n_grid
+        right = (g + 1) % n_grid
+        u = 2 * g
+        v = u + 1
+        u_left = 2 * left
+        u_right = 2 * right
+        v_left = u_left + 1
+        v_right = u_right + 1
+        u2v = f"y[{u}] * y[{u}] * y[{v}]"
+        exp_u = f"p[0] * {a:.17g} + {u2v} - (p[0] * {b:.17g} + 1.0) * y[{u}]"
+        exp_v = f"p[0] * {b:.17g} * y[{u}] - {u2v}"
+        imp_u = f"{diff_coeff:.17g} * (y[{u_left}] - 2.0 * y[{u}] + y[{u_right}])"
+        imp_v = f"{diff_coeff:.17g} * (y[{v_left}] - 2.0 * y[{v}] + y[{v_right}])"
+        explicit_values.extend([exp_u, exp_v])
+        implicit_values.extend([imp_u, imp_v])
+        ode_values.extend([f"({exp_u}) + ({imp_u})", f"({exp_v}) + ({imp_v})"])
+
+        for row, self_col, left_col, right_col in (
+            (u, u, u_left, u_right),
+            (v, v, v_left, v_right),
+        ):
+            coeffs: dict[int, list[str]] = {self_col: [f"-2.0 * {diff_coeff:.17g}"]}
+            coeffs.setdefault(left_col, []).append(f"{diff_coeff:.17g}")
+            coeffs.setdefault(right_col, []).append(f"{diff_coeff:.17g}")
+            for col, terms in coeffs.items():
+                implicit_jac_rows[row][col] = " + ".join(terms)
+                jac_rows[row][col] = " + ".join(terms)
+
+        jac_rows[u][u] = f"({jac_rows[u][u]}) + 2.0 * y[{u}] * y[{v}] - (p[0] * {b:.17g} + 1.0)"
+        jac_rows[u][v] = f"({jac_rows[u][v]}) + y[{u}] * y[{u}]"
+        jac_rows[v][u] = f"({jac_rows[v][u]}) + p[0] * {b:.17g} - 2.0 * y[{u}] * y[{v}]"
+        jac_rows[v][v] = f"({jac_rows[v][v]}) - y[{u}] * y[{u}]"
+
+    explicit_ode_fn = make_tuple_callback("explicit_ode_fn", [], explicit_values)
+    implicit_ode_fn = make_tuple_callback("implicit_ode_fn", [], implicit_values)
+    ode_fn = make_tuple_callback("ode_fn", [], ode_values)
+    implicit_jac_fn = make_matrix_callback("implicit_jac_fn", [], implicit_jac_rows)
+    jac_fn = make_matrix_callback("jac_fn", [], jac_rows)
+
+    return explicit_ode_fn, implicit_ode_fn, ode_fn, y0, implicit_jac_fn, jac_fn
 
 
-@cuda.jit(device=True)
-def explicit_ode_fn_numba_cuda(y, t, p, dy, i):
-    scale = p[i, 0]
-    a_eff = scale * A
-    b_eff = scale * B
-    n_grid = y.shape[1] // 2
-    for g in range(n_grid):
-        u = y[i, 2 * g]
-        v = y[i, 2 * g + 1]
-        dy[i, 2 * g], dy[i, 2 * g + 1] = _explicit_rhs_cell_cuda(u, v, a_eff, b_eff)
-
-
-@cuda.jit(device=True)
-def implicit_ode_fn_numba_cuda(y, t, p, dy, i):
-    n_grid = y.shape[1] // 2
-    dx = L / n_grid
-    diff_coeff = ALPHA / (dx * dx)
-    for g in range(n_grid):
-        left = g - 1
-        if left < 0:
-            left = n_grid - 1
-        right = g + 1
-        if right >= n_grid:
-            right = 0
-        u = y[i, 2 * g]
-        v = y[i, 2 * g + 1]
-        dy[i, 2 * g], dy[i, 2 * g + 1] = _implicit_rhs_cell_cuda(
-            u,
-            v,
-            y[i, 2 * left],
-            y[i, 2 * right],
-            y[i, 2 * left + 1],
-            y[i, 2 * right + 1],
-            diff_coeff,
-        )
-
-
-@cuda.jit(device=True)
-def implicit_jac_fn_numba_cuda(y, t, p, jac, i):
-    n_vars = jac.shape[1]
-    n_grid = n_vars // 2
-    dx = L / n_grid
-    diff_coeff = ALPHA / (dx * dx)
-    for r in range(n_vars):
-        for c in range(n_vars):
-            jac[i, r, c] = 0.0
-    for g in range(n_grid):
-        left = g - 1
-        if left < 0:
-            left = n_grid - 1
-        right = g + 1
-        if right >= n_grid:
-            right = 0
-        u_row = 2 * g
-        v_row = 2 * g + 1
-        jac[i, u_row, 2 * g] += -2.0 * diff_coeff
-        jac[i, u_row, 2 * left] += diff_coeff
-        jac[i, u_row, 2 * right] += diff_coeff
-        jac[i, v_row, 2 * g + 1] += -2.0 * diff_coeff
-        jac[i, v_row, 2 * left + 1] += diff_coeff
-        jac[i, v_row, 2 * right + 1] += diff_coeff
-
-
-@cuda.jit(device=True)
-def jac_fn_numba_cuda(y, t, p, jac, i):
-    n_vars = jac.shape[1]
-    n_grid = n_vars // 2
-    for r in range(n_vars):
-        for c in range(n_vars):
-            jac[i, r, c] = 0.0
-    scale = p[i, 0]
-    b_eff = scale * B
-    dx = L / n_grid
-    diff_coeff = ALPHA / (dx * dx)
-    for g in range(n_grid):
-        left = g - 1
-        if left < 0:
-            left = n_grid - 1
-        right = g + 1
-        if right >= n_grid:
-            right = 0
-        u_idx = 2 * g
-        v_idx = u_idx + 1
-        u = y[i, u_idx]
-        v = y[i, v_idx]
-        jac[i, u_idx, u_idx] = 2.0 * u * v - (b_eff + 1.0) - 2.0 * diff_coeff
-        jac[i, u_idx, v_idx] = u * u
-        jac[i, v_idx, u_idx] = b_eff - 2.0 * u * v
-        jac[i, v_idx, v_idx] = -u * u - 2.0 * diff_coeff
-        jac[i, u_idx, 2 * left] += diff_coeff
-        jac[i, u_idx, 2 * right] += diff_coeff
-        jac[i, v_idx, 2 * left + 1] += diff_coeff
-        jac[i, v_idx, 2 * right + 1] += diff_coeff
+(
+    explicit_ode_fn,
+    implicit_ode_fn,
+    ode_fn,
+    _,
+    implicit_jac_fn,
+    jac_fn,
+) = make_system(N_GRID)
 
 
 def make_params(size: int, seed: int = 42) -> np.ndarray:

@@ -17,35 +17,10 @@ This allows precise validation at arbitrary stiffness without a reference solver
 
 import jax.numpy as jnp
 import numpy as np
-from numba import cuda
+
+from reference.systems.python._tuple_codegen import make_matrix_callback, make_tuple_callback
 
 TIMES = jnp.array((0.0, 0.5, 1.0, 2.0), dtype=jnp.float64)
-
-
-def _rhs_pair(y1, y2, eps, scale):
-    return (
-        scale * (-(1.0 / eps + 2.0) * y1 + (1.0 / eps) * y2 * y2),
-        scale * (y1 - y2 - y2 * y2),
-    )
-
-
-def _explicit_rhs_pair(y1, y2, scale):
-    return (
-        scale * (-2.0 * y1),
-        scale * (y1 - y2 - y2 * y2),
-    )
-
-
-def _implicit_rhs_pair(y1, y2, eps, scale):
-    return (
-        scale * (-(1.0 / eps) * (y1 - y2 * y2)),
-        y2 * 0.0,
-    )
-
-
-_rhs_pair_cuda = cuda.jit(device=True)(_rhs_pair)
-_explicit_rhs_pair_cuda = cuda.jit(device=True)(_explicit_rhs_pair)
-_implicit_rhs_pair_cuda = cuda.jit(device=True)(_implicit_rhs_pair)
 
 
 def make_system(n_pairs, epsilon_min):
@@ -57,20 +32,44 @@ def make_system(n_pairs, epsilon_min):
     )
     y0 = jnp.array([1.0, 1.0] * n_pairs, dtype=jnp.float64)
 
-    def ode_fn(y, t, p):
-        del t
-        dy1, dy2 = _rhs_pair(y[0::2], y[1::2], epsilon, p[0])
-        return jnp.stack([dy1, dy2], axis=1).ravel()
+    ode_values = []
+    explicit_values = []
+    implicit_values = []
+    jac_rows = [["0.0" for _ in range(n_vars)] for _ in range(n_vars)]
+    implicit_jac_rows = [["0.0" for _ in range(n_vars)] for _ in range(n_vars)]
+    for pair, eps in enumerate(np.asarray(epsilon)):
+        base = 2 * pair
+        inv_eps = f"{1.0 / float(eps):.17g}"
+        ode_values.extend(
+            [
+                f"p[0] * (-({inv_eps} + 2.0) * y[{base}] + {inv_eps} * y[{base + 1}] * y[{base + 1}])",
+                f"p[0] * (y[{base}] - y[{base + 1}] - y[{base + 1}] * y[{base + 1}])",
+            ]
+        )
+        explicit_values.extend(
+            [
+                f"p[0] * (-2.0 * y[{base}])",
+                f"p[0] * (y[{base}] - y[{base + 1}] - y[{base + 1}] * y[{base + 1}])",
+            ]
+        )
+        implicit_values.extend(
+            [
+                f"p[0] * (-{inv_eps} * (y[{base}] - y[{base + 1}] * y[{base + 1}]))",
+                "0.0",
+            ]
+        )
+        jac_rows[base][base] = f"p[0] * (-({inv_eps} + 2.0))"
+        jac_rows[base][base + 1] = f"p[0] * (2.0 * {inv_eps} * y[{base + 1}])"
+        jac_rows[base + 1][base] = "p[0]"
+        jac_rows[base + 1][base + 1] = f"p[0] * (-1.0 - 2.0 * y[{base + 1}])"
+        implicit_jac_rows[base][base] = f"-{inv_eps} * p[0]"
+        implicit_jac_rows[base][base + 1] = f"2.0 * {inv_eps} * p[0] * y[{base + 1}]"
 
-    def explicit_ode_fn(y, t, p):
-        del t
-        dy1, dy2 = _explicit_rhs_pair(y[0::2], y[1::2], p[0])
-        return jnp.stack([dy1, dy2], axis=1).ravel()
-
-    def implicit_ode_fn(y, t, p):
-        del t
-        dy1, dy2 = _implicit_rhs_pair(y[0::2], y[1::2], epsilon, p[0])
-        return jnp.stack([dy1, dy2], axis=1).ravel()
+    ode_fn = make_tuple_callback("ode_fn", [], ode_values)
+    explicit_ode_fn = make_tuple_callback("explicit_ode_fn", [], explicit_values)
+    implicit_ode_fn = make_tuple_callback("implicit_ode_fn", [], implicit_values)
+    jac_fn = make_matrix_callback("jac_fn", [], jac_rows)
+    implicit_jac_fn = make_matrix_callback("implicit_jac_fn", [], implicit_jac_rows)
 
     return {
         "n_pairs": n_pairs,
@@ -79,67 +78,18 @@ def make_system(n_pairs, epsilon_min):
         "ode_fn": ode_fn,
         "explicit_ode_fn": explicit_ode_fn,
         "implicit_ode_fn": implicit_ode_fn,
+        "jac_fn": jac_fn,
+        "implicit_jac_fn": implicit_jac_fn,
         "y0": y0,
     }
 
 
-@cuda.jit(device=True)
-def ode_fn_numba_cuda(y, t, p, dy, i):
-    """Hardcoded for n_pairs=2, epsilon=[1.0, 0.01]."""
-    scale = p[i, 0]
-    dy[i, 0], dy[i, 1] = _rhs_pair_cuda(y[i, 0], y[i, 1], 1.0, scale)
-    dy[i, 2], dy[i, 3] = _rhs_pair_cuda(y[i, 2], y[i, 3], 0.01, scale)
-
-
-@cuda.jit(device=True)
-def explicit_ode_fn_numba_cuda(y, t, p, dy, i):
-    """Hardcoded for n_pairs=2."""
-    scale = p[i, 0]
-    for pair in range(2):
-        base = 2 * pair
-        dy[i, base], dy[i, base + 1] = _explicit_rhs_pair_cuda(
-            y[i, base], y[i, base + 1], scale
-        )
-
-
-@cuda.jit(device=True)
-def implicit_ode_fn_numba_cuda(y, t, p, dy, i):
-    """Hardcoded for n_pairs=2, epsilon=[1.0, 0.01]."""
-    scale = p[i, 0]
-    dy[i, 0], dy[i, 1] = _implicit_rhs_pair_cuda(y[i, 0], y[i, 1], 1.0, scale)
-    dy[i, 2], dy[i, 3] = _implicit_rhs_pair_cuda(y[i, 2], y[i, 3], 0.01, scale)
-
-
-@cuda.jit(device=True)
-def jac_fn_numba_cuda(y, t, p, jac, i):
-    """Hardcoded for n_pairs=2, epsilon=[1.0, 0.01]."""
-    for r in range(4):
-        for c in range(4):
-            jac[i, r, c] = 0.0
-    scale = p[i, 0]
-    eps0 = 1.0
-    eps1 = 0.01
-    jac[i, 0, 0] = scale * (-(1.0 / eps0 + 2.0))
-    jac[i, 0, 1] = scale * (2.0 / eps0 * y[i, 1])
-    jac[i, 1, 0] = scale
-    jac[i, 1, 1] = scale * (-1.0 - 2.0 * y[i, 1])
-    jac[i, 2, 2] = scale * (-(1.0 / eps1 + 2.0))
-    jac[i, 2, 3] = scale * (2.0 / eps1 * y[i, 3])
-    jac[i, 3, 2] = scale
-    jac[i, 3, 3] = scale * (-1.0 - 2.0 * y[i, 3])
-
-
-@cuda.jit(device=True)
-def implicit_jac_fn_numba_cuda(y, t, p, jac, i):
-    """Hardcoded for n_pairs=2, epsilon=[1.0, 0.01]."""
-    for r in range(4):
-        for c in range(4):
-            jac[i, r, c] = 0.0
-    scale = p[i, 0]
-    jac[i, 0, 0] = -scale
-    jac[i, 0, 1] = scale * 2.0 * y[i, 1]
-    jac[i, 2, 2] = -100.0 * scale
-    jac[i, 2, 3] = 200.0 * scale * y[i, 3]
+_DEFAULT = make_system(2, 1e-2)
+ode_fn = _DEFAULT["ode_fn"]
+explicit_ode_fn = _DEFAULT["explicit_ode_fn"]
+implicit_ode_fn = _DEFAULT["implicit_ode_fn"]
+jac_fn = _DEFAULT["jac_fn"]
+implicit_jac_fn = _DEFAULT["implicit_jac_fn"]
 
 
 def make_params(size, seed=42):

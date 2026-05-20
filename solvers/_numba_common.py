@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
+from numba import cuda
+from numba.cuda.dispatcher import CUDADispatcher
 
 
 @dataclass
@@ -139,3 +142,47 @@ def block_threads_x(block_dim) -> int:
     if isinstance(launch, int):
         return launch
     return int(launch[0])
+
+
+@functools.cache
+def as_cuda_device(fn):
+    if isinstance(fn, CUDADispatcher):
+        return fn
+    return cuda.jit(device=True)(fn)
+
+
+@functools.cache
+def make_cuda_vector_writer(fn, n_vars: int):
+    fn_device = as_cuda_device(fn)
+
+    @cuda.jit(device=True)
+    def write_vector(y, t, p, out, i):
+        values = fn_device(y[i], t, p[i])
+        for j in range(n_vars):
+            out[i, j] = values[j]
+
+    return write_vector
+
+
+@functools.cache
+def make_cuda_matrix_writer(fn, n_vars: int):
+    fn_device = as_cuda_device(fn)
+
+    @cuda.jit(device=True)
+    def write_matrix(y, t, p, out, i):
+        values = fn_device(y[i], t, p[i])
+        for row in range(n_vars):
+            for col in range(n_vars):
+                out[i, row, col] = values[row][col]
+
+    return write_matrix
+
+
+@functools.cache
+def make_cuda_zero_vector_writer(n_vars: int):
+    @cuda.jit(device=True)
+    def write_zero_vector(y, t, p, out, i):
+        for j in range(n_vars):
+            out[i, j] = 0.0
+
+    return write_zero_vector

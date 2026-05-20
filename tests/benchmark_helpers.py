@@ -5,7 +5,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from numba import cuda
 
 from reference.systems.python import (
     bateman,
@@ -31,6 +30,8 @@ class SystemCase:
     ode_fn: Callable
     explicit_ode_fn: Callable
     implicit_ode_fn: Callable
+    jac_fn: Callable
+    implicit_jac_fn: Callable
     system_config: dict
     kwargs: dict
     linear_implicit: bool
@@ -39,8 +40,32 @@ class SystemCase:
 
 
 def zero_ode_fn(y, t, p):
-    del t, p
     return jnp.zeros_like(y)
+
+
+def zero3_ode_fn(y, t, p):
+    return (0.0, 0.0, 0.0)
+
+
+def zero4_ode_fn(y, t, p):
+    return (0.0, 0.0, 0.0, 0.0)
+
+
+def zero3_jac_fn(y, t, p):
+    return (
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+    )
+
+
+def zero4_jac_fn(y, t, p):
+    return (
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    )
 
 
 def _bateman_case():
@@ -64,6 +89,8 @@ def _bateman_case():
         ode_fn=system["ode_fn"],
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
+        jac_fn=system["jac_fn"],
+        implicit_jac_fn=system["implicit_jac_fn"],
         system_config={"n_vars": 4, "stiffness": 1e2},
         kwargs={"first_step": 1e-4, "rtol": 1e-5, "atol": 1e-7},
         linear_implicit=True,
@@ -73,7 +100,7 @@ def _bateman_case():
 
 
 def _brusselator_case():
-    explicit, implicit, ode, _ = brusselator.make_system(4)
+    explicit, implicit, ode, _, implicit_jac, jac = brusselator.make_system(4)
     y0, params = brusselator.make_scenario(4, ENSEMBLE_SIZE, divergence=0.0)
     t_span = np.asarray(brusselator.TIMES[:3], dtype=np.float64)
     return SystemCase(
@@ -84,6 +111,8 @@ def _brusselator_case():
         ode_fn=ode,
         explicit_ode_fn=explicit,
         implicit_ode_fn=implicit,
+        jac_fn=jac,
+        implicit_jac_fn=implicit_jac,
         system_config={"n_grid": 4},
         kwargs={"first_step": 1e-3, "rtol": 1e-5, "atol": 1e-7},
         linear_implicit=True,
@@ -110,6 +139,8 @@ def _heat_case():
         ode_fn=system["ode_fn"],
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
+        jac_fn=system["jac_fn"],
+        implicit_jac_fn=system["implicit_jac_fn"],
         system_config={"n_vars": 4},
         kwargs={"first_step": 1e-4, "rtol": 1e-5, "atol": 1e-7},
         linear_implicit=True,
@@ -136,6 +167,8 @@ def _kaps_case():
         ode_fn=system["ode_fn"],
         explicit_ode_fn=system["explicit_ode_fn"],
         implicit_ode_fn=system["implicit_ode_fn"],
+        jac_fn=system["jac_fn"],
+        implicit_jac_fn=system["implicit_jac_fn"],
         system_config={"n_pairs": 2, "epsilon_min": 1e-2},
         kwargs={"first_step": 1e-3, "rtol": 1e-5, "atol": 1e-7},
         linear_implicit=False,
@@ -154,7 +187,9 @@ def _lorenz_case():
         params=np.asarray(params, dtype=np.float64),
         ode_fn=lorenz.ode_fn,
         explicit_ode_fn=lorenz.ode_fn,
-        implicit_ode_fn=zero_ode_fn,
+        implicit_ode_fn=zero3_ode_fn,
+        jac_fn=lorenz.jac_fn,
+        implicit_jac_fn=zero3_jac_fn,
         system_config={},
         kwargs={"first_step": 1e-4, "rtol": 1e-5, "atol": 1e-7},
         linear_implicit=True,
@@ -173,7 +208,9 @@ def _robertson_case():
         params=np.asarray(params, dtype=np.float64),
         ode_fn=robertson.ode_fn,
         explicit_ode_fn=robertson.ode_fn,
-        implicit_ode_fn=zero_ode_fn,
+        implicit_ode_fn=zero3_ode_fn,
+        jac_fn=robertson.jac_fn,
+        implicit_jac_fn=zero3_jac_fn,
         system_config={},
         kwargs={"first_step": 1e-8, "rtol": 1e-5, "atol": 1e-7, "max_steps": 10000},
         linear_implicit=True,
@@ -185,7 +222,7 @@ def _robertson_case():
 
 
 def _vdp_case():
-    ode, _ = vdp.make_system(2, mu=1.0)
+    ode, _, jac = vdp.make_system(2, mu=1.0)
     y0, params = vdp.make_scenario(2, ENSEMBLE_SIZE, divergence=0.0)
     t_span = np.asarray(vdp.TIMES[:3], dtype=np.float64)
     return SystemCase(
@@ -195,7 +232,9 @@ def _vdp_case():
         params=np.asarray(params, dtype=np.float64),
         ode_fn=ode,
         explicit_ode_fn=ode,
-        implicit_ode_fn=zero_ode_fn,
+        implicit_ode_fn=zero4_ode_fn,
+        jac_fn=jac,
+        implicit_jac_fn=zero4_jac_fn,
         system_config={"n_osc": 2},
         kwargs={"first_step": 1e-3, "rtol": 1e-5, "atol": 1e-7},
         linear_implicit=True,
@@ -239,73 +278,3 @@ def assert_case_output(output, case: SystemCase):
     assert out.shape == case.expected_shape
     assert np.all(np.isfinite(out))
     case.assert_solution(out, case)
-
-
-def numba_callbacks(case_name: str):
-    return _NUMBA_CALLBACKS[case_name]
-
-
-@cuda.jit(device=True)
-def _zero_cuda(y, t, p, dy, i):
-    for j in range(dy.shape[1]):
-        dy[i, j] = 0.0
-
-
-@cuda.jit(device=True)
-def _zero_jac_cuda(y, t, p, jac, i):
-    for row in range(jac.shape[1]):
-        for col in range(jac.shape[2]):
-            jac[i, row, col] = 0.0
-
-
-_NUMBA_CALLBACKS = {
-    "bateman": (
-        bateman.ode_fn_numba_cuda,
-        _zero_cuda,
-        bateman.ode_fn_numba_cuda,
-        bateman.jac_fn_numba_cuda,
-        bateman.jac_fn_numba_cuda,
-    ),
-    "brusselator": (
-        brusselator.ode_fn_numba_cuda,
-        brusselator.explicit_ode_fn_numba_cuda,
-        brusselator.implicit_ode_fn_numba_cuda,
-        brusselator.implicit_jac_fn_numba_cuda,
-        brusselator.jac_fn_numba_cuda,
-    ),
-    "heat": (
-        heat.ode_fn_numba_cuda,
-        _zero_cuda,
-        heat.ode_fn_numba_cuda,
-        heat.jac_fn_numba_cuda,
-        heat.jac_fn_numba_cuda,
-    ),
-    "kaps": (
-        kaps.ode_fn_numba_cuda,
-        kaps.explicit_ode_fn_numba_cuda,
-        kaps.implicit_ode_fn_numba_cuda,
-        kaps.implicit_jac_fn_numba_cuda,
-        kaps.jac_fn_numba_cuda,
-    ),
-    "lorenz": (
-        lorenz.ode_fn_numba_cuda,
-        lorenz.ode_fn_numba_cuda,
-        _zero_cuda,
-        _zero_jac_cuda,
-        lorenz.jac_fn_numba_cuda,
-    ),
-    "robertson": (
-        robertson.ode_fn_numba_cuda,
-        robertson.ode_fn_numba_cuda,
-        _zero_cuda,
-        _zero_jac_cuda,
-        robertson.jac_fn_numba_cuda,
-    ),
-    "vdp": (
-        vdp.ode_fn_numba_cuda,
-        vdp.ode_fn_numba_cuda,
-        _zero_cuda,
-        _zero_jac_cuda,
-        vdp.jac_fn_numba_cuda,
-    ),
-}

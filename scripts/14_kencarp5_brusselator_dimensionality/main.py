@@ -175,14 +175,14 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
         )
 
     assert case.solve_fn is not None
-    ex_fn, im_fn, ode_fn, _ = brusselator.make_system(n_grid)
+    ex_fn, im_fn, ode_fn, _, im_jac_fn, _ = brusselator.make_system(n_grid)
 
     def run():
         if case.mode == "custom":
             return case.solve_fn(
-                brusselator.explicit_ode_fn_numba_cuda,
-                brusselator.implicit_ode_fn_numba_cuda,
-                brusselator.implicit_jac_fn_numba_cuda,
+                ex_fn,
+                im_fn,
+                im_jac_fn,
                 y0=y0_batch,
                 t_span=case.t_span,
                 params=params,

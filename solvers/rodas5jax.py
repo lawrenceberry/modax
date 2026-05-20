@@ -17,6 +17,7 @@ import jax.numpy as jnp
 
 from solvers._jax_common import (
     build_error_weights,
+    eval_ode_fn,
     make_custom_vmap_solver,
     normalize_inputs,
     solve_adaptive_ensemble,
@@ -185,8 +186,9 @@ def _solve_impl(
         True, returns ``(solution, stats)``.
     """
     lu_dtype = jnp.float32 if lu_precision == "fp32" else jnp.float64
-    jac_fn = jax.jacfwd(ode_fn, argnums=0)
-    dT_fn = jax.jacfwd(ode_fn, argnums=1)
+    ode_eval = functools.partial(eval_ode_fn, ode_fn)
+    jac_fn = jax.jacfwd(ode_eval, argnums=0)
+    dT_fn = jax.jacfwd(ode_eval, argnums=1)
 
     y0_arr, times, params_arr, n, n_vars, _, dt0, bs, n_chunks = normalize_inputs(
         y0, t_span, params, first_step, batch_size
@@ -205,7 +207,7 @@ def _solve_impl(
             inv_dt = 1.0 / dt
 
             def f_eval(u, t_stage):
-                return ode_fn(u, t_stage, params_one)
+                return ode_eval(u, t_stage, params_one)
 
             def lu_solve(rhs):
                 sol = jax.scipy.linalg.lu_solve(lu, rhs.astype(lu_dtype))

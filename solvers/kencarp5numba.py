@@ -35,6 +35,8 @@ from solvers._numba_common import (
     copy_workspace_inputs,
     initial_step,
     jax_stats,
+    make_cuda_matrix_writer,
+    make_cuda_vector_writer,
     numpy_stats,
 )
 from solvers._numba_common import (
@@ -381,6 +383,9 @@ def _make_kernel(
     e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
     e3 = EXPONENT * dcoeff
     lu_solver = make_lu_solver(n_vars, batches_per_block=1)
+    explicit_ode_write = make_cuda_vector_writer(explicit_ode_fn, n_vars)
+    implicit_ode_write = make_cuda_vector_writer(implicit_ode_fn, n_vars)
+    implicit_jac_write = make_cuda_matrix_writer(implicit_jac_fn, n_vars)
     batches_per_block = int(lu_solver.batches_per_block)
 
     block_dim = as_launch_block_dim(lu_solver.block_dim)
@@ -467,7 +472,7 @@ def _make_kernel(
                 u[i, j] = y[i, j]
             cuda.syncthreads()
             if lane == 0:
-                explicit_ode_fn(u, t, params, tmp, i)
+                explicit_ode_write(u, t, params, tmp, i)
             cuda.syncthreads()
             for j in range(lane, n_vars, batch_lanes):
                 stage_fe[i, 0, j] = tmp[i, j]
@@ -475,7 +480,7 @@ def _make_kernel(
                     failed = True
             cuda.syncthreads()
             if lane == 0:
-                implicit_ode_fn(u, t, params, tmp, i)
+                implicit_ode_write(u, t, params, tmp, i)
             cuda.syncthreads()
             for j in range(lane, n_vars, batch_lanes):
                 stage_fi[i, 0, j] = tmp[i, j]
@@ -513,7 +518,7 @@ def _make_kernel(
                 if linear != 0:
                     if lane == 0:
                         _clear_jac(jac, i, n_vars)
-                        implicit_jac_fn(u, t_stage, params, jac, i)
+                        implicit_jac_write(u, t_stage, params, jac, i)
                     cuda.syncthreads()
                     for idx_local in range(lane, n_vars * n_vars, batch_lanes):
                         row = idx_local // n_vars
@@ -538,7 +543,7 @@ def _make_kernel(
                             failed = True
                     cuda.syncthreads()
                     if lane == 0:
-                        implicit_ode_fn(u, t_stage, params, tmp, i)
+                        implicit_ode_write(u, t_stage, params, tmp, i)
                     cuda.syncthreads()
                     for j in range(lane, n_vars, batch_lanes):
                         stage_fi[i, stage, j] = tmp[i, j]
@@ -549,9 +554,9 @@ def _make_kernel(
                     it = 0
                     while (not converged) and (not failed) and it < NEWTON_MAX_ITERS:
                         if lane == 0:
-                            implicit_ode_fn(u, t_stage, params, tmp, i)
+                            implicit_ode_write(u, t_stage, params, tmp, i)
                             _clear_jac(jac, i, n_vars)
-                            implicit_jac_fn(u, t_stage, params, jac, i)
+                            implicit_jac_write(u, t_stage, params, jac, i)
                         cuda.syncthreads()
                         delta_norm_acc = 0.0
                         for j in range(lane, n_vars, batch_lanes):
@@ -608,7 +613,7 @@ def _make_kernel(
                         failed = True
                     cuda.syncthreads()
                     if lane == 0:
-                        implicit_ode_fn(u, t_stage, params, tmp, i)
+                        implicit_ode_write(u, t_stage, params, tmp, i)
                     cuda.syncthreads()
                     for j in range(lane, n_vars, batch_lanes):
                         stage_y[i, stage, j] = u[i, j]
@@ -618,7 +623,7 @@ def _make_kernel(
 
                 cuda.syncthreads()
                 if lane == 0:
-                    explicit_ode_fn(u, t_stage, params, tmp, i)
+                    explicit_ode_write(u, t_stage, params, tmp, i)
                 cuda.syncthreads()
                 for j in range(lane, n_vars, batch_lanes):
                     stage_fe[i, stage, j] = tmp[i, j]

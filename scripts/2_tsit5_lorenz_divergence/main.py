@@ -128,7 +128,7 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key.startswith("modax tsit5 numba"):
         prepared = tsit5numba_prepare_solve(
-            lorenz.ode_fn_numba_cuda,
+            lorenz.ode_fn,
             y0=y0,
             t_span=lorenz.TIMES,
             params=params,
@@ -169,7 +169,7 @@ def time_solve(
         return ms, None
     if solver.key.startswith("modax tsit5 numba"):
         prepared = tsit5numba_prepare_solve(
-            lorenz.ode_fn_numba_cuda,
+            lorenz.ode_fn,
             y0=y0,
             t_span=lorenz.TIMES,
             params=params,
