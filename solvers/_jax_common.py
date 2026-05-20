@@ -74,8 +74,7 @@ def build_error_weights(error_weights, n: int, n_vars: int):
     ``None`` yields all-ones (every component weighted equally); a 1-D array of
     length ``n_vars`` is broadcast across trajectories; a 2-D ``(n, n_vars)``
     array is used as-is. This per-trajectory ``error_weights`` row is consumed
-    by the default :func:`error_norm`; custom ``error_norm_fn`` callables
-    receive the same array and may interpret it however they like.
+    by the weighted RMS :func:`error_norm`.
     """
     if error_weights is None:
         return jnp.ones((n, n_vars), dtype=jnp.float64)
@@ -282,17 +281,12 @@ def solve_adaptive_ensemble(
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
     error_weights_arr=None,
-    error_norm_fn: Callable | None = None,
 ):
     n = y0_arr.shape[0]
     n_vars = y0_arr.shape[1]
     n_save = times.shape[0]
     tf = times[-1]
 
-    # ``error_weights`` are supplied per-trajectory to ``error_norm_fn``, which
-    # by default is the per-component weighted :func:`error_norm`.
-    if error_norm_fn is None:
-        error_norm_fn = error_norm
     if error_weights_arr is None:
         error_weights_arr = jnp.ones((n, n_vars), dtype=jnp.float64)
 
@@ -323,7 +317,7 @@ def solve_adaptive_ensemble(
             dt_use = jnp.maximum(jnp.minimum(dt, next_target - t), 1e-30)
 
             y_new, err_est, failed, extra_candidate = step_one(y, t, dt_use, extra)
-            err_norm = error_norm_fn(y, y_new, err_est, rtol, atol, error_weights_one)
+            err_norm = error_norm(y, y_new, err_est, rtol, atol, error_weights_one)
 
             accept = (err_norm <= 1.0) & ~jnp.isnan(err_norm) & ~failed
             t_new = jnp.where(accept, t + dt_use, t)

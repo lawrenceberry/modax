@@ -90,20 +90,6 @@ E7 = -1.0 / 66.0
 # fmt: on
 
 
-@cuda.jit(device=True)
-def _default_err_contrib(y_old, y_new, err_est, rtol, atol, weight):
-    """Default per-component squared error contribution (weighted RMS).
-
-    Returns ``(weight * err_est / scale)**2`` for one solution component; the
-    kernel sums these over components and takes ``sqrt(sum / n_vars)``. With the
-    default unit weights this reproduces the standard ``atol + rtol*max(|y|)``
-    error norm exactly.
-    """
-    scale = atol + rtol * max(math.fabs(y_old), math.fabs(y_new))
-    r = weight * err_est / scale
-    return r * r
-
-
 SAFETY = 0.9
 FACTOR_MIN = 0.2
 FACTOR_MAX = 10.0
@@ -166,7 +152,6 @@ def get_workspace(
 def _make_kernel(
     ode_fn,
     n_vars: int,
-    err_contrib_fn,
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
@@ -288,9 +273,9 @@ def _make_kernel(
                     + E6 * k6[i, j]
                     + E7 * k7[i, j]
                 )
-                err_sum += err_contrib_fn(
-                    y[i, j], u[i, j], err_est, rtol, atol, weights[i, j]
-                )
+                scale = atol + rtol * max(abs(y[i, j]), abs(u[i, j]))
+                r = weights[i, j] * err_est / scale
+                err_sum += r * r
             err_norm = math.sqrt(err_sum / n_vars)
             accept = err_norm <= 1.0 and not math.isnan(err_norm)
 
@@ -353,14 +338,11 @@ def prepare_solve(
     first_step=None,
     max_steps=100000,
     error_weights=None,
-    err_contrib_fn=None,
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
 ):
     del batch_size
-    if err_contrib_fn is None:
-        err_contrib_fn = _default_err_contrib
     y0_arr, times, params_arr, dt0 = _normalize_inputs(
         y0, t_span, params, first_step, solver_name="Tsit5"
     )
@@ -376,7 +358,7 @@ def prepare_solve(
     threads = 128
     blocks = (n + threads - 1) // threads
     return PreparedSolve(
-        kernel=_make_kernel(ode_fn, n_vars, err_contrib_fn, pcoeff, icoeff, dcoeff),
+        kernel=_make_kernel(ode_fn, n_vars, pcoeff, icoeff, dcoeff),
         workspace=workspace,
         dt0=np.float64(dt0),
         rtol=np.float64(rtol),
@@ -424,12 +406,11 @@ def _make_jax_launch(
     n_vars: int,
     n_save: int,
     n_params: int,
-    err_contrib_fn,
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
 ):
-    kernel = _make_kernel(ode_fn, n_vars, err_contrib_fn, pcoeff, icoeff, dcoeff)
+    kernel = _make_kernel(ode_fn, n_vars, pcoeff, icoeff, dcoeff)
     f64_2d = types.float64[:, ::1]
     f64_1d = types.float64[::1]
     i32_1d = types.int32[::1]
@@ -465,7 +446,6 @@ def solve(
     max_steps=100000,
     return_stats=False,
     error_weights=None,
-    err_contrib_fn=None,
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
@@ -476,20 +456,12 @@ def solve(
     autodiff.
 
     ``error_weights`` is an optional per-component weight array, shape
-    ``(n_vars,)`` or ``(N, n_vars)``, read as the ``weight`` argument of the
-    error-contribution device function. ``err_contrib_fn`` is an optional
-    ``@cuda.jit(device=True)`` callable
-    ``err_contrib_fn(y_old, y_new, err_est, rtol, atol, weight) -> float`` that
-    returns one component's squared error contribution; the kernel sums these
-    over components and takes ``sqrt(sum / n_vars)``. When ``None``, a default
-    weighted-RMS contribution reproduces the standard error norm.
+    ``(n_vars,)`` or ``(N, n_vars)``, applied in the weighted RMS step-size
+    error norm; a weight of 0 excludes that component from step-size control.
 
     ``pcoeff``/``icoeff``/``dcoeff`` are the PID step-controller gains; the
     default ``(0, 1, 0)`` is the classic I-controller.
     """
-
-    if err_contrib_fn is None:
-        err_contrib_fn = _default_err_contrib
 
     def solve_impl(y0_arr, t_span_arr, params_arr):
         return _solve_impl(
@@ -504,7 +476,6 @@ def solve(
             max_steps=max_steps,
             return_stats=return_stats,
             error_weights=error_weights,
-            err_contrib_fn=err_contrib_fn,
             pcoeff=pcoeff,
             icoeff=icoeff,
             dcoeff=dcoeff,
@@ -530,14 +501,11 @@ def _solve_impl(
     max_steps=100000,
     return_stats=False,
     error_weights=None,
-    err_contrib_fn=None,
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
 ):
     del batch_size
-    if err_contrib_fn is None:
-        err_contrib_fn = _default_err_contrib
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
     n_save = times.shape[0]
@@ -546,7 +514,7 @@ def _solve_impl(
     weights_arr = jnp.asarray(build_error_weights(error_weights, n, n_vars))
 
     launch = _make_jax_launch(
-        ode_fn, n, n_vars, n_save, n_params, err_contrib_fn, pcoeff, icoeff, dcoeff
+        ode_fn, n, n_vars, n_save, n_params, pcoeff, icoeff, dcoeff
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)

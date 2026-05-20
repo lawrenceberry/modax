@@ -70,20 +70,6 @@ C6 = 3.0 / 5.0
 C7 = 1.0
 
 
-@cuda.jit(device=True)
-def _default_err_contrib(y_old, y_new, err_est, rtol, atol, weight):
-    """Default per-component squared error contribution (weighted RMS).
-
-    Returns ``(weight * err_est / scale)**2`` for one solution component; the
-    kernel sums these over components and takes ``sqrt(sum / n_vars)``. With the
-    default unit weights this reproduces the standard ``atol + rtol*max(|y|)``
-    error norm exactly.
-    """
-    scale = atol + rtol * max(math.fabs(y_old), math.fabs(y_new))
-    r = weight * err_est / scale
-    return r * r
-
-
 SAFETY = 0.9
 FACTOR_MIN = 0.2
 FACTOR_MAX = 10.0
@@ -385,7 +371,6 @@ def _make_kernel(
     implicit_ode_fn,
     implicit_jac_fn,
     n_vars: int,
-    err_contrib_fn,
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
@@ -651,9 +636,9 @@ def _make_kernel(
                         * _b_err(stage)
                         * (stage_fe[i, stage, j] + stage_fi[i, stage, j])
                     )
-                err_norm_acc += err_contrib_fn(
-                    y[i, j], y_new, err_est, rtol, atol, weights[i, j]
-                )
+                scale = atol + rtol * max(math.fabs(y[i, j]), math.fabs(y_new))
+                r = weights[i, j] * err_est / scale
+                err_norm_acc += r * r
                 if not math.isfinite(y_new) or not math.isfinite(err_est):
                     failed = True
             smem_delta[tx] = err_norm_acc
@@ -735,13 +720,10 @@ def prepare_solve(
     first_step=None,
     max_steps=100000,
     error_weights=None,
-    err_contrib_fn=None,
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
 ):
-    if err_contrib_fn is None:
-        err_contrib_fn = _default_err_contrib
     y0_arr, times, params_arr, dt0 = _normalize_inputs(
         y0, t_span, params, first_step, solver_name="KenCarp5"
     )
@@ -759,7 +741,6 @@ def prepare_solve(
         implicit_ode_fn,
         implicit_jac_fn,
         n_vars,
-        err_contrib_fn,
         pcoeff,
         icoeff,
         dcoeff,
@@ -831,7 +812,6 @@ def _make_jax_launch(
     n_vars: int,
     n_save: int,
     n_params: int,
-    err_contrib_fn,
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
@@ -841,7 +821,6 @@ def _make_jax_launch(
         implicit_ode_fn,
         implicit_jac_fn,
         n_vars,
-        err_contrib_fn,
         pcoeff,
         icoeff,
         dcoeff,
@@ -895,7 +874,6 @@ def solve(
     max_steps=100000,
     return_stats=False,
     error_weights=None,
-    err_contrib_fn=None,
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
@@ -903,20 +881,12 @@ def solve(
     """JAX-callable KenCarp5 custom-kernel solve.
 
     ``error_weights`` is an optional per-component weight array, shape
-    ``(n_vars,)`` or ``(N, n_vars)``, read as the ``weight`` argument of the
-    error-contribution device function. ``err_contrib_fn`` is an optional
-    ``@cuda.jit(device=True)`` callable
-    ``err_contrib_fn(y_old, y_new, err_est, rtol, atol, weight) -> float`` that
-    returns one component's squared error contribution; the kernel sums these
-    over components and takes ``sqrt(sum / n_vars)``. When ``None``, a default
-    weighted-RMS contribution reproduces the standard error norm.
+    ``(n_vars,)`` or ``(N, n_vars)``, applied in the weighted RMS step-size
+    error norm; a weight of 0 excludes that component from step-size control.
 
     ``pcoeff``/``icoeff``/``dcoeff`` are the PID step-controller gains; the
     default ``(0, 1, 0)`` is the classic I-controller.
     """
-
-    if err_contrib_fn is None:
-        err_contrib_fn = _default_err_contrib
 
     def solve_impl(y0_arr, t_span_arr, params_arr):
         return _solve_impl(
@@ -933,7 +903,6 @@ def solve(
             max_steps=max_steps,
             return_stats=return_stats,
             error_weights=error_weights,
-            err_contrib_fn=err_contrib_fn,
             pcoeff=pcoeff,
             icoeff=icoeff,
             dcoeff=dcoeff,
@@ -961,13 +930,10 @@ def _solve_impl(
     max_steps=100000,
     return_stats=False,
     error_weights=None,
-    err_contrib_fn=None,
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
 ):
-    if err_contrib_fn is None:
-        err_contrib_fn = _default_err_contrib
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
     n_save = times.shape[0]
@@ -983,7 +949,6 @@ def _solve_impl(
         n_vars,
         n_save,
         n_params,
-        err_contrib_fn,
         pcoeff,
         icoeff,
         dcoeff,

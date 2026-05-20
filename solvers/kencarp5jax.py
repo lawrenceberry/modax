@@ -198,7 +198,6 @@ def solve(
     max_steps=100000,
     return_stats=False,
     error_weights=None,
-    error_norm_fn=None,
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
@@ -220,7 +219,6 @@ def solve(
             max_steps=max_steps,
             return_stats=return_stats,
             error_weights=error_weights,
-            error_norm_fn=error_norm_fn,
             pcoeff=pcoeff,
             icoeff=icoeff,
             dcoeff=dcoeff,
@@ -240,7 +238,6 @@ def solve(
         "batch_size",
         "max_steps",
         "return_stats",
-        "error_norm_fn",
         "pcoeff",
         "icoeff",
         "dcoeff",
@@ -261,7 +258,6 @@ def _solve_impl(
     max_steps=100000,
     return_stats=False,
     error_weights=None,
-    error_norm_fn=None,
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
@@ -303,14 +299,8 @@ def _solve_impl(
     error_weights : array or None
         Per-component weights for the step-size error norm, shape ``(n_vars,)``
         or ``(N, n_vars)``. ``None`` (default) weights every component equally;
-        a weight of 0 excludes that component from step-size control. Passed
-        through to a custom ``error_norm_fn``.
-    error_norm_fn : callable or None
-        Custom error norm with signature ``error_norm_fn(y, y_new, err_est,
-        rtol, atol, error_weights) -> scalar``, where ``error_weights`` is the
-        per-trajectory row. Must be a traceable
-        JAX reduction returning a scalar where ``<= 1`` means "accept". ``None``
-        (default) uses the built-in weighted RMS norm.
+        a weight of 0 excludes that component from step-size control. Used in
+        the weighted RMS step-size error norm.
     pcoeff, icoeff, dcoeff : float
         Proportional/integral/derivative gains of the PID step-size controller.
         The default ``(0, 1, 0)`` is the classic I-controller (current
@@ -501,5 +491,4 @@ def _solve_impl(
         icoeff=icoeff,
         dcoeff=dcoeff,
         error_weights_arr=error_weights_arr,
-        error_norm_fn=error_norm_fn,
     )
