@@ -26,7 +26,16 @@ fp64 and vary only LU precision.
 import jax.numpy as jnp
 import numpy as np
 
-from reference.systems.python._tuple_codegen import make_matrix_callback, make_tuple_callback
+from reference.systems.python._tuple_codegen import (
+    add,
+    const,
+    make_matrix_callback,
+    make_tuple_callback,
+    mul,
+    p,
+    y,
+    zero_tuple,
+)
 
 TIMES = jnp.array((0.0, 0.025, 0.05, 0.075, 0.1), dtype=jnp.float64)
 
@@ -48,17 +57,16 @@ def make_system(n_vars):
 
     values = []
     for i in range(n_vars):
-        terms = [f"{M_np[i, j]:.17g} * y[{j}]" for j in range(n_vars) if M_np[i, j]]
-        values.append(f"p[0] * ({' + '.join(terms)})")
+        terms = [mul(const(M_np[i, j]), y(j)) for j in range(n_vars) if M_np[i, j]]
+        values.append(mul(p(0), add(*terms)))
 
-    ode_fn = make_tuple_callback("ode_fn", [], values)
-    zero_fn = make_tuple_callback("zero_ode_fn", [], ["0.0"] * n_vars)
+    ode_fn = make_tuple_callback("ode_fn", values)
+    zero_fn = make_tuple_callback("zero_ode_fn", zero_tuple(n_vars))
     jac_fn = make_matrix_callback(
         "jac_fn",
-        [],
         [
             [
-                f"p[0] * {M_np[row, col]:.17g}" if M_np[row, col] else "0.0"
+                mul(p(0), const(M_np[row, col])) if M_np[row, col] else const(0.0)
                 for col in range(n_vars)
             ]
             for row in range(n_vars)

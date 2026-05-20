@@ -3,7 +3,19 @@
 import jax.numpy as jnp
 import numpy as np
 
-from reference.systems.python._tuple_codegen import make_matrix_callback, make_tuple_callback
+from reference.systems.python._tuple_codegen import (
+    add,
+    const,
+    make_matrix_callback,
+    make_tuple_callback,
+    mul,
+    neg,
+    p,
+    square,
+    sub,
+    y,
+    zero_matrix,
+)
 
 N_OSC = 35
 N_VARS = 2 * N_OSC
@@ -24,28 +36,36 @@ def make_system(n_osc: int, *, mu: float = MU, d: float = D, omega: float = OMEG
     """
     y0 = jnp.array([2.0, 0.0] * n_osc, dtype=jnp.float64)
     values = []
-    jac_rows = [["0.0" for _ in range(2 * n_osc)] for _ in range(2 * n_osc)]
+    jac_rows = zero_matrix(2 * n_osc, 2 * n_osc)
     for osc in range(n_osc):
         base = 2 * osc
         left = 2 * ((osc - 1) % n_osc)
         right = 2 * ((osc + 1) % n_osc)
-        values.append(f"y[{base + 1}]")
+        x = y(base)
+        v = y(base + 1)
+        values.append(v)
         values.append(
-            f"p[0] * {mu:.17g} * (1.0 - y[{base}] * y[{base}]) * y[{base + 1}]"
-            f" - {omega * omega:.17g} * y[{base}]"
-            f" + {d:.17g} * (y[{left}] - 2.0 * y[{base}] + y[{right}])"
+            add(
+                mul(p(0), const(mu), sub(const(1.0), square(x)), v),
+                mul(neg(const(omega * omega)), x),
+                mul(const(d), add(y(left), mul(const(-2.0), x), y(right))),
+            )
         )
-        jac_rows[base][base + 1] = "1.0"
-        self_x = f"p[0] * {mu:.17g} * (-2.0 * y[{base}] * y[{base + 1}]) - {omega * omega:.17g} - 2.0 * {d:.17g}"
-        coeffs: dict[int, list[str]] = {base: [self_x]}
-        coeffs.setdefault(left, []).append(f"{d:.17g}")
-        coeffs.setdefault(right, []).append(f"{d:.17g}")
+        jac_rows[base][base + 1] = const(1.0)
+        self_x = add(
+            mul(p(0), const(mu), const(-2.0), x, v),
+            neg(const(omega * omega)),
+            neg(const(2.0 * d)),
+        )
+        coeffs = {base: [self_x]}
+        coeffs.setdefault(left, []).append(const(d))
+        coeffs.setdefault(right, []).append(const(d))
         for col, terms in coeffs.items():
-            jac_rows[base + 1][col] = " + ".join(terms)
-        jac_rows[base + 1][base + 1] = f"p[0] * {mu:.17g} * (1.0 - y[{base}] * y[{base}])"
+            jac_rows[base + 1][col] = add(*terms)
+        jac_rows[base + 1][base + 1] = mul(p(0), const(mu), sub(const(1.0), square(x)))
 
-    ode_fn = make_tuple_callback("ode_fn", [], values)
-    jac_fn = make_matrix_callback("jac_fn", [], jac_rows)
+    ode_fn = make_tuple_callback("ode_fn", values)
+    jac_fn = make_matrix_callback("jac_fn", jac_rows)
 
     return ode_fn, y0, jac_fn
 

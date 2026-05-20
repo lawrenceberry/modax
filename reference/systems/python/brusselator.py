@@ -99,7 +99,19 @@ trajectory that exercises both halves of the IMEX split.
 import jax.numpy as jnp
 import numpy as np
 
-from reference.systems.python._tuple_codegen import make_matrix_callback, make_tuple_callback
+from reference.systems.python._tuple_codegen import (
+    add,
+    const,
+    make_matrix_callback,
+    make_tuple_callback,
+    mul,
+    neg,
+    p,
+    square,
+    sub,
+    y,
+    zero_matrix,
+)
 
 N_GRID = 32
 N_VARS = 2 * N_GRID
@@ -147,8 +159,8 @@ def make_system(
     implicit_values = []
     ode_values = []
     n_vars = 2 * n_grid
-    implicit_jac_rows = [["0.0" for _ in range(n_vars)] for _ in range(n_vars)]
-    jac_rows = [["0.0" for _ in range(n_vars)] for _ in range(n_vars)]
+    implicit_jac_rows = zero_matrix(n_vars, n_vars)
+    jac_rows = zero_matrix(n_vars, n_vars)
     for g in range(n_grid):
         left = (g - 1) % n_grid
         right = (g + 1) % n_grid
@@ -158,36 +170,56 @@ def make_system(
         u_right = 2 * right
         v_left = u_left + 1
         v_right = u_right + 1
-        u2v = f"y[{u}] * y[{u}] * y[{v}]"
-        exp_u = f"p[0] * {a:.17g} + {u2v} - (p[0] * {b:.17g} + 1.0) * y[{u}]"
-        exp_v = f"p[0] * {b:.17g} * y[{u}] - {u2v}"
-        imp_u = f"{diff_coeff:.17g} * (y[{u_left}] - 2.0 * y[{u}] + y[{u_right}])"
-        imp_v = f"{diff_coeff:.17g} * (y[{v_left}] - 2.0 * y[{v}] + y[{v_right}])"
+        u_y = y(u)
+        v_y = y(v)
+        u2v = mul(square(u_y), v_y)
+        exp_u = sub(
+            add(mul(p(0), const(a)), u2v),
+            mul(add(mul(p(0), const(b)), const(1.0)), u_y),
+        )
+        exp_v = sub(mul(p(0), const(b), u_y), u2v)
+        imp_u = mul(
+            const(diff_coeff),
+            add(y(u_left), mul(const(-2.0), u_y), y(u_right)),
+        )
+        imp_v = mul(
+            const(diff_coeff),
+            add(y(v_left), mul(const(-2.0), v_y), y(v_right)),
+        )
         explicit_values.extend([exp_u, exp_v])
         implicit_values.extend([imp_u, imp_v])
-        ode_values.extend([f"({exp_u}) + ({imp_u})", f"({exp_v}) + ({imp_v})"])
+        ode_values.extend([add(exp_u, imp_u), add(exp_v, imp_v)])
 
         for row, self_col, left_col, right_col in (
             (u, u, u_left, u_right),
             (v, v, v_left, v_right),
         ):
-            coeffs: dict[int, list[str]] = {self_col: [f"-2.0 * {diff_coeff:.17g}"]}
-            coeffs.setdefault(left_col, []).append(f"{diff_coeff:.17g}")
-            coeffs.setdefault(right_col, []).append(f"{diff_coeff:.17g}")
+            coeffs = {self_col: [const(-2.0 * diff_coeff)]}
+            coeffs.setdefault(left_col, []).append(const(diff_coeff))
+            coeffs.setdefault(right_col, []).append(const(diff_coeff))
             for col, terms in coeffs.items():
-                implicit_jac_rows[row][col] = " + ".join(terms)
-                jac_rows[row][col] = " + ".join(terms)
+                coeff = add(*terms)
+                implicit_jac_rows[row][col] = coeff
+                jac_rows[row][col] = coeff
 
-        jac_rows[u][u] = f"({jac_rows[u][u]}) + 2.0 * y[{u}] * y[{v}] - (p[0] * {b:.17g} + 1.0)"
-        jac_rows[u][v] = f"({jac_rows[u][v]}) + y[{u}] * y[{u}]"
-        jac_rows[v][u] = f"({jac_rows[v][u]}) + p[0] * {b:.17g} - 2.0 * y[{u}] * y[{v}]"
-        jac_rows[v][v] = f"({jac_rows[v][v]}) - y[{u}] * y[{u}]"
+        jac_rows[u][u] = add(
+            jac_rows[u][u],
+            mul(const(2.0), u_y, v_y),
+            neg(add(mul(p(0), const(b)), const(1.0))),
+        )
+        jac_rows[u][v] = add(jac_rows[u][v], square(u_y))
+        jac_rows[v][u] = add(
+            jac_rows[v][u],
+            mul(p(0), const(b)),
+            mul(const(-2.0), u_y, v_y),
+        )
+        jac_rows[v][v] = sub(jac_rows[v][v], square(u_y))
 
-    explicit_ode_fn = make_tuple_callback("explicit_ode_fn", [], explicit_values)
-    implicit_ode_fn = make_tuple_callback("implicit_ode_fn", [], implicit_values)
-    ode_fn = make_tuple_callback("ode_fn", [], ode_values)
-    implicit_jac_fn = make_matrix_callback("implicit_jac_fn", [], implicit_jac_rows)
-    jac_fn = make_matrix_callback("jac_fn", [], jac_rows)
+    explicit_ode_fn = make_tuple_callback("explicit_ode_fn", explicit_values)
+    implicit_ode_fn = make_tuple_callback("implicit_ode_fn", implicit_values)
+    ode_fn = make_tuple_callback("ode_fn", ode_values)
+    implicit_jac_fn = make_matrix_callback("implicit_jac_fn", implicit_jac_rows)
+    jac_fn = make_matrix_callback("jac_fn", jac_rows)
 
     return explicit_ode_fn, implicit_ode_fn, ode_fn, y0, implicit_jac_fn, jac_fn
 

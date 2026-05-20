@@ -18,7 +18,19 @@ This allows precise validation at arbitrary stiffness without a reference solver
 import jax.numpy as jnp
 import numpy as np
 
-from reference.systems.python._tuple_codegen import make_matrix_callback, make_tuple_callback
+from reference.systems.python._tuple_codegen import (
+    add,
+    const,
+    make_matrix_callback,
+    make_tuple_callback,
+    mul,
+    neg,
+    p,
+    square,
+    sub,
+    y,
+    zero_matrix,
+)
 
 TIMES = jnp.array((0.0, 0.5, 1.0, 2.0), dtype=jnp.float64)
 
@@ -35,41 +47,53 @@ def make_system(n_pairs, epsilon_min):
     ode_values = []
     explicit_values = []
     implicit_values = []
-    jac_rows = [["0.0" for _ in range(n_vars)] for _ in range(n_vars)]
-    implicit_jac_rows = [["0.0" for _ in range(n_vars)] for _ in range(n_vars)]
+    jac_rows = zero_matrix(n_vars, n_vars)
+    implicit_jac_rows = zero_matrix(n_vars, n_vars)
     for pair, eps in enumerate(np.asarray(epsilon)):
         base = 2 * pair
-        inv_eps = f"{1.0 / float(eps):.17g}"
+        inv_eps = 1.0 / float(eps)
+        y_base = y(base)
+        y_next = y(base + 1)
+        y_next_sq = square(y_next)
         ode_values.extend(
             [
-                f"p[0] * (-({inv_eps} + 2.0) * y[{base}] + {inv_eps} * y[{base + 1}] * y[{base + 1}])",
-                f"p[0] * (y[{base}] - y[{base + 1}] - y[{base + 1}] * y[{base + 1}])",
+                mul(
+                    p(0),
+                    add(
+                        mul(neg(const(inv_eps + 2.0)), y_base),
+                        mul(const(inv_eps), y_next_sq),
+                    ),
+                ),
+                mul(p(0), sub(sub(y_base, y_next), y_next_sq)),
             ]
         )
         explicit_values.extend(
             [
-                f"p[0] * (-2.0 * y[{base}])",
-                f"p[0] * (y[{base}] - y[{base + 1}] - y[{base + 1}] * y[{base + 1}])",
+                mul(p(0), const(-2.0), y_base),
+                mul(p(0), sub(sub(y_base, y_next), y_next_sq)),
             ]
         )
         implicit_values.extend(
             [
-                f"p[0] * (-{inv_eps} * (y[{base}] - y[{base + 1}] * y[{base + 1}]))",
-                "0.0",
+                mul(p(0), neg(const(inv_eps)), sub(y_base, y_next_sq)),
+                const(0.0),
             ]
         )
-        jac_rows[base][base] = f"p[0] * (-({inv_eps} + 2.0))"
-        jac_rows[base][base + 1] = f"p[0] * (2.0 * {inv_eps} * y[{base + 1}])"
-        jac_rows[base + 1][base] = "p[0]"
-        jac_rows[base + 1][base + 1] = f"p[0] * (-1.0 - 2.0 * y[{base + 1}])"
-        implicit_jac_rows[base][base] = f"-{inv_eps} * p[0]"
-        implicit_jac_rows[base][base + 1] = f"2.0 * {inv_eps} * p[0] * y[{base + 1}]"
+        jac_rows[base][base] = mul(p(0), neg(const(inv_eps + 2.0)))
+        jac_rows[base][base + 1] = mul(p(0), const(2.0 * inv_eps), y_next)
+        jac_rows[base + 1][base] = p(0)
+        jac_rows[base + 1][base + 1] = mul(
+            p(0),
+            add(const(-1.0), mul(const(-2.0), y_next)),
+        )
+        implicit_jac_rows[base][base] = mul(neg(const(inv_eps)), p(0))
+        implicit_jac_rows[base][base + 1] = mul(const(2.0 * inv_eps), p(0), y_next)
 
-    ode_fn = make_tuple_callback("ode_fn", [], ode_values)
-    explicit_ode_fn = make_tuple_callback("explicit_ode_fn", [], explicit_values)
-    implicit_ode_fn = make_tuple_callback("implicit_ode_fn", [], implicit_values)
-    jac_fn = make_matrix_callback("jac_fn", [], jac_rows)
-    implicit_jac_fn = make_matrix_callback("implicit_jac_fn", [], implicit_jac_rows)
+    ode_fn = make_tuple_callback("ode_fn", ode_values)
+    explicit_ode_fn = make_tuple_callback("explicit_ode_fn", explicit_values)
+    implicit_ode_fn = make_tuple_callback("implicit_ode_fn", implicit_values)
+    jac_fn = make_matrix_callback("jac_fn", jac_rows)
+    implicit_jac_fn = make_matrix_callback("implicit_jac_fn", implicit_jac_rows)
 
     return {
         "n_pairs": n_pairs,
