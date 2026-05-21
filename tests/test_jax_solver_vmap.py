@@ -222,9 +222,7 @@ def test_numba_solvers_auto_jit_plain_python_callbacks():
     }
     expected = y0[0] * np.exp(-params[:, 0, None] * t_span[None, :])
 
-    tsit5_sol = tsit5numba_solve(
-        _plain_numba_decay, y0, t_span, params, **solve_kwargs
-    )
+    tsit5_sol = tsit5numba_solve(_plain_numba_decay, y0, t_span, params, **solve_kwargs)
     rodas5P_sol = rodas5Pnumba_solve(
         _plain_numba_decay,
         _plain_numba_decay_jac,
