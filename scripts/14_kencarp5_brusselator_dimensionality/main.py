@@ -42,7 +42,7 @@ from scripts.benchmark_common import (
 )
 from solvers.kencarp5jax import solve as kencarp5_solve
 from solvers.kencarp5numba import solve as kencarp5numba_solve
-from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5Pjax import solve as rodas5P_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -120,11 +120,11 @@ CASES: tuple[Case, ...] = (
         linear=False,
     ),
     Case(
-        key="modax rodas5 jax fp32 lu",
+        key="modax rodas5P jax fp32 lu",
         color="#00a6a6",
         marker="v",
         linestyle="--",
-        solve_fn=rodas5_solve,
+        solve_fn=rodas5P_solve,
         mode="rodas",
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from solvers.kencarp5jax import solve as kencarp5_solve
-from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5Pjax import solve as rodas5P_solve
 from solvers.tsit5jax import solve as tsit5_solve
 
 jax.config.update("jax_enable_x64", True)
@@ -67,19 +67,19 @@ def _plain_numba_zero_rhs(y, t, p):
 def _solver_cases():
     cases = [
         ("tsit5", tsit5_solve, (_explicit_decay,), {}),
-        ("rodas5", rodas5_solve, (_explicit_decay,), {}),
+        ("rodas5P", rodas5P_solve, (_explicit_decay,), {}),
         ("kencarp5", kencarp5_solve, (_zero_rhs, _explicit_decay), {"linear": True}),
     ]
     if _have_cuda():
         from solvers.kencarp5numba import solve as kencarp5numba_solve
-        from solvers.rodas5numba import solve as rodas5numba_solve
+        from solvers.rodas5Pnumba import solve as rodas5Pnumba_solve
         from solvers.tsit5numba import solve as tsit5numba_solve
 
         decay, decay_jac, zero_rhs = _build_numba_callbacks()
         cases.extend(
             [
                 ("tsit5numba", tsit5numba_solve, (decay,), {}),
-                ("rodas5numba", rodas5numba_solve, (decay, decay_jac), {}),
+                ("rodas5Pnumba", rodas5Pnumba_solve, (decay, decay_jac), {}),
                 (
                     "kencarp5numba",
                     kencarp5numba_solve,
@@ -150,7 +150,7 @@ def test_solver_vmap_return_stats_shapes():
     params = jnp.array([[0.5], [1.0], [2.0], [4.0]])
 
     _, stats = jax.vmap(
-        lambda p: rodas5_solve(
+        lambda p: rodas5P_solve(
             _explicit_decay,
             y0,
             t_span,
@@ -174,7 +174,7 @@ def test_solver_vmap_return_stats_shapes():
     ("name", "solve_fn", "tuple_args", "array_args", "kwargs"),
     [
         ("tsit5", tsit5_solve, (_tuple_decay,), (_explicit_decay,), {}),
-        ("rodas5", rodas5_solve, (_tuple_decay,), (_explicit_decay,), {}),
+        ("rodas5P", rodas5P_solve, (_tuple_decay,), (_explicit_decay,), {}),
         (
             "kencarp5",
             kencarp5_solve,
@@ -208,7 +208,7 @@ def test_jax_solvers_accept_tuple_rhs_outputs(
 @pytest.mark.skipif(not _have_cuda(), reason="numba.cuda unavailable")
 def test_numba_solvers_auto_jit_plain_python_callbacks():
     from solvers.kencarp5numba import solve as kencarp5numba_solve
-    from solvers.rodas5numba import solve as rodas5numba_solve
+    from solvers.rodas5Pnumba import solve as rodas5Pnumba_solve
     from solvers.tsit5numba import solve as tsit5numba_solve
 
     y0 = np.array([1.0], dtype=np.float64)
@@ -225,7 +225,7 @@ def test_numba_solvers_auto_jit_plain_python_callbacks():
     tsit5_sol = tsit5numba_solve(
         _plain_numba_decay, y0, t_span, params, **solve_kwargs
     )
-    rodas5_sol = rodas5numba_solve(
+    rodas5P_sol = rodas5Pnumba_solve(
         _plain_numba_decay,
         _plain_numba_decay_jac,
         y0,
@@ -245,13 +245,13 @@ def test_numba_solvers_auto_jit_plain_python_callbacks():
     )
 
     np.testing.assert_allclose(tsit5_sol[:, :, 0], expected, rtol=2e-5, atol=2e-7)
-    np.testing.assert_allclose(rodas5_sol[:, :, 0], expected, rtol=2e-5, atol=2e-7)
+    np.testing.assert_allclose(rodas5P_sol[:, :, 0], expected, rtol=2e-5, atol=2e-7)
     np.testing.assert_allclose(kencarp5_sol[:, :, 0], expected, rtol=5e-5, atol=2e-7)
 
 
 @pytest.mark.skipif(not _have_cuda(), reason="numba.cuda unavailable")
 def test_numba_solver_vmap_return_stats_shapes():
-    from solvers.rodas5numba import solve as rodas5numba_solve
+    from solvers.rodas5Pnumba import solve as rodas5Pnumba_solve
 
     decay, decay_jac, _ = _build_numba_callbacks()
 
@@ -260,7 +260,7 @@ def test_numba_solver_vmap_return_stats_shapes():
     params = jnp.array([[0.5], [1.0], [2.0], [4.0]])
 
     _, stats = jax.vmap(
-        lambda p: rodas5numba_solve(
+        lambda p: rodas5Pnumba_solve(
             decay,
             decay_jac,
             y0,

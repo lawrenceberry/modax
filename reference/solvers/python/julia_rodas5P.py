@@ -1,4 +1,4 @@
-"""Julia Rodas5 reference solver via DiffEqGPU."""
+"""Julia Rodas5P reference solver via DiffEqGPU."""
 
 from reference.solvers.python.julia_common import solve as _solve
 from reference.solvers.python.julia_common import (
@@ -19,9 +19,9 @@ def solve(
     first_step=None,
     max_steps=100000,
 ):
-    """Solve an ensemble with Julia Rodas5."""
+    """Solve an ensemble with Julia Rodas5P."""
     return _solve(
-        "rodas5",
+        "rodas5P",
         system_name,
         y0,
         t_span,
@@ -48,9 +48,9 @@ def solve_with_timing(
     first_step=None,
     max_steps=100000,
 ):
-    """Solve an ensemble with Julia Rodas5 and return timing metadata."""
+    """Solve an ensemble with Julia Rodas5P and return timing metadata."""
     return _solve_with_timing(
-        "rodas5",
+        "rodas5P",
         system_name,
         y0,
         t_span,

@@ -1,7 +1,7 @@
-"""Warp-divergence benchmark: Rodas5 on Robertson, varying batch_size.
+"""Warp-divergence benchmark: Rodas5P on Robertson, varying batch_size.
 
 This benchmark measures wall time and wasted lane work when Robertson
-trajectories with increasingly varied initial conditions share a Rodas5
+trajectories with increasingly varied initial conditions share a Rodas5P
 while-loop batch.
 
 Initial condition design
@@ -34,7 +34,7 @@ identical hardest case) while guaranteeing no trajectory is harder than
 identical.
 
 Usage:
-    uv run python scripts/3b_rodas5_jax_divergence/main.py
+    uv run python scripts/3b_rodas5P_jax_divergence/main.py
 """
 
 import csv
@@ -59,7 +59,7 @@ from scripts.benchmark_common import (
     load_cache,
     save_cache,
 )
-from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5Pjax import solve as rodas5P_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -172,7 +172,7 @@ def format_stats(row: dict) -> str:
 
 
 def solve_with_stats(y0: np.ndarray, params: jnp.ndarray, batch_size: int | None):
-    return rodas5_solve(
+    return rodas5P_solve(
         robertson.ode_fn,
         y0=jnp.asarray(y0, dtype=jnp.float64),
         t_span=_T_SPAN,
@@ -347,7 +347,7 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
     ax_time.set_ylabel("Solve time (ms)")
     ax_waste.set_ylabel("Wasted lane-iteration ratio")
     ax_waste.set_ylim(0.0, 1.0)
-    ax_time.set_title(f"Rodas5 divergence - Robertson y0 variation - {gpu_name}")
+    ax_time.set_title(f"Rodas5P divergence - Robertson y0 variation - {gpu_name}")
     ax_time.grid(True, which="both", linestyle="--", alpha=0.35)
     ax_time.set_xticks(_BATCH_SIZES)
     ax_time.set_xticklabels([str(bs) for bs in _BATCH_SIZES], rotation=45, ha="right")

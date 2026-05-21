@@ -1,12 +1,12 @@
 """Solver scaling benchmark on the Robertson stiff system.
 
 Sweeps ensemble size from 1 to 100k on a log scale and records solve time for
-the local Rodas5 solver with fp32/fp64 LU precision, Diffrax Kvaerno5, and
-Julia Rodas5 with both DiffEqGPU ensemble backends. Outputs a CSV and a
+the local Rodas5P solver with fp32/fp64 LU precision, Diffrax Kvaerno5, and
+Julia Rodas5P with both DiffEqGPU ensemble backends. Outputs a CSV and a
 log-log plot per scenario named after the GPU.
 
 Usage:
-    uv run python scripts/3_rodas5_scaling/main.py
+    uv run python scripts/3_rodas5P_scaling/main.py
 """
 
 import csv
@@ -22,7 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
-from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
+from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import robertson
 from scripts.benchmark_common import (
     BenchmarkCase,
@@ -37,8 +37,8 @@ from scripts.benchmark_common import (
     time_blocked_ms,
     timing_value_or_none,
 )
-from solvers.rodas5jax import solve as rodas5_solve
-from solvers.rodas5numba import solve as rodas5numba_solve
+from solvers.rodas5Pjax import solve as rodas5P_solve
+from solvers.rodas5Pnumba import solve as rodas5Pnumba_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -75,30 +75,30 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="modax rodas5 jax fp32 lu",
+        key="modax rodas5P jax fp32 lu",
         color="#2b7be0",
         marker="o",
-        solve_fn=rodas5_solve,
+        solve_fn=rodas5P_solve,
         ode_fn=robertson.ode_fn,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
         lu_precision="fp32",
     ),
     Case(
-        key="modax rodas5 jax fp64 lu",
+        key="modax rodas5P jax fp64 lu",
         color="#e02b2b",
         marker="D",
-        solve_fn=rodas5_solve,
+        solve_fn=rodas5P_solve,
         ode_fn=robertson.ode_fn,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
         lu_precision="fp64",
     ),
     Case(
-        key="modax rodas5 numba",
+        key="modax rodas5P numba",
         color="#f0a202",
         marker="P",
-        solve_fn=rodas5numba_solve,
+        solve_fn=rodas5Pnumba_solve,
         ode_fn=robertson.ode_fn,
         jac_fn=robertson.jac_fn,
         t_span=_T_SPAN,
@@ -116,10 +116,10 @@ CASES: tuple[Case, ...] = (
         kwargs=_SOLVER_KWARGS,
     ),
     Case(
-        key="julia rodas5 array",
+        key="julia rodas5P array",
         color="#9b59b6",
         marker="^",
-        solve_fn=julia_rodas5_solve,
+        solve_fn=julia_rodas5P_solve,
         y0=robertson.Y0,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
@@ -128,11 +128,11 @@ CASES: tuple[Case, ...] = (
         ensemble_backend="EnsembleGPUArray",
     ),
     Case(
-        key="julia rodas5 kernel",
+        key="julia rodas5P kernel",
         color="#9b59b6",
         marker="v",
         linestyle="--",
-        solve_fn=julia_rodas5_solve,
+        solve_fn=julia_rodas5P_solve,
         y0=robertson.Y0,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
@@ -267,7 +267,7 @@ def plot(
     ax.set_yscale("log")
     ax.set_xlabel("Ensemble size")
     ax.set_ylabel("Solve time (ms)")
-    ax.set_title(f"Rodas5 scaling — Robertson ({scenario}) — {gpu_name}")
+    ax.set_title(f"Rodas5P scaling — Robertson ({scenario}) — {gpu_name}")
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_ENSEMBLE_SIZES)
     ax.set_xticklabels([str(n) for n in _ENSEMBLE_SIZES], rotation=45, ha="right")

@@ -25,7 +25,7 @@ JULIA_ENSEMBLE_BACKENDS = ("EnsembleGPUArray", "EnsembleGPUKernel")
 _SUPPORTED_SOLVER_BACKENDS = {
     "tsit5": set(JULIA_ENSEMBLE_BACKENDS),
     "kvaerno5": set(JULIA_ENSEMBLE_BACKENDS),
-    "rodas5": set(JULIA_ENSEMBLE_BACKENDS),
+    "rodas5P": set(JULIA_ENSEMBLE_BACKENDS),
     "kencarp5": {"EnsembleGPUArray"},
 }
 

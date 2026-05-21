@@ -1,12 +1,12 @@
-"""High-dimensional VDP divergence benchmark for Rodas5 solvers.
+"""High-dimensional VDP divergence benchmark for Rodas5P solvers.
 
 Runs the 64D coupled VDP lattice (n_osc = 32) with 1000 trajectories while
 sweeping the ``make_scenario(..., divergence=...)`` knob. For each solver and
 divergence value, the benchmark records solve time and the actual distribution
-of accepted plus rejected Rodas5 steps.
+of accepted plus rejected Rodas5P steps.
 
 Usage:
-    uv run python scripts/6_rodas5_high_dimension_divergence/main.py
+    uv run python scripts/6_rodas5P_high_dimension_divergence/main.py
 """
 
 import csv
@@ -23,7 +23,7 @@ from numba import cuda
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
-from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
+from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import vdp
 from scripts.benchmark_common import (
     TIMEOUT_ERROR,
@@ -35,8 +35,8 @@ from scripts.benchmark_common import (
     time_blocked,
     timeout_cache_entry,
 )
-from solvers.rodas5jax import solve as rodas5_solve
-from solvers.rodas5numba import solve as rodas5numba_solve
+from solvers.rodas5Pjax import solve as rodas5P_solve
+from solvers.rodas5Pnumba import solve as rodas5Pnumba_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -84,10 +84,10 @@ class Case:
 
 
 CASES = (
-    Case("modax rodas5 jax fp32 lu", "#2b7be0", "o", "stats"),
-    Case("modax rodas5 numba", "#f0a202", "s", "stats"),
+    Case("modax rodas5P jax fp32 lu", "#2b7be0", "o", "stats"),
+    Case("modax rodas5P numba", "#f0a202", "s", "stats"),
     Case(
-        "modax rodas5 numba (sorted)",
+        "modax rodas5P numba (sorted)",
         "#f0a202",
         "P",
         "stats",
@@ -147,14 +147,14 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
-    if solver.key.startswith("modax rodas5 numba"):
+    if solver.key.startswith("modax rodas5P numba"):
         numba_params = np.column_stack(
             [
                 np.full(y0.shape[0], float(_N_OSC), dtype=np.float64),
                 params[:, 0],
             ]
         )
-        return rodas5numba_solve(
+        return rodas5Pnumba_solve(
             ode_fn_vdp_numba,
             jac_fn_vdp_numba,
             y0=y0,
@@ -164,7 +164,7 @@ def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
             **_SOLVER_KWARGS,
         )
 
-    return rodas5_solve(
+    return rodas5P_solve(
         _ODE_FN,
         y0=jnp.asarray(y0, dtype=jnp.float64),
         t_span=_T_SPAN,
@@ -191,7 +191,7 @@ def time_solve(
     solver: Case, y0: np.ndarray, params: np.ndarray
 ) -> tuple[float, dict | None]:
     if solver.mode == "julia":
-        result = julia_rodas5_solve._julia_solve_with_timing(
+        result = julia_rodas5P_solve._julia_solve_with_timing(
             "vdp",
             y0,
             _T_SPAN,
@@ -343,7 +343,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                     flush=True,
                 )
             else:
-                local_row = gpu_cache.get("modax rodas5 jax fp32 lu", {}).get(
+                local_row = gpu_cache.get("modax rodas5P jax fp32 lu", {}).get(
                     divergence_key
                 )
                 stats_summary = (

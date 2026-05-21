@@ -38,7 +38,7 @@ from scripts.benchmark_common import (
 )
 from solvers.kencarp5jax import solve as kencarp5_solve
 from solvers.kencarp5numba import solve as kencarp5numba_solve
-from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5Pjax import solve as rodas5P_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -101,11 +101,11 @@ _LINEAR_SETTINGS = (
 )
 _BASELINE_SOLVERS = (
     BaselineSolver(
-        "modax rodas5 jax fp64 lu",
-        "modax rodas5 jax fp64 lu",
+        "modax rodas5P jax fp64 lu",
+        "modax rodas5P jax fp64 lu",
         "#00a6a6",
         "v",
-        "rodas5",
+        "rodas5P",
     ),
 )
 
@@ -234,7 +234,7 @@ def time_baseline_solver(
         return ms, summarize_custom_kernel_stats(stats)
 
     ms, _ = time_blocked(
-        lambda: rodas5_solve(
+        lambda: rodas5P_solve(
             _ODE_FN,
             jnp.asarray(y0, dtype=jnp.float64),
             _T_SPAN,

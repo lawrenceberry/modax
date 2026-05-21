@@ -1,10 +1,10 @@
-"""Non-autonomous correctness tests for the Rodas5 solvers.
+"""Non-autonomous correctness tests for the Rodas5P solvers.
 
 For a Rosenbrock-Wanner method to retain its order on a non-autonomous ODE,
 each stage must include the explicit ``dt * d_i * df/dt`` correction in
 addition to evaluating ``f`` at the stage time.  These tests use a linear
 non-autonomous problem with a closed-form solution to verify both the JAX
-and the numba/CUDA Rodas5 implementations.
+and the numba/CUDA Rodas5P implementations.
 
 Reference ODE:  dy/dt = -lambda * y + forcing * t,   y(0) = 0
 Closed form:    y(t) = forcing * (lambda * t - 1 + exp(-lambda t)) / lambda**2
@@ -16,8 +16,8 @@ import numpy as np
 import pytest
 from numba import cuda
 
-from solvers.rodas5jax import solve as rodas5jax_solve
-from solvers.rodas5numba import solve as rodas5numba_solve
+from solvers.rodas5Pjax import solve as rodas5Pjax_solve
+from solvers.rodas5Pnumba import solve as rodas5Pnumba_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -51,9 +51,9 @@ def _setup():
     return y0, t_span, params, exact
 
 
-def test_rodas5jax_nonautonomous_matches_analytical():
+def test_rodas5Pjax_nonautonomous_matches_analytical():
     y0, t_span, params, exact = _setup()
-    sol = rodas5jax_solve(
+    sol = rodas5Pjax_solve(
         ode_fn,
         jnp.asarray(y0),
         jnp.asarray(t_span),
@@ -67,7 +67,7 @@ def test_rodas5jax_nonautonomous_matches_analytical():
     assert err < 1e-7, f"max error {err:.2e} too large (with dT correction)"
 
 
-def test_rodas5jax_nonautonomous_convergence():
+def test_rodas5Pjax_nonautonomous_convergence():
     """At progressively tighter tolerances the error must shrink.
 
     Without the dT correction, the spatial accuracy of the stage RHS is
@@ -77,7 +77,7 @@ def test_rodas5jax_nonautonomous_convergence():
     y0, t_span, params, exact = _setup()
     errs = []
     for rtol in (1e-4, 1e-6, 1e-8):
-        sol = rodas5jax_solve(
+        sol = rodas5Pjax_solve(
             ode_fn,
             jnp.asarray(y0),
             jnp.asarray(t_span),
@@ -90,15 +90,15 @@ def test_rodas5jax_nonautonomous_convergence():
         errs.append(float(np.max(np.abs(y_num - exact))))
 
     # Each tighter tolerance must shave at least one order of magnitude off
-    # the error (Rodas5 has plenty of headroom on this smooth problem).
+    # the error (Rodas5P has plenty of headroom on this smooth problem).
     assert errs[1] < errs[0] / 10, f"errors {errs} do not converge"
     assert errs[2] < errs[1] / 10, f"errors {errs} do not converge"
 
 
 @pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
-def test_rodas5numba_nonautonomous_matches_analytical():
+def test_rodas5Pnumba_nonautonomous_matches_analytical():
     y0, t_span, params, exact = _setup()
-    sol = rodas5numba_solve(
+    sol = rodas5Pnumba_solve(
         ode_fn,
         jac_fn,
         y0,
@@ -111,12 +111,12 @@ def test_rodas5numba_nonautonomous_matches_analytical():
     )
     y_num = np.asarray(sol)[0, :, 0]
     err = np.max(np.abs(y_num - exact))
-    # LU is float32 in rodas5numba, so we cannot expect 1e-8 here.
+    # LU is float32 in rodas5Pnumba, so we cannot expect 1e-8 here.
     assert err < 1e-5, f"max error {err:.2e} too large (with dT correction)"
 
 
 @pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
-def test_rodas5numba_autonomous_default_unchanged():
+def test_rodas5Pnumba_autonomous_default_unchanged():
     """Passing ``time_jac_fn=None`` (the default) must still solve an
     autonomous problem correctly: the kernel uses a zero-stub for dT and
     every ``D_i * dT`` term contributes zero.
@@ -127,7 +127,7 @@ def test_rodas5numba_autonomous_default_unchanged():
     params = np.array([[LAMBDA, 0.0]], dtype=np.float64)
     exact = np.exp(-LAMBDA * t_span)
 
-    sol = rodas5numba_solve(
+    sol = rodas5Pnumba_solve(
         ode_fn,
         jac_fn,
         y0,

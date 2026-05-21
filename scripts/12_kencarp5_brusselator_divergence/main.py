@@ -37,7 +37,7 @@ from scripts.benchmark_common import (
 )
 from solvers.kencarp5jax import solve as kencarp5_solve
 from solvers.kencarp5numba import solve as kencarp5numba_solve
-from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5Pjax import solve as rodas5P_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -120,7 +120,7 @@ CASES = (
         linear=False,
     ),
     Case(
-        "modax rodas5 jax fp64 lu",
+        "modax rodas5P jax fp64 lu",
         "#00a6a6",
         "v",
         "timing",
@@ -170,8 +170,8 @@ def solve_timing_only(solver: Case, y0: np.ndarray, params: np.ndarray):
             jnp.asarray(params),
             **_SOLVER_KWARGS,
         )
-    if solver.key == "modax rodas5 jax fp64 lu":
-        return rodas5_solve(
+    if solver.key == "modax rodas5P jax fp64 lu":
+        return rodas5P_solve(
             _ODE_FN,
             jnp.asarray(y0, dtype=jnp.float64),
             _T_SPAN,

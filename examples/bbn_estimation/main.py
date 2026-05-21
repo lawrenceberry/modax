@@ -49,7 +49,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from solvers.rodas5jax import solve as rodas5_solve
+from solvers.rodas5Pjax import solve as rodas5P_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -162,7 +162,7 @@ def predict_abundances(params):
     yn0 = jnp.exp(-x0) / (1.0 + jnp.exp(-x0))
     yp0 = 1.0 / (1.0 + jnp.exp(-x0))
     y0 = jnp.array([yn0, yp0, 1e-20, 0.0])
-    sol = rodas5_solve(
+    sol = rodas5P_solve(
         bbn_ode,
         y0,
         X_SAVE,

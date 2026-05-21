@@ -44,15 +44,15 @@ function make_solver_algorithm(solver_name::String, ensemble_backend::String)
             return Tsit5()
         elseif solver_name == "kencarp5"
             return KenCarp5()
-        elseif solver_name == "rodas5"
-            return Rodas5()
+        elseif solver_name == "rodas5P"
+            return Rodas5P()
         elseif solver_name == "kvaerno5"
             return Kvaerno5()
         end
     elseif ensemble_backend == "EnsembleGPUKernel"
         if solver_name == "tsit5"
             return GPUTsit5()
-        elseif solver_name == "rodas5"
+        elseif solver_name == "rodas5P"
             return GPURodas5P()
         elseif solver_name == "kvaerno5"
             return GPUKvaerno5()

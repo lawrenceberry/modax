@@ -1,12 +1,12 @@
-"""Robertson divergence-CV benchmark for Rodas5 solvers.
+"""Robertson divergence-CV benchmark for Rodas5P solvers.
 
 Runs the Robertson system with 400,000 trajectories while sweeping the
 ``make_scenario(..., divergence=...)`` knob. For each solver and divergence
 value, the benchmark records solve time and the actual distribution of accepted
-plus rejected Rodas5 steps.
+plus rejected Rodas5P steps.
 
 Usage:
-    uv run python scripts/4_5_rodas5_robertson_divergence/main.py
+    uv run python scripts/4_5_rodas5P_robertson_divergence/main.py
 """
 
 import csv
@@ -22,7 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
-from reference.solvers.python.julia_rodas5 import solve as julia_rodas5_solve
+from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import robertson
 from scripts.benchmark_common import (
     TIMEOUT_ERROR,
@@ -34,10 +34,10 @@ from scripts.benchmark_common import (
     time_blocked,
     timeout_cache_entry,
 )
-from solvers.rodas5jax import solve as rodas5_solve
-from solvers.rodas5numba import prepare_solve as rodas5numba_prepare_solve
-from solvers.rodas5numba import run_prepared as rodas5numba_run_prepared
-from solvers.rodas5numba import solve as rodas5numba_solve
+from solvers.rodas5Pjax import solve as rodas5P_solve
+from solvers.rodas5Pnumba import prepare_solve as rodas5Pnumba_prepare_solve
+from solvers.rodas5Pnumba import run_prepared as rodas5Pnumba_run_prepared
+from solvers.rodas5Pnumba import solve as rodas5Pnumba_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -101,10 +101,10 @@ class Case:
 
 
 CASES = (
-    Case("modax rodas5 jax fp32 lu", "#2b7be0", "o", "stats"),
-    Case("modax rodas5 numba", "#f0a202", "s", "stats"),
+    Case("modax rodas5P jax fp32 lu", "#2b7be0", "o", "stats"),
+    Case("modax rodas5P numba", "#f0a202", "s", "stats"),
     Case(
-        "modax rodas5 numba (sorted)",
+        "modax rodas5P numba (sorted)",
         "#f0a202",
         "P",
         "stats",
@@ -118,21 +118,21 @@ CASES = (
     #     max_divergence=1.5,
     # ),
     # Case(
-    #     "julia rodas5 array",
+    #     "julia rodas5P array",
     #     "#9b59b6",
     #     "D",
     #     "julia",
     #     "EnsembleGPUArray",
     # ),
     Case(
-        "julia rodas5 kernel",
+        "julia rodas5P kernel",
         "#d35400",
         "v",
         "julia",
         "EnsembleGPUKernel",
     ),
     Case(
-        "julia rodas5 kernel (sorted)",
+        "julia rodas5P kernel (sorted)",
         "#d35400",
         "X",
         "julia",
@@ -152,8 +152,8 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
-    if solver.key.startswith("modax rodas5 numba"):
-        return rodas5numba_solve(
+    if solver.key.startswith("modax rodas5P numba"):
+        return rodas5Pnumba_solve(
             robertson.ode_fn,
             robertson.jac_fn,
             y0=y0,
@@ -163,7 +163,7 @@ def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
             **_SOLVER_KWARGS,
         )
 
-    return rodas5_solve(
+    return rodas5P_solve(
         robertson.ode_fn,
         y0=jnp.asarray(y0, dtype=jnp.float64),
         t_span=_T_SPAN,
@@ -190,7 +190,7 @@ def time_solve(
 ) -> tuple[float, dict | None]:
     if solver.mode == "julia":
         julia_y0 = y0[0] if y0.ndim == 2 and np.all(y0 == y0[0]) else y0
-        result = julia_rodas5_solve._julia_solve_with_timing(
+        result = julia_rodas5P_solve._julia_solve_with_timing(
             "robertson",
             julia_y0,
             _T_SPAN,
@@ -202,8 +202,8 @@ def time_solve(
     if solver.mode == "timing":
         ms, _ = time_blocked(lambda: solve_timing_only(solver, y0, params), _N_RUNS)
         return ms, None
-    if solver.key.startswith("modax rodas5 numba"):
-        prepared = rodas5numba_prepare_solve(
+    if solver.key.startswith("modax rodas5P numba"):
+        prepared = rodas5Pnumba_prepare_solve(
             robertson.ode_fn,
             robertson.jac_fn,
             y0=y0,
@@ -212,7 +212,7 @@ def time_solve(
             **_SOLVER_KWARGS,
         )
         ms, result = time_blocked(
-            lambda: rodas5numba_run_prepared(
+            lambda: rodas5Pnumba_run_prepared(
                 prepared,
                 return_stats=True,
                 copy_solution=False,
@@ -372,7 +372,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                     flush=True,
                 )
             else:
-                local_row = gpu_cache.get("modax rodas5 jax fp32 lu", {}).get(
+                local_row = gpu_cache.get("modax rodas5P jax fp32 lu", {}).get(
                     divergence_key
                 )
                 stats_summary = (
@@ -421,7 +421,7 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
     ax.set_xlabel("Normalized standard deviation of attempted steps")
     ax.set_ylabel("Solve time / mean attempted steps (ms)")
     ax.set_yscale("log")
-    ax.set_title(f"Robertson Rodas5 divergence — {_N_TRAJ} trajectories — {gpu_name}")
+    ax.set_title(f"Robertson Rodas5P divergence — {_N_TRAJ} trajectories — {gpu_name}")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
     fig.tight_layout()
