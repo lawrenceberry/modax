@@ -6,7 +6,7 @@ value, the benchmark records solve time and the actual distribution of accepted
 plus rejected Rodas5P steps.
 
 Usage:
-    uv run python scripts/4_5_rodas5P_robertson_divergence/main.py
+    uv run python scripts/7_rodas5P_robertson_divergence/main.py
 """
 
 import csv

@@ -6,7 +6,7 @@ divergence value, the benchmark records solve time and the actual distribution
 of accepted plus rejected Rodas5P steps.
 
 Usage:
-    uv run python scripts/6_rodas5P_high_dimension_divergence/main.py
+    uv run python scripts/10_rodas5P_vdp_divergence/main.py
 """
 
 import csv

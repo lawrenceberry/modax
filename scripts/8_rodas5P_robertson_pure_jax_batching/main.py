@@ -34,7 +34,7 @@ identical hardest case) while guaranteeing no trajectory is harder than
 identical.
 
 Usage:
-    uv run python scripts/3b_rodas5P_jax_divergence/main.py
+    uv run python scripts/8_rodas5P_robertson_pure_jax_batching/main.py
 """
 
 import csv

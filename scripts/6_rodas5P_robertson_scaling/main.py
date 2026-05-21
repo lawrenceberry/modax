@@ -6,7 +6,7 @@ Julia Rodas5P with both DiffEqGPU ensemble backends. Outputs a CSV and a
 log-log plot per scenario named after the GPU.
 
 Usage:
-    uv run python scripts/3_rodas5P_scaling/main.py
+    uv run python scripts/6_rodas5P_robertson_scaling/main.py
 """
 
 import csv

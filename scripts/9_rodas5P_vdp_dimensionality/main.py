@@ -9,7 +9,7 @@ large dimensions) are stored as null and omitted from the plot. Runs both
 scenario, named after the GPU and scenario.
 
 Usage:
-    uv run python scripts/5_rodas5P_dimensionality/main.py
+    uv run python scripts/9_rodas5P_vdp_dimensionality/main.py
 """
 
 import csv
