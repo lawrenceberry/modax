@@ -17,6 +17,20 @@ uv run python examples/mukhanov_sasaki/main.py
 
 The perturbation equations and slow-roll approximation follow the conventions in Daniel Baumann's TASI lectures on inflation.
 
+## Solver-backend benchmark
+
+The mode solve can be timed across solver backends on identical right-hand-side
+code with the `--benchmark` flag. Because the mode equation is non-stiff and
+oscillatory, the comparison uses explicit solvers: modax Tsit5 (GPU), Diffrax
+Tsit5 (GPU), and `scipy.solve_ivp` RK45 (serial CPU baseline).
+
+```bash
+# all three backends at 64 modes (scipy is the slow one)
+uv run python examples/mukhanov_sasaki/main.py --benchmark --n 64
+# GPU backends at a saturating ensemble size
+uv run python examples/mukhanov_sasaki/main.py --benchmark --backends modax diffrax --n 4096
+```
+
 ## Background Inflation
 
 The model is quadratic inflation in reduced Planck units:

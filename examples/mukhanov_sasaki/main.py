@@ -56,7 +56,9 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import sys
+import time
 from pathlib import Path
 
 import jax
@@ -197,9 +199,9 @@ def interp_np(x, xp, fp):
     return float(np.interp(x, xp, fp))
 
 
-def prepare_mode_problem(tables):
+def prepare_mode_problem(tables, n_modes=N_MODES):
     """Create k values, per-mode integration windows, and Bunch-Davies y0."""
-    physical_k = np.geomspace(K_MIN_MPC, K_MAX_MPC, N_MODES)
+    physical_k = np.geomspace(K_MIN_MPC, K_MAX_MPC, n_modes)
     log_a_h_pivot = interp_np(tables["n_pivot"], tables["n"], tables["log_a_h"])
     code_k_pivot = np.exp(log_a_h_pivot)
     code_k = code_k_pivot * physical_k / K_PIVOT_MPC
@@ -244,18 +246,51 @@ def make_mode_ode(tables):
     return mode_ode
 
 
-def solve_modes(tables):
+def make_solver(backend):
+    """Return a uniform ``solve(ode_fn, y0, s_span, params)`` for a backend.
+
+    The mode equation is non-stiff and oscillatory, so the science uses the
+    explicit modax Tsit5 solver.  Two reference backends integrate the
+    identical complex mode equation for a like-for-like timing comparison:
+      * "scipy"   -- serial CPU integration with scipy.solve_ivp (RK45), the
+                     no-GPU baseline.
+      * "diffrax" -- GPU integration with plain Diffrax Tsit5 (jax.vmap), the
+                     explicit analogue of the Kvaerno5 baseline used for the
+                     stiff examples (Kvaerno5 is an implicit method and is a
+                     poor match for this non-stiff oscillatory problem).
+    """
+    if backend == "modax":
+        return lambda f, y0, ts, p: tsit5_solve(
+            f, y0, ts, p,
+            rtol=MODE_RTOL, atol=MODE_ATOL,
+            first_step=1.0e-5, max_steps=MODE_MAX_STEPS,
+        )
+    if backend == "diffrax":
+        from reference.solvers.python.diffrax_tsit5 import solve as diffrax_solve
+        return lambda f, y0, ts, p: diffrax_solve(
+            f, y0, ts, p,
+            rtol=MODE_RTOL, atol=MODE_ATOL,
+            first_step=1.0e-5, max_steps=MODE_MAX_STEPS,
+        )
+    if backend == "scipy":
+        from reference.solvers.python.scipy_solve_ivp import solve as scipy_solve
+        return lambda f, y0, ts, p: scipy_solve(
+            f, y0, ts, p,
+            method="RK45",
+            rtol=MODE_RTOL, atol=MODE_ATOL, first_step=1.0e-5,
+        )
+    raise ValueError(f"unknown backend: {backend}")
+
+
+def solve_modes(tables, backend="modax", n_modes=N_MODES):
     """Solve all uncoupled Mukhanov-Sasaki Fourier modes as one ensemble."""
-    physical_k, code_k, y0, params = prepare_mode_problem(tables)
-    solution = tsit5_solve(
+    physical_k, code_k, y0, params = prepare_mode_problem(tables, n_modes)
+    solve_fn = make_solver(backend)
+    solution = solve_fn(
         make_mode_ode(tables),
         jnp.asarray(y0, dtype=jnp.float64),
         jnp.array([0.0, 1.0], dtype=jnp.float64),
         jnp.asarray(params, dtype=jnp.float64),
-        rtol=MODE_RTOL,
-        atol=MODE_ATOL,
-        first_step=1.0e-5,
-        max_steps=MODE_MAX_STEPS,
     )
     return physical_k, code_k, params[:, 2], np.asarray(solution[:, -1, :])
 
@@ -327,8 +362,64 @@ def print_results(results):
     )
 
 
+def time_solve(fn, repeats):
+    """Return (mean seconds excluding compile, result) over ``repeats`` runs."""
+    result = fn()
+    jax.block_until_ready(result)
+    t0 = time.perf_counter()
+    for _ in range(repeats):
+        result = fn()
+        jax.block_until_ready(result)
+    return (time.perf_counter() - t0) / repeats, result
+
+
+def run_benchmark(n_modes, backends, repeats):
+    n_grid, background = solve_background()
+    tables = build_background_tables(n_grid, background)
+    physical_k, code_k, y0, params = prepare_mode_problem(tables, n_modes)
+    mode_ode = make_mode_ode(tables)
+    y0 = jnp.asarray(y0, dtype=jnp.float64)
+    params = jnp.asarray(params, dtype=jnp.float64)
+    s_span = jnp.array([0.0, 1.0], dtype=jnp.float64)
+    print(f"Mukhanov-Sasaki benchmark: N = {n_modes:,} uncoupled k-modes\n")
+    print(f"{'backend':>10}  {'wall (s)':>10}  {'per solve':>12}  A_s(pivot)")
+    print("-" * 56)
+    for backend in backends:
+        solve_fn = make_solver(backend)
+        run = lambda sf=solve_fn: sf(mode_ode, y0, s_span, params)
+        try:
+            secs, sol = time_solve(run, repeats)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{backend:>10}  FAILED: {exc}")
+            continue
+        final_state = np.asarray(sol)[:, -1, :]
+        power = compute_power_spectrum(tables, code_k, params[:, 2], final_state)
+        a_s = log_interp(K_PIVOT_MPC, physical_k, power)
+        print(f"{backend:>10}  {secs:10.3f}  {secs / n_modes * 1e3:9.4f} ms  {a_s:.4e}")
+
+
 def main():
     """Run the background solve, mode solve, spectrum extraction, and reporting."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="time the batched mode solve across solver backends",
+    )
+    parser.add_argument(
+        "--backends",
+        nargs="+",
+        default=["modax", "diffrax", "scipy"],
+        choices=["modax", "diffrax", "scipy"],
+    )
+    parser.add_argument("--n", type=int, default=4096, help="number of k-modes")
+    parser.add_argument("--repeats", type=int, default=3)
+    args = parser.parse_args()
+
+    if args.benchmark:
+        run_benchmark(args.n, args.backends, args.repeats)
+        return
+
     n_grid, background = solve_background()
     tables = build_background_tables(n_grid, background)
     physical_k, code_k, n_stop, final_state = solve_modes(tables)

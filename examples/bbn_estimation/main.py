@@ -39,7 +39,9 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import sys
+import time
 from pathlib import Path
 
 import jax
@@ -155,16 +157,19 @@ SOLVER_FIRST_STEP = 0.1
 SOLVER_MAX_STEPS = 256
 
 
-def predict_abundances(params):
-    """Integrate BBN network and return [Y_P, D/H] for given params."""
+def initial_conditions():
+    """Weak-equilibrium initial state at T = 10 MeV (x = Q/10 ~ 0.13)."""
     x0 = X_SPAN[0]
-    # Weak-equilibrium initial conditions at T = 10 MeV (x = Q/10 ~ 0.13)
     yn0 = jnp.exp(-x0) / (1.0 + jnp.exp(-x0))
     yp0 = 1.0 / (1.0 + jnp.exp(-x0))
-    y0 = jnp.array([yn0, yp0, 1e-20, 0.0])
+    return jnp.array([yn0, yp0, 1e-20, 0.0])
+
+
+def predict_abundances(params):
+    """Integrate BBN network and return [Y_P, D/H] for given params."""
     sol = rodas5P_solve(
         bbn_ode,
-        y0,
+        initial_conditions(),
         X_SAVE,
         params,
         rtol=SOLVER_RTOL,
@@ -176,6 +181,90 @@ def predict_abundances(params):
     Y_P = 4.0 * YHe  # helium mass fraction
     D_H = Yd / Yp  # D/H number ratio
     return jnp.array([Y_P, D_H])
+
+
+# ---------------------------------------------------------------------------
+# Solver backends and benchmark
+# ---------------------------------------------------------------------------
+#
+# The science of the example uses the GPU-batched modax Rodas5P solver.  For a
+# like-for-like timing comparison we also expose two reference backends with the
+# identical four-species stiff network:
+#   * "scipy"   -- serial CPU integration with scipy.solve_ivp (LSODA), the
+#                  no-GPU baseline used by codes such as the original ECHO21.
+#   * "diffrax" -- GPU integration with plain Diffrax Kvaerno5 (jax.vmap).
+# The "chi^2 grid" use case of the docstring batches N independent (eta, N_eff)
+# universes into a single ensemble solve.
+
+
+def make_solver(backend):
+    """Return a uniform ``solve(ode_fn, y0, t_span, params)`` for a backend."""
+    if backend == "modax":
+        return lambda f, y0, ts, p: rodas5P_solve(
+            f, y0, ts, p,
+            lu_precision="fp64",
+            rtol=SOLVER_RTOL, atol=SOLVER_ATOL,
+            first_step=SOLVER_FIRST_STEP, max_steps=SOLVER_MAX_STEPS,
+        )
+    if backend == "diffrax":
+        from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_solve
+        return lambda f, y0, ts, p: diffrax_solve(
+            f, y0, ts, p,
+            rtol=SOLVER_RTOL, atol=SOLVER_ATOL,
+            first_step=SOLVER_FIRST_STEP, max_steps=8192,
+        )
+    if backend == "scipy":
+        from reference.solvers.python.scipy_solve_ivp import solve as scipy_solve
+        # LSODA with an automatic initial step is what serial codes such as
+        # ECHO21 use; an imposed first_step of 0.1 destabilises it here.
+        return lambda f, y0, ts, p: scipy_solve(
+            f, y0, ts, p,
+            method="LSODA",
+            rtol=SOLVER_RTOL, atol=SOLVER_ATOL, first_step=None,
+        )
+    raise ValueError(f"unknown backend: {backend}")
+
+
+def sample_grid_params(n):
+    """A near-square (eta_10, N_eff) grid covering the prior box, flattened."""
+    side = int(np.ceil(np.sqrt(n)))
+    eta = np.linspace(LO[0], HI[0], side)
+    neff = np.linspace(LO[1], HI[1], side)
+    ee, nn = np.meshgrid(eta, neff)
+    grid = np.column_stack([ee.ravel(), nn.ravel()])[:n]
+    return jnp.asarray(grid, dtype=jnp.float64)
+
+
+def time_solve(fn, repeats):
+    """Return (mean seconds excluding compile, result) over ``repeats`` runs."""
+    result = fn()
+    jax.block_until_ready(result)
+    t0 = time.perf_counter()
+    for _ in range(repeats):
+        result = fn()
+        jax.block_until_ready(result)
+    return (time.perf_counter() - t0) / repeats, result
+
+
+def run_benchmark(n, backends, repeats):
+    params = sample_grid_params(n)
+    y0 = initial_conditions()
+    print(f"BBN forward-solve benchmark: N = {n:,} stiff 4-species universes\n", flush=True)
+    print(f"{'backend':>10}  {'wall (s)':>10}  {'per solve':>12}  Y_P(eta~6,Neff~3)", flush=True)
+    print("-" * 60, flush=True)
+    for backend in backends:
+        solve_fn = make_solver(backend)
+        run = lambda sf=solve_fn: sf(bbn_ode, y0, X_SAVE, params)
+        try:
+            secs, sol = time_solve(run, repeats)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{backend:>10}  FAILED: {exc}", flush=True)
+            continue
+        sol = np.asarray(sol)
+        # mid-grid sample for a sanity check on agreement across backends
+        yp_mid = 4.0 * sol[n // 2, -1, 3]
+        per = secs / n
+        print(f"{backend:>10}  {secs:10.3f}  {per * 1e3:9.4f} ms  {yp_mid:.5f}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +450,26 @@ def _plot_posterior(dead_positions, w, eta10_samples, neff_samples):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="time the batched forward solve across solver backends",
+    )
+    parser.add_argument(
+        "--backends",
+        nargs="+",
+        default=["modax", "diffrax", "scipy"],
+        choices=["modax", "diffrax", "scipy"],
+    )
+    parser.add_argument("--n", type=int, default=10_000, help="ensemble size")
+    parser.add_argument("--repeats", type=int, default=3)
+    args = parser.parse_args()
+
+    if args.benchmark:
+        run_benchmark(args.n, args.backends, args.repeats)
+        return
+
     print("Integrating BBN network (4 species, x = Q/T)", flush=True)
     print("Running nested sampling ...", flush=True)
     run_nested_sampling()

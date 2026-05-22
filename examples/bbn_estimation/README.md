@@ -10,6 +10,20 @@ Run it with:
 uv run python examples/bbn_estimation/main.py
 ```
 
+## Solver-backend benchmark
+
+The batched forward solve (the chi-squared grid / sampler-population inner loop)
+can be timed across solver backends on identical right-hand-side code with the
+`--benchmark` flag: modax Rodas5P (GPU), Diffrax Kvaerno5 (GPU), and serial
+`scipy.solve_ivp` LSODA (the no-GPU baseline).
+
+```bash
+# head-to-head over a 2000-point (eta, N_eff) grid (scipy is the slow one)
+uv run python examples/bbn_estimation/main.py --benchmark --n 2000
+# GPU backends at a larger grid
+uv run python examples/bbn_estimation/main.py --benchmark --backends modax diffrax --n 50000
+```
+
 ## Expansion rate
 
 In radiation domination the Hubble rate is given by the Friedmann equation:
