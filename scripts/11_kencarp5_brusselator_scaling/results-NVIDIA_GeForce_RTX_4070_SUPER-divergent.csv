@@ -35,15 +35,15 @@ modax kencarp5 numba newton,modax kencarp5 numba newton,1000,1098.7429427914321
 modax kencarp5 numba newton,modax kencarp5 numba newton,3000,3253.0905827879906
 modax kencarp5 numba newton,modax kencarp5 numba newton,10000,10709.861531853676
 modax kencarp5 numba newton,modax kencarp5 numba newton,30000,32015.18123783171
-modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,3,13.59548605978489
-modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,10,16.244057100266218
-modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,30,16.701512970030308
-modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,100,18.912076950073242
-modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,300,24.830171838402748
-modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,1000,50.6187560968101
-modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,3000,130.95198711380363
-modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,10000,462.35967660322785
-modax rodas5 jax fp32 lu,modax rodas5 jax fp32 lu,30000,1269.0446032211185
+modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,3,16.833773930557072
+modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,10,20.844483049586415
+modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,30,24.076784029603004
+modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,100,36.62251005880535
+modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,300,69.35460900422186
+modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,1000,176.03166797198355
+modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,3000,738.0139760207385
+modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,10000,1977.9033749364316
+modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,30000,4249.084460083395
 diffrax kencarp5,diffrax kencarp5,3,42.99222631379962
 diffrax kencarp5,diffrax kencarp5,10,57.76134133338928
 diffrax kencarp5,diffrax kencarp5,30,67.01047206297517

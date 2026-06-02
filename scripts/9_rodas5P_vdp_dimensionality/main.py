@@ -21,8 +21,6 @@ from typing import Any, Callable, Sequence
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import numpy as np
-from numba import cuda
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -143,47 +141,6 @@ CASES: tuple[Case, ...] = (
 )
 
 
-@cuda.jit(device=True)
-def ode_fn_vdp_numba(y, t, p, dy, i):
-    n_osc = int(p[i, 0])
-    scale = p[i, 1]
-    mu = 100.0
-    diffusion = 10.0
-    for k in range(n_osc):
-        kp1 = (k + 1) % n_osc
-        km1 = (k + n_osc - 1) % n_osc
-        xk = y[i, 2 * k]
-        vk = y[i, 2 * k + 1]
-        lap = y[i, 2 * kp1] - 2.0 * xk + y[i, 2 * km1]
-        dy[i, 2 * k] = vk
-        dy[i, 2 * k + 1] = scale * mu * (1.0 - xk * xk) * vk - xk + diffusion * lap
-
-
-@cuda.jit(device=True)
-def jac_fn_vdp_numba(y, t, p, jac, i):
-    n_osc = int(p[i, 0])
-    n_vars = 2 * n_osc
-    scale = p[i, 1]
-    mu = 100.0
-    diffusion = 10.0
-    for r in range(n_vars):
-        for c in range(n_vars):
-            jac[i, r, c] = 0.0
-    for k in range(n_osc):
-        kp1 = (k + 1) % n_osc
-        km1 = (k + n_osc - 1) % n_osc
-        xk = y[i, 2 * k]
-        vk = y[i, 2 * k + 1]
-        jac[i, 2 * k, 2 * k + 1] = 1.0
-        jac[i, 2 * k + 1, 2 * k] = scale * mu * (-2.0 * xk) * vk - 1.0 - 2.0 * diffusion
-        jac[i, 2 * k + 1, 2 * k + 1] = scale * mu * (1.0 - xk * xk)
-        if kp1 == km1:
-            jac[i, 2 * k + 1, 2 * kp1] = 2.0 * diffusion
-        else:
-            jac[i, 2 * k + 1, 2 * kp1] = diffusion
-            jac[i, 2 * k + 1, 2 * km1] = diffusion
-
-
 def time_case(case: Case, dim: int, *, divergence: float) -> float:
     n_osc = dim // 2
     y0_batch, params = vdp.make_scenario(n_osc, _ENSEMBLE_SIZE, divergence=divergence)
@@ -202,20 +159,15 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
         )
 
     if case.mode == "custom":
-        custom_params = np.column_stack(
-            [
-                np.full(_ENSEMBLE_SIZE, float(n_osc), dtype=np.float64),
-                params[:, 0],
-            ]
-        )
+        ode_fn_nb, _, jac_fn_nb = vdp.make_system(n_osc)
 
         def run_custom():
             return case.solve_fn(
-                ode_fn_vdp_numba,
-                jac_fn_vdp_numba,
+                ode_fn_nb,
+                jac_fn_nb,
                 y0=y0_batch,
                 t_span=case.t_span,
-                params=custom_params,
+                params=params,
                 **kwargs,
             )
 

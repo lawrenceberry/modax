@@ -114,17 +114,6 @@
       "max_batch_loop_iterations": 11,
       "wasted_lane_iteration_ratio": 0.0
     },
-    "identical_random_modax rodas5 jax fp64 lu": {
-      "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-      "case_key": "identical_random_modax rodas5 jax fp64 lu",
-      "batch_size": 0,
-      "solve_time_ms": 179.47572330012918,
-      "total_lane_iterations": 0,
-      "wasted_lane_iterations": 0,
-      "min_batch_loop_iterations": 0,
-      "max_batch_loop_iterations": 0,
-      "wasted_lane_iteration_ratio": 0.0
-    },
     "divergent_random_modax kencarp5 jax linear": {
       "64": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
@@ -237,17 +226,6 @@
       "wasted_lane_iterations": 0,
       "min_batch_loop_iterations": 29,
       "max_batch_loop_iterations": 41,
-      "wasted_lane_iteration_ratio": 0.0
-    },
-    "divergent_random_modax rodas5 jax fp64 lu": {
-      "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-      "case_key": "divergent_random_modax rodas5 jax fp64 lu",
-      "batch_size": 0,
-      "solve_time_ms": 739.7604142315686,
-      "total_lane_iterations": 0,
-      "wasted_lane_iterations": 0,
-      "min_batch_loop_iterations": 0,
-      "max_batch_loop_iterations": 0,
       "wasted_lane_iteration_ratio": 0.0
     },
     "divergent_sorted_modax kencarp5 jax linear": {
@@ -364,11 +342,33 @@
       "max_batch_loop_iterations": 41,
       "wasted_lane_iteration_ratio": 0.0
     },
-    "divergent_sorted_modax rodas5 jax fp64 lu": {
+    "identical_random_modax rodas5P jax fp64 lu": {
       "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-      "case_key": "divergent_sorted_modax rodas5 jax fp64 lu",
+      "case_key": "identical_random_modax rodas5P jax fp64 lu",
       "batch_size": 0,
-      "solve_time_ms": 739.8417582735419,
+      "solve_time_ms": 299.99728000257164,
+      "total_lane_iterations": 0,
+      "wasted_lane_iterations": 0,
+      "min_batch_loop_iterations": 0,
+      "max_batch_loop_iterations": 0,
+      "wasted_lane_iteration_ratio": 0.0
+    },
+    "divergent_random_modax rodas5P jax fp64 lu": {
+      "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+      "case_key": "divergent_random_modax rodas5P jax fp64 lu",
+      "batch_size": 0,
+      "solve_time_ms": 972.6232499815524,
+      "total_lane_iterations": 0,
+      "wasted_lane_iterations": 0,
+      "min_batch_loop_iterations": 0,
+      "max_batch_loop_iterations": 0,
+      "wasted_lane_iteration_ratio": 0.0
+    },
+    "divergent_sorted_modax rodas5P jax fp64 lu": {
+      "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+      "case_key": "divergent_sorted_modax rodas5P jax fp64 lu",
+      "batch_size": 0,
+      "solve_time_ms": 972.4840869894251,
       "total_lane_iterations": 0,
       "wasted_lane_iterations": 0,
       "min_batch_loop_iterations": 0,

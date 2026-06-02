@@ -18,7 +18,6 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-from numba import cuda
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -51,7 +50,7 @@ _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 
-_ODE_FN, _, _ = vdp.make_system(_N_OSC)
+_ODE_FN, _, _JAC_FN = vdp.make_system(_N_OSC)
 
 _CSV_FIELDS = (
     "gpu",
@@ -96,47 +95,6 @@ CASES = (
 )
 
 
-@cuda.jit(device=True)
-def ode_fn_vdp_numba(y, t, p, dy, i):
-    n_osc = int(p[i, 0])
-    scale = p[i, 1]
-    mu = 100.0
-    diffusion = 10.0
-    for k in range(n_osc):
-        kp1 = (k + 1) % n_osc
-        km1 = (k + n_osc - 1) % n_osc
-        xk = y[i, 2 * k]
-        vk = y[i, 2 * k + 1]
-        lap = y[i, 2 * kp1] - 2.0 * xk + y[i, 2 * km1]
-        dy[i, 2 * k] = vk
-        dy[i, 2 * k + 1] = scale * mu * (1.0 - xk * xk) * vk - xk + diffusion * lap
-
-
-@cuda.jit(device=True)
-def jac_fn_vdp_numba(y, t, p, jac, i):
-    n_osc = int(p[i, 0])
-    n_vars = 2 * n_osc
-    scale = p[i, 1]
-    mu = 100.0
-    diffusion = 10.0
-    for r in range(n_vars):
-        for c in range(n_vars):
-            jac[i, r, c] = 0.0
-    for k in range(n_osc):
-        kp1 = (k + 1) % n_osc
-        km1 = (k + n_osc - 1) % n_osc
-        xk = y[i, 2 * k]
-        vk = y[i, 2 * k + 1]
-        jac[i, 2 * k, 2 * k + 1] = 1.0
-        jac[i, 2 * k + 1, 2 * k] = scale * mu * (-2.0 * xk) * vk - 1.0 - 2.0 * diffusion
-        jac[i, 2 * k + 1, 2 * k + 1] = scale * mu * (1.0 - xk * xk)
-        if kp1 == km1:
-            jac[i, 2 * k + 1, 2 * kp1] = 2.0 * diffusion
-        else:
-            jac[i, 2 * k + 1, 2 * kp1] = diffusion
-            jac[i, 2 * k + 1, 2 * km1] = diffusion
-
-
 def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
     return vdp.make_scenario(
         _N_OSC,
@@ -148,18 +106,12 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key.startswith("modax rodas5P numba"):
-        numba_params = np.column_stack(
-            [
-                np.full(y0.shape[0], float(_N_OSC), dtype=np.float64),
-                params[:, 0],
-            ]
-        )
         return rodas5Pnumba_solve(
-            ode_fn_vdp_numba,
-            jac_fn_vdp_numba,
+            _ODE_FN,
+            _JAC_FN,
             y0=y0,
             t_span=_T_SPAN,
-            params=numba_params,
+            params=params,
             return_stats=True,
             **_SOLVER_KWARGS,
         )
