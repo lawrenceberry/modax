@@ -143,45 +143,81 @@ def _permute_matrix(mat, perm):
 
 
 def _make_reduced_implicit_solver(n_vars):
-    """Solve ``(I - coeff * J) x = rhs`` with a single-trajectory reduced LU.
+    """Factor / solve ``(I - coeff * J) x = rhs`` with a reduced LU.
 
     Rows where ``mask`` is False are inactive: their implicit Jacobian rows
     are zero, so ``x_i = rhs_i`` by direct substitution.  Active rows form a
     k×k sub-system solved by LU, with coupling from inactive columns included
     in the RHS.  ``lax.switch`` is used to select the right branch at runtime
     while keeping XLA slice sizes static.
+
+    The factor and solve phases are deliberately separated so that a single
+    factorization of ``W = I - coeff * J`` can be reused across every Newton
+    iteration *and* every implicit stage within a step (modified Newton).  The
+    rationale for why this reuse is safe lives in ``_step_one``.
     """
 
-    def _solve_single(jac_perm, rhs_perm, n_active, coeff):
+    def _factor_single(jac_perm, n_active, coeff):
+        """LU-factor the active k×k block of ``I - coeff*J`` (padded to n_vars)."""
         branches = []
         for active_size in range(n_vars + 1):
             n_inactive = n_vars - active_size
 
             def _branch(args, *, _k=active_size, _ni=n_inactive):
-                jac_perm, rhs_perm, coeff = args
+                jac_perm, coeff = args
+                # Pad the factors to a static n_vars shape so every switch
+                # branch returns identically-shaped arrays; only the leading
+                # k×k block is ever read back during the solve phase.
+                lu = jnp.zeros((n_vars, n_vars), dtype=jnp.float64)
+                piv = jnp.zeros(n_vars, dtype=jnp.int32)
+                if _k == 0:
+                    return lu, piv
+                mat_aa = jnp.eye(_k, dtype=jnp.float64) - coeff * jac_perm[_ni:, _ni:]
+                lu_k, piv_k = jax.scipy.linalg.lu_factor(mat_aa)
+                lu = lu.at[:_k, :_k].set(lu_k)
+                piv = piv.at[:_k].set(piv_k)
+                return lu, piv
+
+            branches.append(_branch)
+
+        return jax.lax.switch(n_active, branches, (jac_perm, coeff))
+
+    def _solve_single(lu, piv, jac_perm, rhs_perm, n_active, coeff):
+        branches = []
+        for active_size in range(n_vars + 1):
+            n_inactive = n_vars - active_size
+
+            def _branch(args, *, _k=active_size, _ni=n_inactive):
+                lu, piv, jac_perm, rhs_perm, coeff = args
                 if _k == 0:
                     return rhs_perm
                 x_inactive = rhs_perm[:_ni]
                 jac_an = jac_perm[_ni:, :_ni]
-                jac_aa = jac_perm[_ni:, _ni:]
-                mat_aa = jnp.eye(_k, dtype=jnp.float64) - coeff * jac_aa
                 rhs_active = rhs_perm[_ni:] + coeff * (jac_an @ x_inactive)
-                lu_piv = jax.scipy.linalg.lu_factor(mat_aa)
-                x_active = jax.scipy.linalg.lu_solve(lu_piv, rhs_active)
+                x_active = jax.scipy.linalg.lu_solve(
+                    (lu[:_k, :_k], piv[:_k]), rhs_active
+                )
                 return jnp.concatenate((x_inactive, x_active), axis=0)
 
             branches.append(_branch)
 
-        return jax.lax.switch(n_active, branches, (jac_perm, rhs_perm, coeff))
+        return jax.lax.switch(n_active, branches, (lu, piv, jac_perm, rhs_perm, coeff))
 
-    def _solve_masked(jac, rhs, mask, coeff):
+    def factor_masked(jac, mask, coeff):
+        """Factor ``W = I - coeff*J`` once; reused across stages/iterations."""
         perm, inv_perm, n_active = _row_partition(mask)
         jac_perm = _permute_matrix(jac, perm)
+        lu, piv = _factor_single(jac_perm, n_active, coeff)
+        return (perm, inv_perm, n_active, jac_perm, lu, piv)
+
+    def solve_factored(factored, rhs, coeff):
+        """Solve ``W x = rhs`` using a factorization from ``factor_masked``."""
+        perm, inv_perm, n_active, jac_perm, lu, piv = factored
         rhs_perm = _permute_vector(rhs, perm)
-        x_perm = _solve_single(jac_perm, rhs_perm, n_active, coeff)
+        x_perm = _solve_single(lu, piv, jac_perm, rhs_perm, n_active, coeff)
         return _unpermute_vector(x_perm, inv_perm)
 
-    return _solve_masked
+    return factor_masked, solve_factored
 
 
 def solve(
@@ -324,7 +360,7 @@ def _solve_impl(
     )
     error_weights_arr = build_error_weights(error_weights, n, n_vars)
 
-    solve_row_masked = _make_reduced_implicit_solver(n_vars)
+    factor_masked, solve_factored = _make_reduced_implicit_solver(n_vars)
 
     def step_factory(params_one):
         def f_explicit(u, t_stage):
@@ -338,31 +374,27 @@ def _solve_impl(
 
         if linear:
 
-            def _newton_stage(base, t_stage, dt, predictor):
-                gamma_dt = dt * _GAMMA
-                jac = jac_implicit(predictor, t_stage)
-                mask = jnp.any(jac != 0.0, axis=1)
-                u_stage = solve_row_masked(jac, base, mask, gamma_dt)
+            def _newton_stage(base, t_stage, predictor, factored, mask, gamma_dt):
+                del predictor, mask
+                # The implicit part is linear in u, so J = ∂f_impl/∂u is
+                # constant.  The step-start factorization of W = I - γΔt·J is
+                # therefore *exact* for this stage (no Newton needed): a single
+                # solve of W·u = base gives the stage value directly.
+                u_stage = solve_factored(factored, base, gamma_dt)
                 fi_stage = f_implicit(u_stage, t_stage)
-                failed = (
-                    jnp.any(~jnp.isfinite(jac))
-                    | jnp.any(~jnp.isfinite(u_stage))
-                    | jnp.any(~jnp.isfinite(fi_stage))
+                failed = jnp.any(~jnp.isfinite(u_stage)) | jnp.any(
+                    ~jnp.isfinite(fi_stage)
                 )
                 return u_stage, fi_stage, failed
 
         else:
 
-            def _newton_stage(base, t_stage, dt, predictor):
-                gamma_dt = dt * _GAMMA
-
-                # Evaluate J at the predictor once to detect which rows have
-                # nonzero implicit coupling.  Rows with all-zero Jacobian rows
-                # are "inactive": their implicit RHS is u-independent, so they
-                # are resolved by direct substitution without entering Newton.
-                jac_pred = jac_implicit(predictor, t_stage)
-                mask = jnp.any(jac_pred != 0.0, axis=1)
-
+            def _newton_stage(base, t_stage, predictor, factored, mask, gamma_dt):
+                # ``mask`` and ``factored`` are computed once per step (see
+                # ``_step_one``) and shared by every stage.  Rows with all-zero
+                # Jacobian rows are "inactive": their implicit RHS is
+                # u-independent, so they are resolved by direct substitution
+                # without entering Newton.
                 def direct_fn(_):
                     # All rows inactive: one f_impl eval, no LU, no loop.
                     fi = f_implicit(predictor, t_stage)
@@ -377,11 +409,17 @@ def _solve_impl(
                     def body_fn(state):
                         u, converged, failed, it = state
                         fi = f_implicit(u, t_stage)
+                        # Modified Newton: the residual is evaluated *exactly*
+                        # every iteration, but the iteration matrix
+                        # W = I - γΔt·J reuses the step-start factorization (J
+                        # frozen).  An inexact/frozen W only changes the
+                        # convergence rate, never the fixed point Newton
+                        # converges to, so the stage equation is still solved
+                        # to tolerance.
                         res = u - base - gamma_dt * fi
-                        jac = jac_implicit(u, t_stage)
                         # Reduced solve: inactive rows → delta_i = res_i (direct),
                         # active rows → k×k Newton step with coupling correction.
-                        delta = solve_row_masked(jac, res, mask, gamma_dt)
+                        delta = solve_factored(factored, res, gamma_dt)
                         u_new = jnp.where(converged | failed, u, u - delta)
                         scale = atol + rtol * jnp.maximum(jnp.abs(u), jnp.abs(u_new))
                         delta_norm = jnp.sqrt(jnp.mean((delta / scale) ** 2))
@@ -411,10 +449,33 @@ def _solve_impl(
 
         def _step_one(y, t, dt, extra):
             del extra
+            gamma_dt = dt * _GAMMA
+
+            # --- Freeze the implicit Jacobian once per step --------------------
+            # KenCarp5 is an ESDIRK method: every implicit diagonal coefficient
+            # equals γ (= _GAMMA).  Each implicit stage i solves
+            #     u = base_i + γ·dt·f_impl(u, t_i),
+            # whose Newton iteration matrix is W = I - γ·dt·J with
+            # J = ∂f_impl/∂u.  Because γ and dt are constant within a step, W is
+            # the *same* operator for all seven implicit stages.  We therefore
+            # evaluate J once (at the step-start point) and factor W a single
+            # time, then reuse that factorization
+            #   * across every Newton iteration of a stage (modified Newton), and
+            #   * across all seven implicit stages.
+            # This is safe because the Newton residual
+            #     res = u - base_i - γ·dt·f_impl(u, t_i)
+            # is still evaluated exactly each iteration; a frozen iteration
+            # matrix only affects how fast Newton converges, never the fixed
+            # point it converges to.  (We deliberately do *not* reuse J across
+            # steps: a fresh J and factorization are formed every step.)
+            jac = jac_implicit(y, t)
+            mask = jnp.any(jac != 0.0, axis=1)
+            factored = factor_masked(jac, mask, gamma_dt)
+
             stage_y = []
             stage_fe = []
             stage_fi = []
-            failed = jnp.bool_(False)
+            failed = jnp.any(~jnp.isfinite(jac))
 
             y_stage = y
             t_stage = t
@@ -446,10 +507,8 @@ def _solve_impl(
                     if coeff != 0.0:
                         predictor = predictor + coeff * stage_y[j]
 
-                # TODO: try re-using the factorised Jacobian between stages and during the
-                # Newton iteration (i.e. modified Newton).
                 y_stage, fi_stage, stage_failed = _newton_stage(
-                    base, t_stage, dt, predictor
+                    base, t_stage, predictor, factored, mask, gamma_dt
                 )
                 fe_stage = f_explicit(y_stage, t_stage)
                 failed = (

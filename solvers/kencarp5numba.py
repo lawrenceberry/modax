@@ -487,9 +487,37 @@ def _make_kernel(
                 if not math.isfinite(tmp[i, j]):
                     failed = True
 
+            # --- Freeze the implicit Jacobian once per step -----------------
+            # KenCarp5 is an ESDIRK method: every implicit diagonal coefficient
+            # equals GAMMA, so each implicit stage's Newton iteration matrix is
+            # the same W = I - gamma*dt*J (gamma and dt are fixed within a
+            # step).  Evaluate J once, at the step-start point (u == y, time t),
+            # and factor W a single time.  The factors held in smem_lu /
+            # smem_ipiv are then reused by every stage's solve and every
+            # modified-Newton iteration below.  This is safe because each
+            # Newton iteration still forms the residual
+            # u - base - gamma*dt*f_impl(u) exactly; a frozen iteration matrix
+            # changes only Newton's convergence rate, not the stage solution it
+            # converges to.  J is NOT reused across steps -- it is re-evaluated
+            # and re-factored every step.
+            gamma_dt = GAMMA * dt_use
+            if lane == 0:
+                _clear_jac(jac, i, n_vars)
+                implicit_jac_write(u, t, params, jac, i)
+            cuda.syncthreads()
+            for idx_local in range(lane, n_vars * n_vars, batch_lanes):
+                row = idx_local // n_vars
+                col = idx_local - row * n_vars
+                val = -gamma_dt * jac[i, row, col]
+                if row == col:
+                    val += 1.0
+                smem_lu[a_offset + idx_local] = val
+            cuda.syncthreads()
+            lu_solver.factorize(smem_lu, smem_ipiv, smem_info)
+            cuda.syncthreads()
+
             for stage in range(1, 8):
                 t_stage = t + _c(stage) * dt_use
-                gamma_dt = GAMMA * dt_use
                 for j in range(lane, n_vars, batch_lanes):
                     base = y[i, j]
                     pred = 0.0
@@ -516,21 +544,11 @@ def _make_kernel(
                 failed = smem_failed[batch] != 0
 
                 if linear != 0:
-                    if lane == 0:
-                        _clear_jac(jac, i, n_vars)
-                        implicit_jac_write(u, t_stage, params, jac, i)
-                    cuda.syncthreads()
-                    for idx_local in range(lane, n_vars * n_vars, batch_lanes):
-                        row = idx_local // n_vars
-                        col = idx_local - row * n_vars
-                        val = -gamma_dt * jac[i, row, col]
-                        if row == col:
-                            val += 1.0
-                        smem_lu[a_offset + idx_local] = val
+                    # Implicit part is linear in u, so J is constant: the
+                    # step-start factorization of W = I - gamma*dt*J is exact
+                    # for this stage.  Reuse it -- just solve W*u = base.
                     for j in range(lane, n_vars, batch_lanes):
                         smem_rhs[b_offset + j] = rhs[i, j]
-                    cuda.syncthreads()
-                    lu_solver.factorize(smem_lu, smem_ipiv, smem_info)
                     cuda.syncthreads()
                     lu_solver.solve(smem_lu, smem_ipiv, smem_rhs)
                     cuda.syncthreads()
@@ -553,24 +571,17 @@ def _make_kernel(
                     converged = False
                     it = 0
                     while (not converged) and (not failed) and it < NEWTON_MAX_ITERS:
+                        # Modified Newton: re-evaluate only f_impl(u) to build
+                        # the residual exactly; the iteration matrix W is the
+                        # cached step-start factorization in smem_lu/smem_ipiv
+                        # (no re-Jacobian, no re-factorize this iteration).
                         if lane == 0:
                             implicit_ode_write(u, t_stage, params, tmp, i)
-                            _clear_jac(jac, i, n_vars)
-                            implicit_jac_write(u, t_stage, params, jac, i)
                         cuda.syncthreads()
                         delta_norm_acc = 0.0
                         for j in range(lane, n_vars, batch_lanes):
                             rhs[i, j] = u[i, j] - base_vec[i, j] - gamma_dt * tmp[i, j]
                             smem_rhs[b_offset + j] = rhs[i, j]
-                        for idx_local in range(lane, n_vars * n_vars, batch_lanes):
-                            row = idx_local // n_vars
-                            col = idx_local - row * n_vars
-                            val = -gamma_dt * jac[i, row, col]
-                            if row == col:
-                                val += 1.0
-                            smem_lu[a_offset + idx_local] = val
-                        cuda.syncthreads()
-                        lu_solver.factorize(smem_lu, smem_ipiv, smem_info)
                         cuda.syncthreads()
                         lu_solver.solve(smem_lu, smem_ipiv, smem_rhs)
                         cuda.syncthreads()
