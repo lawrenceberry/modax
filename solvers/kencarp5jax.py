@@ -4,11 +4,13 @@ Accepts split ODE functions
 ``explicit_ode_fn(y, t, params) -> dy/dt`` and
 ``implicit_ode_fn(y, t, params) -> dy/dt``.
 
-The implicit DIRK stage equation is solved via a per-trajectory Newton
-iteration, using ``jax.jacfwd`` to form the Jacobian of the implicit part.
-When ``linear=True``, the implicit RHS is assumed linear in ``y`` and each
-implicit stage is solved in one LU-backed linear solve instead of Newton
-iteration.
+The implicit DIRK stage equation is solved via a per-trajectory modified
+Newton iteration, using ``jax.jacfwd`` to form the Jacobian of the implicit
+part.  Because KenCarp5 is singly-diagonal (ESDIRK), the iteration matrix
+``W = I - γΔt·J`` is the same for every implicit stage, so ``J`` is evaluated
+once per step and ``W`` is factored once and reused across all stages and
+Newton iterations.  ``lu_precision`` selects whether that factorization is done
+in float32 or float64.
 
 Uses a per-trajectory ``jax.lax.while_loop``.  The ``batch_size`` parameter is
 passed to ``jax.lax.map`` so that JAX vmaps groups of trajectories together.
@@ -17,6 +19,7 @@ maps them one at a time.
 """
 
 import functools
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -142,7 +145,7 @@ def _permute_matrix(mat, perm):
     return jnp.take_along_axis(mat_rows, perm[..., None, :], axis=-1)
 
 
-def _make_reduced_implicit_solver(n_vars):
+def _make_reduced_implicit_solver(n_vars, lu_dtype):
     """Factor / solve ``(I - coeff * J) x = rhs`` with a reduced LU.
 
     Rows where ``mask`` is False are inactive: their implicit Jacobian rows
@@ -155,6 +158,12 @@ def _make_reduced_implicit_solver(n_vars):
     factorization of ``W = I - coeff * J`` can be reused across every Newton
     iteration *and* every implicit stage within a step (modified Newton).  The
     rationale for why this reuse is safe lives in ``_step_one``.
+
+    ``lu_dtype`` (``jnp.float32`` or ``jnp.float64``) selects the precision of
+    the factorization and triangular solve.  The residual is always formed and
+    the convergence test always done in float64 by the caller, so ``lu_dtype``
+    only affects the Newton *correction direction* -- it changes the
+    convergence rate, not the solution Newton converges to.
     """
 
     def _factor_single(jac_perm, n_active, coeff):
@@ -168,11 +177,13 @@ def _make_reduced_implicit_solver(n_vars):
                 # Pad the factors to a static n_vars shape so every switch
                 # branch returns identically-shaped arrays; only the leading
                 # k×k block is ever read back during the solve phase.
-                lu = jnp.zeros((n_vars, n_vars), dtype=jnp.float64)
+                lu = jnp.zeros((n_vars, n_vars), dtype=lu_dtype)
                 piv = jnp.zeros(n_vars, dtype=jnp.int32)
                 if _k == 0:
                     return lu, piv
-                mat_aa = jnp.eye(_k, dtype=jnp.float64) - coeff * jac_perm[_ni:, _ni:]
+                mat_aa = (
+                    jnp.eye(_k, dtype=jnp.float64) - coeff * jac_perm[_ni:, _ni:]
+                ).astype(lu_dtype)
                 lu_k, piv_k = jax.scipy.linalg.lu_factor(mat_aa)
                 lu = lu.at[:_k, :_k].set(lu_k)
                 piv = piv.at[:_k].set(piv_k)
@@ -193,10 +204,12 @@ def _make_reduced_implicit_solver(n_vars):
                     return rhs_perm
                 x_inactive = rhs_perm[:_ni]
                 jac_an = jac_perm[_ni:, :_ni]
+                # Form the (float64) active RHS, drop to lu_dtype for the
+                # triangular solve, then return to float64.
                 rhs_active = rhs_perm[_ni:] + coeff * (jac_an @ x_inactive)
                 x_active = jax.scipy.linalg.lu_solve(
-                    (lu[:_k, :_k], piv[:_k]), rhs_active
-                )
+                    (lu[:_k, :_k], piv[:_k]), rhs_active.astype(lu_dtype)
+                ).astype(jnp.float64)
                 return jnp.concatenate((x_inactive, x_active), axis=0)
 
             branches.append(_branch)
@@ -227,7 +240,7 @@ def solve(
     t_span,
     params,
     *,
-    linear: bool = False,
+    lu_precision: Literal["fp32", "fp64"] = "fp64",
     batch_size=None,
     rtol=1e-8,
     atol=1e-10,
@@ -248,7 +261,7 @@ def solve(
             y0_arr,
             t_span_arr,
             params_arr,
-            linear=linear,
+            lu_precision=lu_precision,
             batch_size=batch_size,
             rtol=rtol,
             atol=atol,
@@ -271,7 +284,7 @@ def solve(
     static_argnames=(
         "explicit_ode_fn",
         "implicit_ode_fn",
-        "linear",
+        "lu_precision",
         "batch_size",
         "max_steps",
         "return_stats",
@@ -287,7 +300,7 @@ def _solve_impl(
     t_span,
     params,
     *,
-    linear: bool = False,
+    lu_precision: Literal["fp32", "fp64"] = "fp64",
     batch_size=None,
     rtol=1e-8,
     atol=1e-10,
@@ -315,9 +328,13 @@ def _solve_impl(
     params : array, shape (n_params,) or (N, n_params)
         Parameters. A 1-D array is broadcast to all trajectories; a 2-D array
         supplies distinct parameters for each trajectory.
-    linear : bool
-        When ``True``, treat ``implicit_ode_fn`` as linear in ``y`` and use a
-        single LU solve per stage instead of Newton iteration.
+    lu_precision : {"fp32", "fp64"}
+        Precision of the per-step LU factorization and triangular solves.
+        ``"fp64"`` (default) factors ``W = I - γΔt·J`` in double precision;
+        ``"fp32"`` factors in single precision. The Newton residual and
+        convergence test stay in float64 either way, so fp32 only affects the
+        correction direction (convergence rate), not the converged solution --
+        see ``_make_reduced_implicit_solver``.
     batch_size : int or None
         Number of trajectories batched by ``jax.lax.map``. ``None`` (default)
         batches all trajectories together. Internally, ``batch_size`` makes
@@ -360,7 +377,8 @@ def _solve_impl(
     )
     error_weights_arr = build_error_weights(error_weights, n, n_vars)
 
-    factor_masked, solve_factored = _make_reduced_implicit_solver(n_vars)
+    lu_dtype = jnp.float32 if lu_precision == "fp32" else jnp.float64
+    factor_masked, solve_factored = _make_reduced_implicit_solver(n_vars, lu_dtype)
 
     def step_factory(params_one):
         def f_explicit(u, t_stage):
@@ -372,80 +390,63 @@ def _solve_impl(
         def jac_implicit(u, t_stage):
             return implicit_jac_fn(u, t_stage, params_one)
 
-        if linear:
+        def _newton_stage(base, t_stage, predictor, factored, mask, gamma_dt):
+            # ``mask`` and ``factored`` are computed once per step (see
+            # ``_step_one``) and shared by every stage.  Rows with all-zero
+            # Jacobian rows are "inactive": their implicit RHS is
+            # u-independent, so they are resolved by direct substitution
+            # without entering Newton.
+            def direct_fn(_):
+                # All rows inactive: one f_impl eval, no LU, no loop.
+                fi = f_implicit(predictor, t_stage)
+                u = base + gamma_dt * fi
+                return u, fi, jnp.bool_(False)
 
-            def _newton_stage(base, t_stage, predictor, factored, mask, gamma_dt):
-                del predictor, mask
-                # The implicit part is linear in u, so J = ∂f_impl/∂u is
-                # constant.  The step-start factorization of W = I - γΔt·J is
-                # therefore *exact* for this stage (no Newton needed): a single
-                # solve of W·u = base gives the stage value directly.
-                u_stage = solve_factored(factored, base, gamma_dt)
-                fi_stage = f_implicit(u_stage, t_stage)
-                failed = jnp.any(~jnp.isfinite(u_stage)) | jnp.any(
-                    ~jnp.isfinite(fi_stage)
+            def newton_fn(_):
+                def cond_fn(state):
+                    _, converged, failed, it = state
+                    return (~(converged | failed)) & (it < _NEWTON_MAX_ITERS)
+
+                def body_fn(state):
+                    u, converged, failed, it = state
+                    fi = f_implicit(u, t_stage)
+                    # Modified Newton: the residual is evaluated *exactly*
+                    # every iteration, but the iteration matrix
+                    # W = I - γΔt·J reuses the step-start factorization (J
+                    # frozen).  An inexact/frozen W only changes the
+                    # convergence rate, never the fixed point Newton
+                    # converges to, so the stage equation is still solved
+                    # to tolerance.
+                    res = u - base - gamma_dt * fi
+                    # Reduced solve: inactive rows → delta_i = res_i (direct),
+                    # active rows → k×k Newton step with coupling correction.
+                    delta = solve_factored(factored, res, gamma_dt)
+                    u_new = jnp.where(converged | failed, u, u - delta)
+                    scale = atol + rtol * jnp.maximum(jnp.abs(u), jnp.abs(u_new))
+                    delta_norm = jnp.sqrt(jnp.mean((delta / scale) ** 2))
+                    invalid = (
+                        jnp.any(~jnp.isfinite(u_new))
+                        | jnp.any(~jnp.isfinite(delta))
+                        | jnp.isnan(delta_norm)
+                    )
+                    converged_new = converged | ((delta_norm <= 1.0) & ~invalid)
+                    failed_new = failed | invalid
+                    return (u_new, converged_new, failed_new, it + 1)
+
+                init = (
+                    predictor,
+                    jnp.bool_(False),
+                    jnp.bool_(False),
+                    jnp.int32(0),
                 )
-                return u_stage, fi_stage, failed
+                u_final, converged, failed, _ = jax.lax.while_loop(
+                    cond_fn, body_fn, init
+                )
+                fi_final = f_implicit(u_final, t_stage)
+                failed = failed | ~converged | jnp.any(~jnp.isfinite(fi_final))
+                return u_final, fi_final, failed
 
-        else:
-
-            def _newton_stage(base, t_stage, predictor, factored, mask, gamma_dt):
-                # ``mask`` and ``factored`` are computed once per step (see
-                # ``_step_one``) and shared by every stage.  Rows with all-zero
-                # Jacobian rows are "inactive": their implicit RHS is
-                # u-independent, so they are resolved by direct substitution
-                # without entering Newton.
-                def direct_fn(_):
-                    # All rows inactive: one f_impl eval, no LU, no loop.
-                    fi = f_implicit(predictor, t_stage)
-                    u = base + gamma_dt * fi
-                    return u, fi, jnp.bool_(False)
-
-                def newton_fn(_):
-                    def cond_fn(state):
-                        _, converged, failed, it = state
-                        return (~(converged | failed)) & (it < _NEWTON_MAX_ITERS)
-
-                    def body_fn(state):
-                        u, converged, failed, it = state
-                        fi = f_implicit(u, t_stage)
-                        # Modified Newton: the residual is evaluated *exactly*
-                        # every iteration, but the iteration matrix
-                        # W = I - γΔt·J reuses the step-start factorization (J
-                        # frozen).  An inexact/frozen W only changes the
-                        # convergence rate, never the fixed point Newton
-                        # converges to, so the stage equation is still solved
-                        # to tolerance.
-                        res = u - base - gamma_dt * fi
-                        # Reduced solve: inactive rows → delta_i = res_i (direct),
-                        # active rows → k×k Newton step with coupling correction.
-                        delta = solve_factored(factored, res, gamma_dt)
-                        u_new = jnp.where(converged | failed, u, u - delta)
-                        scale = atol + rtol * jnp.maximum(jnp.abs(u), jnp.abs(u_new))
-                        delta_norm = jnp.sqrt(jnp.mean((delta / scale) ** 2))
-                        invalid = (
-                            jnp.any(~jnp.isfinite(u_new))
-                            | jnp.any(~jnp.isfinite(delta))
-                            | jnp.isnan(delta_norm)
-                        )
-                        converged_new = converged | ((delta_norm <= 1.0) & ~invalid)
-                        failed_new = failed | invalid
-                        return (u_new, converged_new, failed_new, it + 1)
-
-                    init = (
-                        predictor,
-                        jnp.bool_(False),
-                        jnp.bool_(False),
-                        jnp.int32(0),
-                    )
-                    u_final, converged, failed, _ = jax.lax.while_loop(
-                        cond_fn, body_fn, init
-                    )
-                    fi_final = f_implicit(u_final, t_stage)
-                    failed = failed | ~converged | jnp.any(~jnp.isfinite(fi_final))
-                    return u_final, fi_final, failed
-
-                return jax.lax.cond(jnp.any(mask), newton_fn, direct_fn, None)
+            return jax.lax.cond(jnp.any(mask), newton_fn, direct_fn, None)
 
         def _step_one(y, t, dt, extra):
             del extra

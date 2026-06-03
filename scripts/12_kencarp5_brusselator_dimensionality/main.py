@@ -2,14 +2,14 @@
 
 Sweeps ODE dimension from 4 to 128 (n_grid = 2 to 64, dim = 2*n_grid) on a
 log scale with a fixed ensemble of 1000 trajectories and records solve time
-for the local KenCarp5 solver (both ``linear=True`` and ``linear=False``),
-Diffrax KenCarp5, and Julia KenCarp5 on ``EnsembleGPUArray``. DiffEqGPU has
-no ``GPUKenCarp5`` so the kernel backend is skipped. Failed solves (e.g. at
-extreme dims) are stored as null and omitted from the plot. Runs both
-``identical`` and ``divergent`` scenarios.
+for the local KenCarp5 solver (with both ``lu_precision="fp64"`` and
+``lu_precision="fp32"`` LU factorization), Diffrax KenCarp5, and Julia KenCarp5
+on ``EnsembleGPUArray``. DiffEqGPU has no ``GPUKenCarp5`` so the kernel backend
+is skipped. Failed solves (e.g. at extreme dims) are stored as null and omitted
+from the plot. Runs both ``identical`` and ``divergent`` scenarios.
 
 Usage:
-    uv run python scripts/14_kencarp5_brusselator_dimensionality/main.py
+    uv run python scripts/12_kencarp5_brusselator_dimensionality/main.py
 """
 
 import csv
@@ -68,7 +68,6 @@ class Case(BenchmarkCase):
     mode: str = "kencarp"
     t_span: Any = None
     kwargs: dict[str, Any] | None = None
-    linear: bool | None = None
     lu_precision: str | None = None
     system_name: str | None = None
     ensemble_backend: str | None = None
@@ -80,44 +79,44 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="modax kencarp5 jax linear",
+        key="modax kencarp5 jax fp64",
         color="#2b7be0",
         marker="o",
         solve_fn=kencarp5_solve,
         mode="kencarp",
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        linear=True,
+        lu_precision="fp64",
     ),
     Case(
-        key="modax kencarp5 jax newton",
+        key="modax kencarp5 jax fp32",
         color="#e02b2b",
         marker="D",
         solve_fn=kencarp5_solve,
         mode="kencarp",
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        linear=False,
+        lu_precision="fp32",
     ),
     Case(
-        key="modax kencarp5 numba linear",
+        key="modax kencarp5 numba fp64",
         color="#f0a202",
         marker="P",
         solve_fn=kencarp5numba_solve,
         mode="custom",
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        linear=True,
+        lu_precision="fp64",
     ),
     Case(
-        key="modax kencarp5 numba newton",
+        key="modax kencarp5 numba fp32",
         color="#d35400",
         marker="X",
         solve_fn=kencarp5numba_solve,
         mode="custom",
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        linear=False,
+        lu_precision="fp32",
     ),
     Case(
         key="modax rodas5P jax fp32 lu",
@@ -186,7 +185,7 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
                 y0=y0_batch,
                 t_span=case.t_span,
                 params=params,
-                linear=case.linear,
+                lu_precision=case.lu_precision,
                 **kwargs,
             )
         y0_j = jnp.asarray(y0_batch)
@@ -206,7 +205,7 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
             y0_j,
             case.t_span,
             p_j,
-            **({"linear": case.linear} if case.linear is not None else {}),
+            **({"lu_precision": case.lu_precision} if case.lu_precision else {}),
             **kwargs,
         )
 

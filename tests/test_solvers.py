@@ -45,7 +45,8 @@ def test_tsit5numba_reference_system(benchmark, case):
 
 
 @parametrize_system_cases
-def test_kencarp5_reference_system(benchmark, case):
+@pytest.mark.parametrize("lu_precision", ("fp32", "fp64"))
+def test_kencarp5_reference_system(benchmark, case, lu_precision):
     result = benchmark_solve(
         benchmark,
         lambda: kencarp5_solve(
@@ -54,7 +55,7 @@ def test_kencarp5_reference_system(benchmark, case):
             jnp.asarray(case.y0, dtype=jnp.float64),
             jnp.asarray(case.t_span, dtype=jnp.float64),
             jnp.asarray(case.params, dtype=jnp.float64),
-            linear=case.linear_implicit,
+            lu_precision=lu_precision,
             **case.kwargs,
         ),
     )
@@ -62,7 +63,8 @@ def test_kencarp5_reference_system(benchmark, case):
 
 
 @parametrize_system_cases
-def test_kencarp5numba_reference_system(benchmark, case):
+@pytest.mark.parametrize("lu_precision", ("fp32", "fp64"))
+def test_kencarp5numba_reference_system(benchmark, case, lu_precision):
     result = benchmark_solve(
         benchmark,
         lambda: kencarp5numba_solve(
@@ -72,7 +74,7 @@ def test_kencarp5numba_reference_system(benchmark, case):
             case.y0,
             case.t_span,
             case.params,
-            linear=case.linear_implicit,
+            lu_precision=lu_precision,
             **case.kwargs,
         ),
     )

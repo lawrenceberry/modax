@@ -1,9 +1,9 @@
 """KenCarp5 ensemble-size scaling benchmark on the Brusselator system.
 
 Fixed grid size (n_grid=32, dim=64). Sweeps ensemble size from 3 to 100k on
-a log scale and records solve time for the local KenCarp5 solver (both the
-``linear=True`` single-LU-per-stage path and the ``linear=False`` Newton
-path), Diffrax KenCarp5, and Julia KenCarp5 on ``EnsembleGPUArray``. Julia
+a log scale and records solve time for the local KenCarp5 solver (with both
+``lu_precision="fp64"`` and ``lu_precision="fp32"`` LU factorization), Diffrax
+KenCarp5, and Julia KenCarp5 on ``EnsembleGPUArray``. Julia
 provides no ``GPUKenCarp5`` so the kernel backend is skipped. Writes one CSV
 and a log-log plot per scenario, named after the GPU.
 
@@ -77,7 +77,6 @@ class Case(BenchmarkCase):
     ode_fn: Callable[..., Any] | None = None
     t_span: Any = None
     kwargs: dict[str, Any] | None = None
-    linear: bool | None = None
     lu_precision: str | None = None
     coerce_jax: bool = False
     coerce_numpy: bool = False
@@ -92,7 +91,7 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="modax kencarp5 jax linear",
+        key="modax kencarp5 jax fp64",
         color="#2b7be0",
         marker="o",
         solve_fn=kencarp5_solve,
@@ -100,11 +99,11 @@ CASES: tuple[Case, ...] = (
         implicit_ode_fn=_IMPLICIT_ODE_FN,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        linear=True,
+        lu_precision="fp64",
         coerce_jax=True,
     ),
     Case(
-        key="modax kencarp5 jax newton",
+        key="modax kencarp5 jax fp32",
         color="#e02b2b",
         marker="D",
         solve_fn=kencarp5_solve,
@@ -112,11 +111,11 @@ CASES: tuple[Case, ...] = (
         implicit_ode_fn=_IMPLICIT_ODE_FN,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        linear=False,
+        lu_precision="fp32",
         coerce_jax=True,
     ),
     Case(
-        key="modax kencarp5 numba linear",
+        key="modax kencarp5 numba fp64",
         color="#f0a202",
         marker="P",
         solve_fn=kencarp5numba_solve,
@@ -125,11 +124,11 @@ CASES: tuple[Case, ...] = (
         implicit_jac_fn=_IMPLICIT_JAC_FN,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        linear=True,
+        lu_precision="fp64",
         coerce_numpy=True,
     ),
     Case(
-        key="modax kencarp5 numba newton",
+        key="modax kencarp5 numba fp32",
         color="#d35400",
         marker="X",
         solve_fn=kencarp5numba_solve,
@@ -138,7 +137,7 @@ CASES: tuple[Case, ...] = (
         implicit_jac_fn=_IMPLICIT_JAC_FN,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
-        linear=False,
+        lu_precision="fp32",
         coerce_numpy=True,
     ),
     Case(
@@ -215,7 +214,7 @@ def time_case(case: Case, y0, params) -> float:
                 y0=solve_y0,
                 t_span=case.t_span,
                 params=solve_params,
-                linear=case.linear,
+                lu_precision=case.lu_precision,
                 **kwargs,
             )
         if case.ode_fn is not None:
@@ -233,7 +232,7 @@ def time_case(case: Case, y0, params) -> float:
             solve_y0,
             case.t_span,
             solve_params,
-            **({"linear": case.linear} if case.linear is not None else {}),
+            **({"lu_precision": case.lu_precision} if case.lu_precision else {}),
             **kwargs,
         )
 

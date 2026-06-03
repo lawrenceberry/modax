@@ -109,18 +109,18 @@ class PreparedSolve(PreparedNumbaSolve):
     kernel: Any
     lu_solver: Any
     workspace: Workspace
-    linear: np.int32
 
 
 def make_lu_solver(
     n_vars: int,
     *,
+    precision=np.float64,
     batches_per_block=1,
     block_dim="suggested",
 ):
     return LUPivotSolver(
         size=(n_vars, n_vars, 1),
-        precision=np.float64,
+        precision=precision,
         execution="Block",
         arrangement=("row_major", "row_major"),
         batches_per_block=batches_per_block,
@@ -376,13 +376,20 @@ def _make_kernel(
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
+    lu_precision: str = "fp64",
 ):
     # PID step-control exponents (Soderlind). Defaults (0, 1, 0) give E1=EXPONENT
     # and E2=E3=0, recovering the elementary I-controller exactly.
     e1 = EXPONENT * (icoeff + pcoeff + dcoeff)
     e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
     e3 = EXPONENT * dcoeff
-    lu_solver = make_lu_solver(n_vars, batches_per_block=1)
+    # Precision of the factorization / triangular solve. The Jacobian, residual
+    # and convergence test stay in float64; ``lu_dtype`` only governs the shared
+    # LU matrix and RHS, so fp32 changes the modified-Newton convergence rate,
+    # not the converged stage solution. fp32 also halves the LU shared-memory
+    # footprint.
+    lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
+    lu_solver = make_lu_solver(n_vars, precision=lu_dtype, batches_per_block=1)
     explicit_ode_write = make_cuda_vector_writer(explicit_ode_fn, n_vars)
     implicit_ode_write = make_cuda_vector_writer(implicit_ode_fn, n_vars)
     implicit_jac_write = make_cuda_matrix_writer(implicit_jac_fn, n_vars)
@@ -399,7 +406,6 @@ def _make_kernel(
         y0,
         times,
         params,
-        linear,
         dt0,
         rtol,
         atol,
@@ -430,8 +436,8 @@ def _make_kernel(
         a_offset = batch * n_vars * n_vars
         b_offset = batch * n_vars
 
-        smem_lu = cuda.shared.array(shape=a_size, dtype=np.float64)
-        smem_rhs = cuda.shared.array(shape=b_size, dtype=np.float64)
+        smem_lu = cuda.shared.array(shape=a_size, dtype=lu_dtype)
+        smem_rhs = cuda.shared.array(shape=b_size, dtype=lu_dtype)
         smem_ipiv = cuda.shared.array(shape=ipiv_size, dtype=np.int32)
         smem_info = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
         smem_delta = cuda.shared.array(shape=block_threads, dtype=np.float64)
@@ -511,7 +517,7 @@ def _make_kernel(
                 val = -gamma_dt * jac[i, row, col]
                 if row == col:
                     val += 1.0
-                smem_lu[a_offset + idx_local] = val
+                smem_lu[a_offset + idx_local] = lu_dtype(val)
             cuda.syncthreads()
             lu_solver.factorize(smem_lu, smem_ipiv, smem_info)
             cuda.syncthreads()
@@ -543,94 +549,67 @@ def _make_kernel(
                 cuda.syncthreads()
                 failed = smem_failed[batch] != 0
 
-                if linear != 0:
-                    # Implicit part is linear in u, so J is constant: the
-                    # step-start factorization of W = I - gamma*dt*J is exact
-                    # for this stage.  Reuse it -- just solve W*u = base.
+                converged = False
+                it = 0
+                while (not converged) and (not failed) and it < NEWTON_MAX_ITERS:
+                    # Modified Newton: re-evaluate only f_impl(u) to build the
+                    # residual exactly; the iteration matrix W is the cached
+                    # step-start factorization in smem_lu/smem_ipiv (no
+                    # re-Jacobian, no re-factorize this iteration).
+                    if lane == 0:
+                        implicit_ode_write(u, t_stage, params, tmp, i)
+                    cuda.syncthreads()
+                    delta_norm_acc = 0.0
                     for j in range(lane, n_vars, batch_lanes):
-                        smem_rhs[b_offset + j] = rhs[i, j]
+                        rhs[i, j] = u[i, j] - base_vec[i, j] - gamma_dt * tmp[i, j]
+                        smem_rhs[b_offset + j] = lu_dtype(rhs[i, j])
                     cuda.syncthreads()
                     lu_solver.solve(smem_lu, smem_ipiv, smem_rhs)
                     cuda.syncthreads()
                     for j in range(lane, n_vars, batch_lanes):
-                        val = smem_rhs[b_offset + j]
-                        rhs[i, j] = val
-                        stage_y[i, stage, j] = val
-                        u[i, j] = val
-                        if not math.isfinite(val):
+                        delta = smem_rhs[b_offset + j]
+                        rhs[i, j] = delta
+                        u_new = u[i, j] - delta
+                        scale = atol + rtol * max(math.fabs(u[i, j]), math.fabs(u_new))
+                        ratio = delta / scale
+                        delta_norm_acc += ratio * ratio
+                        if not math.isfinite(u_new) or not math.isfinite(delta):
                             failed = True
+                        u[i, j] = u_new
+                    smem_delta[tx] = delta_norm_acc
+                    if lane == 0:
+                        smem_failed[batch] = 0
+                    cuda.syncthreads()
+                    if failed:
+                        smem_failed[batch] = 1
                     cuda.syncthreads()
                     if lane == 0:
-                        implicit_ode_write(u, t_stage, params, tmp, i)
-                    cuda.syncthreads()
-                    for j in range(lane, n_vars, batch_lanes):
-                        stage_fi[i, stage, j] = tmp[i, j]
-                        if not math.isfinite(tmp[i, j]):
-                            failed = True
-                else:
-                    converged = False
-                    it = 0
-                    while (not converged) and (not failed) and it < NEWTON_MAX_ITERS:
-                        # Modified Newton: re-evaluate only f_impl(u) to build
-                        # the residual exactly; the iteration matrix W is the
-                        # cached step-start factorization in smem_lu/smem_ipiv
-                        # (no re-Jacobian, no re-factorize this iteration).
-                        if lane == 0:
-                            implicit_ode_write(u, t_stage, params, tmp, i)
-                        cuda.syncthreads()
-                        delta_norm_acc = 0.0
-                        for j in range(lane, n_vars, batch_lanes):
-                            rhs[i, j] = u[i, j] - base_vec[i, j] - gamma_dt * tmp[i, j]
-                            smem_rhs[b_offset + j] = rhs[i, j]
-                        cuda.syncthreads()
-                        lu_solver.solve(smem_lu, smem_ipiv, smem_rhs)
-                        cuda.syncthreads()
-                        for j in range(lane, n_vars, batch_lanes):
-                            delta = smem_rhs[b_offset + j]
-                            rhs[i, j] = delta
-                            u_new = u[i, j] - delta
-                            scale = atol + rtol * max(
-                                math.fabs(u[i, j]), math.fabs(u_new)
-                            )
-                            ratio = delta / scale
-                            delta_norm_acc += ratio * ratio
-                            if not math.isfinite(u_new) or not math.isfinite(delta):
-                                failed = True
-                            u[i, j] = u_new
-                        smem_delta[tx] = delta_norm_acc
-                        if lane == 0:
-                            smem_failed[batch] = 0
-                        cuda.syncthreads()
-                        if failed:
+                        for other_lane in range(1, batch_lanes):
+                            smem_delta[tx] += smem_delta[
+                                batch + other_lane * batches_per_block
+                            ]
+                        delta_norm = math.sqrt(smem_delta[tx] / n_vars)
+                        if delta_norm <= 1.0 and not math.isnan(delta_norm):
+                            smem_converged[batch] = 1
+                        else:
+                            smem_converged[batch] = 0
+                        if math.isnan(delta_norm):
                             smem_failed[batch] = 1
-                        cuda.syncthreads()
-                        if lane == 0:
-                            for other_lane in range(1, batch_lanes):
-                                smem_delta[tx] += smem_delta[
-                                    batch + other_lane * batches_per_block
-                                ]
-                            delta_norm = math.sqrt(smem_delta[tx] / n_vars)
-                            if delta_norm <= 1.0 and not math.isnan(delta_norm):
-                                smem_converged[batch] = 1
-                            else:
-                                smem_converged[batch] = 0
-                            if math.isnan(delta_norm):
-                                smem_failed[batch] = 1
-                        cuda.syncthreads()
-                        converged = smem_converged[batch] != 0
-                        failed = smem_failed[batch] != 0
-                        it += 1
-                    if not converged:
+                    cuda.syncthreads()
+                    converged = smem_converged[batch] != 0
+                    failed = smem_failed[batch] != 0
+                    it += 1
+                if not converged:
+                    failed = True
+                cuda.syncthreads()
+                if lane == 0:
+                    implicit_ode_write(u, t_stage, params, tmp, i)
+                cuda.syncthreads()
+                for j in range(lane, n_vars, batch_lanes):
+                    stage_y[i, stage, j] = u[i, j]
+                    stage_fi[i, stage, j] = tmp[i, j]
+                    if not math.isfinite(tmp[i, j]) or not math.isfinite(u[i, j]):
                         failed = True
-                    cuda.syncthreads()
-                    if lane == 0:
-                        implicit_ode_write(u, t_stage, params, tmp, i)
-                    cuda.syncthreads()
-                    for j in range(lane, n_vars, batch_lanes):
-                        stage_y[i, stage, j] = u[i, j]
-                        stage_fi[i, stage, j] = tmp[i, j]
-                        if not math.isfinite(tmp[i, j]) or not math.isfinite(u[i, j]):
-                            failed = True
 
                 cuda.syncthreads()
                 if lane == 0:
@@ -730,7 +709,7 @@ def prepare_solve(
     t_span,
     params,
     *,
-    linear: bool = False,
+    lu_precision: str = "fp64",
     rtol=1e-8,
     atol=1e-10,
     first_step=None,
@@ -760,6 +739,7 @@ def prepare_solve(
         pcoeff,
         icoeff,
         dcoeff,
+        lu_precision,
     )
     threads = as_launch_block_dim(lu_solver.block_dim)
     batches_per_block = int(lu_solver.batches_per_block)
@@ -769,7 +749,6 @@ def prepare_solve(
         kernel=kernel,
         lu_solver=lu_solver,
         workspace=workspace,
-        linear=np.int32(1 if linear else 0),
         dt0=np.float64(dt0),
         rtol=np.float64(rtol),
         atol=np.float64(atol),
@@ -785,7 +764,6 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
         workspace.y0_dev,
         workspace.times_dev,
         workspace.params_dev,
-        prepared.linear,
         prepared.dt0,
         prepared.rtol,
         prepared.atol,
@@ -831,6 +809,7 @@ def _make_jax_launch(
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
+    lu_precision: str = "fp64",
 ):
     kernel, lu_solver = _make_kernel(
         explicit_ode_fn,
@@ -840,6 +819,7 @@ def _make_jax_launch(
         pcoeff,
         icoeff,
         dcoeff,
+        lu_precision,
     )
     f64_2d = types.float64[:, ::1]
     f64_1d = types.float64[::1]
@@ -849,7 +829,6 @@ def _make_jax_launch(
         f64_2d,
         f64_1d,
         f64_2d,
-        types.int32,
         types.float64,
         types.float64,
         types.float64,
@@ -883,7 +862,7 @@ def solve(
     t_span,
     params,
     *,
-    linear: bool = False,
+    lu_precision: str = "fp64",
     rtol=1e-8,
     atol=1e-10,
     first_step=None,
@@ -895,6 +874,12 @@ def solve(
     dcoeff=0.0,
 ):
     """JAX-callable KenCarp5 custom-kernel solve.
+
+    ``lu_precision`` (``"fp32"`` or ``"fp64"``) selects the precision of the
+    per-step LU factorization and triangular solves. The Jacobian, residual and
+    convergence test stay in float64, so fp32 only affects the modified-Newton
+    convergence rate (not the converged solution) while halving the LU
+    shared-memory footprint.
 
     ``error_weights`` is an optional per-component weight array, shape
     ``(n_vars,)`` or ``(N, n_vars)``, applied in the weighted RMS step-size
@@ -912,7 +897,7 @@ def solve(
             y0_arr,
             t_span_arr,
             params_arr,
-            linear=linear,
+            lu_precision=lu_precision,
             rtol=rtol,
             atol=atol,
             first_step=first_step,
@@ -939,7 +924,7 @@ def _solve_impl(
     t_span,
     params,
     *,
-    linear: bool = False,
+    lu_precision: str = "fp64",
     rtol=1e-8,
     atol=1e-10,
     first_step=None,
@@ -968,6 +953,7 @@ def _solve_impl(
         pcoeff,
         icoeff,
         dcoeff,
+        lu_precision,
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
@@ -997,7 +983,6 @@ def _solve_impl(
             ABI_ARRAY,
             ABI_ARRAY,
             ABI_ARRAY,
-            ABI_SCALAR_I32,
             ABI_SCALAR_F64,
             ABI_SCALAR_F64,
             ABI_SCALAR_F64,
@@ -1006,7 +991,7 @@ def _solve_impl(
         ),
         output_kinds=(ABI_ARRAY,) * len(output_specs),
         scalar_f64_values=(dt0, rtol, atol),
-        scalar_i32_values=(1 if linear else 0, max_steps),
+        scalar_i32_values=(max_steps,),
     )
     hist, accepted, rejected, loop_steps = result[:4]
     if not return_stats:

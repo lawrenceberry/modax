@@ -68,7 +68,7 @@ def _solver_cases():
     cases = [
         ("tsit5", tsit5_solve, (_explicit_decay,), {}),
         ("rodas5P", rodas5P_solve, (_explicit_decay,), {}),
-        ("kencarp5", kencarp5_solve, (_zero_rhs, _explicit_decay), {"linear": True}),
+        ("kencarp5", kencarp5_solve, (_zero_rhs, _explicit_decay), {}),
     ]
     if _have_cuda():
         from solvers.kencarp5numba import solve as kencarp5numba_solve
@@ -84,7 +84,7 @@ def _solver_cases():
                     "kencarp5numba",
                     kencarp5numba_solve,
                     (zero_rhs, decay, decay_jac),
-                    {"linear": True},
+                    {},
                 ),
             ]
         )
@@ -180,7 +180,7 @@ def test_solver_vmap_return_stats_shapes():
             kencarp5_solve,
             (_tuple_zero_rhs, _tuple_decay),
             (_zero_rhs, _explicit_decay),
-            {"linear": True},
+            {},
         ),
     ],
 )
@@ -238,7 +238,6 @@ def test_numba_solvers_auto_jit_plain_python_callbacks():
         y0,
         t_span,
         params,
-        linear=True,
         **solve_kwargs,
     )
 
