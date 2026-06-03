@@ -1,34 +1,44 @@
 solver_key,solver,dim,solve_time_ms
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,2,4.2816209606826305
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,4,4.832030041143298
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,6,5.719738081097603
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,8,7.10146501660347
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,10,8.012373000383377
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,12,9.716310072690248
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,16,14.92996804881841
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,32,55.500971036963165
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,64,145.6009449902922
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,128,197.28946895338595
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,2,3.917161957360804
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,4,4.311741096898913
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,6,5.942187970504165
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,8,8.592421072535217
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,10,10.018958011642098
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,12,12.042773072607815
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,16,17.68738206010312
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,32,87.54679700359702
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,64,210.8890430536121
-modax rodas5P jax fp64 lu,modax rodas5P jax fp64 lu,128,431.012126035057
-modax rodas5P numba,modax rodas5P numba,2,1.315175904892385
-modax rodas5P numba,modax rodas5P numba,4,1.588665065355599
-modax rodas5P numba,modax rodas5P numba,6,1.6999850049614906
-modax rodas5P numba,modax rodas5P numba,8,1.8820440163835883
-modax rodas5P numba,modax rodas5P numba,10,2.563372952863574
-modax rodas5P numba,modax rodas5P numba,12,2.832002006471157
-modax rodas5P numba,modax rodas5P numba,16,6.064112996682525
-modax rodas5P numba,modax rodas5P numba,32,30.5534660583362
-modax rodas5P numba,modax rodas5P numba,64,189.8805380333215
-modax rodas5P numba,modax rodas5P numba,128,
+modax rodas5P array fp32,modax rodas5P array fp32,2,4.2816209606826305
+modax rodas5P array fp32,modax rodas5P array fp32,4,4.832030041143298
+modax rodas5P array fp32,modax rodas5P array fp32,6,5.719738081097603
+modax rodas5P array fp32,modax rodas5P array fp32,8,7.10146501660347
+modax rodas5P array fp32,modax rodas5P array fp32,10,8.012373000383377
+modax rodas5P array fp32,modax rodas5P array fp32,12,9.716310072690248
+modax rodas5P array fp32,modax rodas5P array fp32,16,14.92996804881841
+modax rodas5P array fp32,modax rodas5P array fp32,32,55.500971036963165
+modax rodas5P array fp32,modax rodas5P array fp32,64,145.6009449902922
+modax rodas5P array fp32,modax rodas5P array fp32,128,197.28946895338595
+modax rodas5P array fp64,modax rodas5P array fp64,2,3.917161957360804
+modax rodas5P array fp64,modax rodas5P array fp64,4,4.311741096898913
+modax rodas5P array fp64,modax rodas5P array fp64,6,5.942187970504165
+modax rodas5P array fp64,modax rodas5P array fp64,8,8.592421072535217
+modax rodas5P array fp64,modax rodas5P array fp64,10,10.018958011642098
+modax rodas5P array fp64,modax rodas5P array fp64,12,12.042773072607815
+modax rodas5P array fp64,modax rodas5P array fp64,16,17.68738206010312
+modax rodas5P array fp64,modax rodas5P array fp64,32,87.54679700359702
+modax rodas5P array fp64,modax rodas5P array fp64,64,210.8890430536121
+modax rodas5P array fp64,modax rodas5P array fp64,128,431.012126035057
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,2,1.315175904892385
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,4,1.588665065355599
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,6,1.6999850049614906
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,8,1.8820440163835883
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,10,2.563372952863574
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,12,2.832002006471157
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,16,6.064112996682525
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,32,30.5534660583362
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,64,189.8805380333215
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,128,
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,2,1.2997479643672705
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,4,1.707378076389432
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,6,1.8438179977238178
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,8,2.034908044151962
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,10,3.125005983747542
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,12,3.26253694947809
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,16,7.5583040015771985
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,32,32.02135697938502
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,64,299.33713003993034
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,128,
 diffrax kvaerno5,diffrax kvaerno5,2,19.522276241332293
 diffrax kvaerno5,diffrax kvaerno5,4,19.855352118611336
 diffrax kvaerno5,diffrax kvaerno5,6,22.777013946324587

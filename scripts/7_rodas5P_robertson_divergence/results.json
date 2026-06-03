@@ -1,10 +1,10 @@
 {
   "NVIDIA GeForce RTX 4070 SUPER": {
-    "modax rodas5P jax fp32 lu": {
+    "modax rodas5P array fp32": {
       "0": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.0,
         "dim": 3,
         "ensemble_size": 30000,
@@ -20,8 +20,8 @@
       },
       "0.1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.1,
         "dim": 3,
         "ensemble_size": 30000,
@@ -37,8 +37,8 @@
       },
       "0.2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.2,
         "dim": 3,
         "ensemble_size": 30000,
@@ -54,8 +54,8 @@
       },
       "0.3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.3,
         "dim": 3,
         "ensemble_size": 30000,
@@ -71,8 +71,8 @@
       },
       "0.4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.4,
         "dim": 3,
         "ensemble_size": 30000,
@@ -88,8 +88,8 @@
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.5,
         "dim": 3,
         "ensemble_size": 30000,
@@ -105,8 +105,8 @@
       },
       "0.6": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.6,
         "dim": 3,
         "ensemble_size": 30000,
@@ -122,8 +122,8 @@
       },
       "0.7": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.7,
         "dim": 3,
         "ensemble_size": 30000,
@@ -139,8 +139,8 @@
       },
       "0.8": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.8,
         "dim": 3,
         "ensemble_size": 30000,
@@ -156,8 +156,8 @@
       },
       "0.9": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 0.9,
         "dim": 3,
         "ensemble_size": 30000,
@@ -173,8 +173,8 @@
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P jax fp32 lu",
-        "solver": "modax rodas5P jax fp32 lu",
+        "solver_key": "modax rodas5P array fp32",
+        "solver": "modax rodas5P array fp32",
         "divergence": 1.0,
         "dim": 3,
         "ensemble_size": 30000,
@@ -189,11 +189,11 @@
         "normalized_solve_time_ms_per_step": 0.6386192727473592
       }
     },
-    "modax rodas5P numba": {
+    "modax rodas5P kernel fp32": {
       "0": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.0,
         "dim": 3,
         "ensemble_size": 30000,
@@ -209,8 +209,8 @@
       },
       "0.1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.1,
         "dim": 3,
         "ensemble_size": 30000,
@@ -226,8 +226,8 @@
       },
       "0.2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.2,
         "dim": 3,
         "ensemble_size": 30000,
@@ -243,8 +243,8 @@
       },
       "0.3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.3,
         "dim": 3,
         "ensemble_size": 30000,
@@ -260,8 +260,8 @@
       },
       "0.4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.4,
         "dim": 3,
         "ensemble_size": 30000,
@@ -277,8 +277,8 @@
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.5,
         "dim": 3,
         "ensemble_size": 30000,
@@ -294,8 +294,8 @@
       },
       "0.6": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.6,
         "dim": 3,
         "ensemble_size": 30000,
@@ -311,8 +311,8 @@
       },
       "0.7": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.7,
         "dim": 3,
         "ensemble_size": 30000,
@@ -328,8 +328,8 @@
       },
       "0.8": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.8,
         "dim": 3,
         "ensemble_size": 30000,
@@ -345,8 +345,8 @@
       },
       "0.9": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 0.9,
         "dim": 3,
         "ensemble_size": 30000,
@@ -362,8 +362,8 @@
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba",
-        "solver": "modax rodas5P numba",
+        "solver_key": "modax rodas5P kernel fp32",
+        "solver": "modax rodas5P kernel fp32",
         "divergence": 1.0,
         "dim": 3,
         "ensemble_size": 30000,
@@ -378,11 +378,11 @@
         "normalized_solve_time_ms_per_step": 0.10099541438949729
       }
     },
-    "modax rodas5P numba (sorted)": {
+    "modax rodas5P kernel fp32 (sorted)": {
       "0": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.0,
         "dim": 3,
         "ensemble_size": 30000,
@@ -398,8 +398,8 @@
       },
       "0.1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.1,
         "dim": 3,
         "ensemble_size": 30000,
@@ -415,8 +415,8 @@
       },
       "0.2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.2,
         "dim": 3,
         "ensemble_size": 30000,
@@ -432,8 +432,8 @@
       },
       "0.3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.3,
         "dim": 3,
         "ensemble_size": 30000,
@@ -449,8 +449,8 @@
       },
       "0.4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.4,
         "dim": 3,
         "ensemble_size": 30000,
@@ -466,8 +466,8 @@
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.5,
         "dim": 3,
         "ensemble_size": 30000,
@@ -483,8 +483,8 @@
       },
       "0.6": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.6,
         "dim": 3,
         "ensemble_size": 30000,
@@ -500,8 +500,8 @@
       },
       "0.7": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.7,
         "dim": 3,
         "ensemble_size": 30000,
@@ -517,8 +517,8 @@
       },
       "0.8": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.8,
         "dim": 3,
         "ensemble_size": 30000,
@@ -534,8 +534,8 @@
       },
       "0.9": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 0.9,
         "dim": 3,
         "ensemble_size": 30000,
@@ -551,8 +551,8 @@
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax rodas5P numba (sorted)",
-        "solver": "modax rodas5P numba (sorted)",
+        "solver_key": "modax rodas5P kernel fp32 (sorted)",
+        "solver": "modax rodas5P kernel fp32 (sorted)",
         "divergence": 1.0,
         "dim": 3,
         "ensemble_size": 30000,

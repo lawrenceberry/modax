@@ -139,12 +139,13 @@ class PreparedSolve(PreparedNumbaSolve):
 def make_lu_solver(
     n_vars: int,
     *,
+    precision=np.float32,
     batches_per_block="suggested",
     block_dim="suggested",
 ):
     return LUPivotSolver(
         size=(n_vars, n_vars, 1),
-        precision=np.float32,
+        precision=precision,
         execution="Block",
         arrangement=("row_major", "row_major"),
         batches_per_block=batches_per_block,
@@ -186,13 +187,22 @@ def _make_kernel(
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
+    lu_precision: str = "fp32",
 ):
     # PID step-control exponents (Soderlind). Defaults (0, 1, 0) give E1=EXPONENT
     # and E2=E3=0, recovering the elementary I-controller exactly.
     e1 = EXPONENT * (icoeff + pcoeff + dcoeff)
     e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
     e3 = EXPONENT * dcoeff
-    lu_solver = make_lu_solver(n_vars)
+    # Precision of the LU factorisation and triangular solves. The state, ODE
+    # right-hand side, Jacobian and error estimate are always float64; lu_dtype
+    # governs only the shared LU matrix and RHS. The Rosenbrock--Wanner (W)
+    # order conditions retain full order under an approximate Jacobian, so an
+    # FP32 factorisation does not reduce the method's order. Defaults to fp32,
+    # the historical kernel behaviour; fp64 is available for ill-conditioned
+    # systems where the FP32 factorisation degrades the step-size control.
+    lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
+    lu_solver = make_lu_solver(n_vars, precision=lu_dtype)
     ode_write = make_cuda_vector_writer(ode_fn, n_vars)
     jac_write = make_cuda_matrix_writer(jac_fn, n_vars)
     time_jac_write = (
@@ -244,8 +254,8 @@ def _make_kernel(
         a_offset = batch * n_vars * n_vars
         b_offset = batch * n_vars
 
-        smem_lu = cuda.shared.array(shape=a_size, dtype=np.float32)
-        smem_rhs = cuda.shared.array(shape=b_size, dtype=np.float32)
+        smem_lu = cuda.shared.array(shape=a_size, dtype=lu_dtype)
+        smem_rhs = cuda.shared.array(shape=b_size, dtype=lu_dtype)
         smem_ipiv = cuda.shared.array(shape=ipiv_size, dtype=np.int32)
         smem_info = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
 
@@ -345,9 +355,9 @@ def _make_kernel(
                 idx = a_offset + idx_local
                 if active:
                     if row == col:
-                        smem_lu[idx] = np.float32(dtgamma_inv - jac[i, row, col])
+                        smem_lu[idx] = lu_dtype(dtgamma_inv - jac[i, row, col])
                     else:
-                        smem_lu[idx] = np.float32(-jac[i, row, col])
+                        smem_lu[idx] = lu_dtype(-jac[i, row, col])
                 else:
                     smem_lu[idx] = 1.0 if row == col else 0.0
             if not active:
@@ -362,7 +372,7 @@ def _make_kernel(
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
-                    smem_rhs[b_offset + j] = np.float32(
+                    smem_rhs[b_offset + j] = lu_dtype(
                         work_global[i, j] + smem_dt_use[batch] * D1 * dT_global[i, j]
                     )
             cuda.syncthreads()
@@ -390,7 +400,7 @@ def _make_kernel(
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
-                    smem_rhs[b_offset + j] = np.float32(
+                    smem_rhs[b_offset + j] = lu_dtype(
                         work_global[i, j]
                         + smem_dt_use[batch] * D2 * dT_global[i, j]
                         + C21 * smem_k1[v_offset + j] * smem_inv_dt[batch]
@@ -420,7 +430,7 @@ def _make_kernel(
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
-                    smem_rhs[b_offset + j] = np.float32(
+                    smem_rhs[b_offset + j] = lu_dtype(
                         work_global[i, j]
                         + smem_dt_use[batch] * D3 * dT_global[i, j]
                         + (C31 * smem_k1[v_offset + j] + C32 * smem_k2[v_offset + j])
@@ -453,7 +463,7 @@ def _make_kernel(
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
-                    smem_rhs[b_offset + j] = np.float32(
+                    smem_rhs[b_offset + j] = lu_dtype(
                         work_global[i, j]
                         + smem_dt_use[batch] * D4 * dT_global[i, j]
                         + (
@@ -491,7 +501,7 @@ def _make_kernel(
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
-                    smem_rhs[b_offset + j] = np.float32(
+                    smem_rhs[b_offset + j] = lu_dtype(
                         work_global[i, j]
                         + smem_dt_use[batch] * D5 * dT_global[i, j]
                         + (
@@ -525,7 +535,7 @@ def _make_kernel(
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
-                    smem_rhs[b_offset + j] = np.float32(
+                    smem_rhs[b_offset + j] = lu_dtype(
                         work_global[i, j]
                         + (
                             C61 * smem_k1[v_offset + j]
@@ -551,7 +561,7 @@ def _make_kernel(
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
-                    smem_rhs[b_offset + j] = np.float32(
+                    smem_rhs[b_offset + j] = lu_dtype(
                         work_global[i, j]
                         + (
                             C71 * smem_k1[v_offset + j]
@@ -578,7 +588,7 @@ def _make_kernel(
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
-                    smem_rhs[b_offset + j] = np.float32(
+                    smem_rhs[b_offset + j] = lu_dtype(
                         work_global[i, j]
                         + (
                             C81 * smem_k1[v_offset + j]
@@ -712,6 +722,7 @@ def prepare_solve(
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
+    lu_precision: str = "fp32",
 ):
     del batch_size
     y0_arr, times, params_arr, dt0 = _normalize_inputs(
@@ -727,7 +738,7 @@ def prepare_solve(
     workspace.weights_dev.copy_to_device(weights_arr)
 
     kernel, lu_solver = _make_kernel(
-        ode_fn, jac_fn, time_jac_fn, n_vars, pcoeff, icoeff, dcoeff
+        ode_fn, jac_fn, time_jac_fn, n_vars, pcoeff, icoeff, dcoeff, lu_precision
     )
     batches_per_block = int(lu_solver.batches_per_block)
     threads = as_launch_block_dim(lu_solver.block_dim)
@@ -793,9 +804,10 @@ def _make_jax_launch(
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
+    lu_precision: str = "fp32",
 ):
     kernel, lu_solver = _make_kernel(
-        ode_fn, jac_fn, time_jac_fn, n_vars, pcoeff, icoeff, dcoeff
+        ode_fn, jac_fn, time_jac_fn, n_vars, pcoeff, icoeff, dcoeff, lu_precision
     )
     f64_2d = types.float64[:, ::1]
     f64_1d = types.float64[::1]
@@ -843,6 +855,7 @@ def solve(
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
+    lu_precision: str = "fp32",
 ):
     """JAX-callable Rodas5 custom-kernel solve.
 
@@ -851,6 +864,15 @@ def solve(
     ``(y_row, t, p_row) -> dT_row``. Required for non-autonomous
     systems to preserve fifth-order accuracy. When ``None``, defaults to a
     zero stub — correct only for autonomous problems (``df/dt = 0``).
+
+    ``lu_precision`` (``"fp32"`` or ``"fp64"``) selects the precision of the
+    per-step LU factorisation and triangular solves. The state, right-hand
+    side, Jacobian and error estimate are always float64; because the
+    Rosenbrock--Wanner order conditions retain full order under an approximate
+    Jacobian, the ``"fp32"`` default does not reduce the method's order while
+    halving the LU shared-memory footprint and exploiting FP32 throughput.
+    ``"fp64"`` is available for ill-conditioned systems where the FP32
+    factorisation degrades step-size control.
 
     ``error_weights`` is an optional per-component weight array, shape
     ``(n_vars,)`` or ``(N, n_vars)``, applied in the weighted RMS step-size
@@ -878,6 +900,7 @@ def solve(
             pcoeff=pcoeff,
             icoeff=icoeff,
             dcoeff=dcoeff,
+            lu_precision=lu_precision,
         )
 
     return make_custom_vmap_solver(
@@ -905,6 +928,7 @@ def _solve_impl(
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
+    lu_precision: str = "fp32",
 ):
     del batch_size
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
@@ -925,6 +949,7 @@ def _solve_impl(
         pcoeff,
         icoeff,
         dcoeff,
+        lu_precision,
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)

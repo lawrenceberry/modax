@@ -88,10 +88,10 @@ class Case:
 
 
 CASES = (
-    Case("modax tsit5 jax", "#2b7be0", "o", "stats"),
-    Case("modax tsit5 numba", "#f0a202", "s", "stats"),
+    Case("modax tsit5 array", "#2b7be0", "o", "stats"),
+    Case("modax tsit5 kernel", "#f0a202", "s", "stats"),
     Case(
-        "modax tsit5 numba (sorted)",
+        "modax tsit5 kernel (sorted)",
         "#f0a202",
         "P",
         "stats",
@@ -150,7 +150,7 @@ def _numba_params(params: np.ndarray) -> np.ndarray:
 
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
-    if solver.key.startswith("modax tsit5 numba"):
+    if solver.key.startswith("modax tsit5 kernel"):
         prepared = tsit5numba_prepare_solve(
             ode_fn_vdp_numba,
             y0=y0,
@@ -193,7 +193,7 @@ def time_solve(
             **_SOLVER_KWARGS,
         )
         return result.solve_time_s * 1000, None
-    if solver.key.startswith("modax tsit5 numba"):
+    if solver.key.startswith("modax tsit5 kernel"):
         prepared = tsit5numba_prepare_solve(
             ode_fn_vdp_numba,
             y0=y0,
@@ -371,7 +371,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                     flush=True,
                 )
             else:
-                local_row = gpu_cache.get("modax tsit5 jax", {}).get(divergence_key)
+                local_row = gpu_cache.get("modax tsit5 array", {}).get(divergence_key)
                 stats_summary = (
                     stats_from_row(local_row) if is_complete_row(local_row) else None
                 )

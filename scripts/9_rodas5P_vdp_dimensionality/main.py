@@ -78,7 +78,7 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="modax rodas5P jax fp32 lu",
+        key="modax rodas5P array fp32",
         color="#2b7be0",
         marker="o",
         solve_fn=rodas5P_solve,
@@ -88,7 +88,7 @@ CASES: tuple[Case, ...] = (
         lu_precision="fp32",
     ),
     Case(
-        key="modax rodas5P jax fp64 lu",
+        key="modax rodas5P array fp64",
         color="#e02b2b",
         marker="D",
         solve_fn=rodas5P_solve,
@@ -98,13 +98,24 @@ CASES: tuple[Case, ...] = (
         lu_precision="fp64",
     ),
     Case(
-        key="modax rodas5P numba",
+        key="modax rodas5P kernel fp32",
         color="#f0a202",
         marker="P",
         solve_fn=rodas5Pnumba_solve,
         mode="custom",
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
+        lu_precision="fp32",
+    ),
+    Case(
+        key="modax rodas5P kernel fp64",
+        color="#8c564b",
+        marker="X",
+        solve_fn=rodas5Pnumba_solve,
+        mode="custom",
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        lu_precision="fp64",
     ),
     Case(
         key="diffrax kvaerno5",
@@ -162,12 +173,18 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
         ode_fn_nb, _, jac_fn_nb = vdp.make_system(n_osc)
 
         def run_custom():
+            extra = (
+                {"lu_precision": case.lu_precision}
+                if case.lu_precision is not None
+                else {}
+            )
             return case.solve_fn(
                 ode_fn_nb,
                 jac_fn_nb,
                 y0=y0_batch,
                 t_span=case.t_span,
                 params=params,
+                **extra,
                 **kwargs,
             )
 

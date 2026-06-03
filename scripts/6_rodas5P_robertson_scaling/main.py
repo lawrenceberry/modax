@@ -75,7 +75,7 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="modax rodas5P jax fp32 lu",
+        key="modax rodas5P array fp32",
         color="#2b7be0",
         marker="o",
         solve_fn=rodas5P_solve,
@@ -85,7 +85,7 @@ CASES: tuple[Case, ...] = (
         lu_precision="fp32",
     ),
     Case(
-        key="modax rodas5P jax fp64 lu",
+        key="modax rodas5P array fp64",
         color="#e02b2b",
         marker="D",
         solve_fn=rodas5P_solve,
@@ -95,7 +95,7 @@ CASES: tuple[Case, ...] = (
         lu_precision="fp64",
     ),
     Case(
-        key="modax rodas5P numba",
+        key="modax rodas5P kernel fp32",
         color="#f0a202",
         marker="P",
         solve_fn=rodas5Pnumba_solve,
@@ -103,6 +103,19 @@ CASES: tuple[Case, ...] = (
         jac_fn=robertson.jac_fn,
         t_span=_T_SPAN,
         kwargs=_SOLVER_KWARGS,
+        lu_precision="fp32",
+        coerce_numpy=True,
+    ),
+    Case(
+        key="modax rodas5P kernel fp64",
+        color="#8c564b",
+        marker="X",
+        solve_fn=rodas5Pnumba_solve,
+        ode_fn=robertson.ode_fn,
+        jac_fn=robertson.jac_fn,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        lu_precision="fp64",
         coerce_numpy=True,
     ),
     Case(
@@ -167,12 +180,18 @@ def time_case(case: Case, y0, params) -> float:
 
     def run():
         if case.jac_fn is not None:
+            extra = (
+                {"lu_precision": case.lu_precision}
+                if case.lu_precision is not None
+                else {}
+            )
             return case.solve_fn(
                 case.ode_fn,
                 case.jac_fn,
                 y0=solve_y0,
                 t_span=case.t_span,
                 params=solve_params,
+                **extra,
                 **kwargs,
             )
         if case.lu_precision is not None:

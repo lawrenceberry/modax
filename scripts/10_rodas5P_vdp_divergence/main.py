@@ -83,10 +83,10 @@ class Case:
 
 
 CASES = (
-    Case("modax rodas5P jax fp32 lu", "#2b7be0", "o", "stats"),
-    Case("modax rodas5P numba", "#f0a202", "s", "stats"),
+    Case("modax rodas5P array fp32", "#2b7be0", "o", "stats"),
+    Case("modax rodas5P kernel fp32", "#f0a202", "s", "stats"),
     Case(
-        "modax rodas5P numba (sorted)",
+        "modax rodas5P kernel fp32 (sorted)",
         "#f0a202",
         "P",
         "stats",
@@ -105,7 +105,7 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
-    if solver.key.startswith("modax rodas5P numba"):
+    if solver.key.startswith("modax rodas5P kernel"):
         return rodas5Pnumba_solve(
             _ODE_FN,
             _JAC_FN,
@@ -295,7 +295,7 @@ def run_benchmarks(gpu_name: str, cache: dict) -> list[dict]:
                     flush=True,
                 )
             else:
-                local_row = gpu_cache.get("modax rodas5P jax fp32 lu", {}).get(
+                local_row = gpu_cache.get("modax rodas5P array fp32", {}).get(
                     divergence_key
                 )
                 stats_summary = (

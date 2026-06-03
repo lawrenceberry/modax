@@ -91,7 +91,7 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="modax kencarp5 jax fp64",
+        key="modax kencarp5 array fp64",
         color="#2b7be0",
         marker="o",
         solve_fn=kencarp5_solve,
@@ -103,7 +103,7 @@ CASES: tuple[Case, ...] = (
         coerce_jax=True,
     ),
     Case(
-        key="modax kencarp5 jax fp32",
+        key="modax kencarp5 array fp32",
         color="#e02b2b",
         marker="D",
         solve_fn=kencarp5_solve,
@@ -115,7 +115,7 @@ CASES: tuple[Case, ...] = (
         coerce_jax=True,
     ),
     Case(
-        key="modax kencarp5 numba fp64",
+        key="modax kencarp5 kernel fp64",
         color="#f0a202",
         marker="P",
         solve_fn=kencarp5numba_solve,
@@ -128,7 +128,7 @@ CASES: tuple[Case, ...] = (
         coerce_numpy=True,
     ),
     Case(
-        key="modax kencarp5 numba fp32",
+        key="modax kencarp5 kernel fp32",
         color="#d35400",
         marker="X",
         solve_fn=kencarp5numba_solve,
@@ -141,7 +141,7 @@ CASES: tuple[Case, ...] = (
         coerce_numpy=True,
     ),
     Case(
-        key="modax rodas5P jax fp32 lu",
+        key="modax rodas5P array fp32",
         color="#00a6a6",
         marker="v",
         linestyle="--",

@@ -99,7 +99,8 @@ def test_rodas5P_reference_system(benchmark, case, lu_precision):
 
 
 @parametrize_system_cases
-def test_rodas5Pnumba_reference_system(benchmark, case):
+@pytest.mark.parametrize("lu_precision", ("fp32", "fp64"))
+def test_rodas5Pnumba_reference_system(benchmark, case, lu_precision):
     result = benchmark_solve(
         benchmark,
         lambda: rodas5Pnumba_solve(
@@ -108,6 +109,7 @@ def test_rodas5Pnumba_reference_system(benchmark, case):
             case.y0,
             case.t_span,
             case.params,
+            lu_precision=lu_precision,
             **case.kwargs,
         ),
     )

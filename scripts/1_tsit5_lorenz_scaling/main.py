@@ -80,7 +80,7 @@ class Case(BenchmarkCase):
 
 CASES: tuple[Case, ...] = (
     Case(
-        key="modax tsit5 jax",
+        key="modax tsit5 array",
         color="#2b7be0",
         marker="o",
         linestyle="-",
@@ -91,7 +91,7 @@ CASES: tuple[Case, ...] = (
         kwargs=_SOLVER_KWARGS,
     ),
     Case(
-        key="modax tsit5 numba",
+        key="modax tsit5 kernel",
         color="#f0a202",
         marker="P",
         linestyle="-",

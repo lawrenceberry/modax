@@ -1,49 +1,49 @@
 solver_key,solver,ensemble_size,solve_time_ms
-modax kencarp5 jax fp64,modax kencarp5 jax fp64,3,28.866208042018116
-modax kencarp5 jax fp64,modax kencarp5 jax fp64,10,33.44216092955321
-modax kencarp5 jax fp64,modax kencarp5 jax fp64,30,34.61476298980415
-modax kencarp5 jax fp64,modax kencarp5 jax fp64,100,39.548470987938344
-modax kencarp5 jax fp64,modax kencarp5 jax fp64,300,59.22293197363615
-modax kencarp5 jax fp64,modax kencarp5 jax fp64,1000,122.43916501756757
-modax kencarp5 jax fp64,modax kencarp5 jax fp64,3000,291.92314308602363
-modax kencarp5 jax fp64,modax kencarp5 jax fp64,10000,875.2945190062746
-modax kencarp5 jax fp64,modax kencarp5 jax fp64,30000,2577.0622600102797
-modax kencarp5 jax fp32,modax kencarp5 jax fp32,3,17.915862030349672
-modax kencarp5 jax fp32,modax kencarp5 jax fp32,10,20.57101100217551
-modax kencarp5 jax fp32,modax kencarp5 jax fp32,30,21.76143298856914
-modax kencarp5 jax fp32,modax kencarp5 jax fp32,100,26.03106398601085
-modax kencarp5 jax fp32,modax kencarp5 jax fp32,300,30.064675025641918
-modax kencarp5 jax fp32,modax kencarp5 jax fp32,1000,48.44669590238482
-modax kencarp5 jax fp32,modax kencarp5 jax fp32,3000,120.58383203111589
-modax kencarp5 jax fp32,modax kencarp5 jax fp32,10000,281.17121499963105
-modax kencarp5 jax fp32,modax kencarp5 jax fp32,30000,864.5558960270137
-modax kencarp5 numba fp64,modax kencarp5 numba fp64,3,21.867842064239085
-modax kencarp5 numba fp64,modax kencarp5 numba fp64,10,21.62461495026946
-modax kencarp5 numba fp64,modax kencarp5 numba fp64,30,21.18743595201522
-modax kencarp5 numba fp64,modax kencarp5 numba fp64,100,20.83354804199189
-modax kencarp5 numba fp64,modax kencarp5 numba fp64,300,56.76254804711789
-modax kencarp5 numba fp64,modax kencarp5 numba fp64,1000,168.20598300546408
-modax kencarp5 numba fp64,modax kencarp5 numba fp64,3000,500.05920394323766
-modax kencarp5 numba fp64,modax kencarp5 numba fp64,10000,1664.0559519873932
-modax kencarp5 numba fp64,modax kencarp5 numba fp64,30000,4963.52864196524
-modax kencarp5 numba fp32,modax kencarp5 numba fp32,3,20.082859904505312
-modax kencarp5 numba fp32,modax kencarp5 numba fp32,10,20.08205302990973
-modax kencarp5 numba fp32,modax kencarp5 numba fp32,30,19.949710927903652
-modax kencarp5 numba fp32,modax kencarp5 numba fp32,100,18.505665007978678
-modax kencarp5 numba fp32,modax kencarp5 numba fp32,300,40.53652798756957
-modax kencarp5 numba fp32,modax kencarp5 numba fp32,1000,98.22101099416614
-modax kencarp5 numba fp32,modax kencarp5 numba fp32,3000,271.5225729625672
-modax kencarp5 numba fp32,modax kencarp5 numba fp32,10000,871.5084180003032
-modax kencarp5 numba fp32,modax kencarp5 numba fp32,30000,2608.6504670092836
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,3,6.337783066555858
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,10,6.8477720487862825
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,30,7.898117997683585
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,100,11.017479933798313
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,300,17.61529198847711
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,1000,47.50016005709767
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,3000,159.59287306759506
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,10000,434.7142680780962
-modax rodas5P jax fp32 lu,modax rodas5P jax fp32 lu,30000,911.0827320255339
+modax kencarp5 array fp64,modax kencarp5 array fp64,3,28.866208042018116
+modax kencarp5 array fp64,modax kencarp5 array fp64,10,33.44216092955321
+modax kencarp5 array fp64,modax kencarp5 array fp64,30,34.61476298980415
+modax kencarp5 array fp64,modax kencarp5 array fp64,100,39.548470987938344
+modax kencarp5 array fp64,modax kencarp5 array fp64,300,59.22293197363615
+modax kencarp5 array fp64,modax kencarp5 array fp64,1000,122.43916501756757
+modax kencarp5 array fp64,modax kencarp5 array fp64,3000,291.92314308602363
+modax kencarp5 array fp64,modax kencarp5 array fp64,10000,875.2945190062746
+modax kencarp5 array fp64,modax kencarp5 array fp64,30000,2577.0622600102797
+modax kencarp5 array fp32,modax kencarp5 array fp32,3,17.915862030349672
+modax kencarp5 array fp32,modax kencarp5 array fp32,10,20.57101100217551
+modax kencarp5 array fp32,modax kencarp5 array fp32,30,21.76143298856914
+modax kencarp5 array fp32,modax kencarp5 array fp32,100,26.03106398601085
+modax kencarp5 array fp32,modax kencarp5 array fp32,300,30.064675025641918
+modax kencarp5 array fp32,modax kencarp5 array fp32,1000,48.44669590238482
+modax kencarp5 array fp32,modax kencarp5 array fp32,3000,120.58383203111589
+modax kencarp5 array fp32,modax kencarp5 array fp32,10000,281.17121499963105
+modax kencarp5 array fp32,modax kencarp5 array fp32,30000,864.5558960270137
+modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,3,21.867842064239085
+modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,10,21.62461495026946
+modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,30,21.18743595201522
+modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,100,20.83354804199189
+modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,300,56.76254804711789
+modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,1000,168.20598300546408
+modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,3000,500.05920394323766
+modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,10000,1664.0559519873932
+modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,30000,4963.52864196524
+modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,3,20.082859904505312
+modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,10,20.08205302990973
+modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,30,19.949710927903652
+modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,100,18.505665007978678
+modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,300,40.53652798756957
+modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,1000,98.22101099416614
+modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,3000,271.5225729625672
+modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,10000,871.5084180003032
+modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,30000,2608.6504670092836
+modax rodas5P array fp32,modax rodas5P array fp32,3,6.337783066555858
+modax rodas5P array fp32,modax rodas5P array fp32,10,6.8477720487862825
+modax rodas5P array fp32,modax rodas5P array fp32,30,7.898117997683585
+modax rodas5P array fp32,modax rodas5P array fp32,100,11.017479933798313
+modax rodas5P array fp32,modax rodas5P array fp32,300,17.61529198847711
+modax rodas5P array fp32,modax rodas5P array fp32,1000,47.50016005709767
+modax rodas5P array fp32,modax rodas5P array fp32,3000,159.59287306759506
+modax rodas5P array fp32,modax rodas5P array fp32,10000,434.7142680780962
+modax rodas5P array fp32,modax rodas5P array fp32,30000,911.0827320255339
 diffrax kencarp5,diffrax kencarp5,3,21.369843743741512
 diffrax kencarp5,diffrax kencarp5,10,25.451576802879572
 diffrax kencarp5,diffrax kencarp5,30,26.502428110688925

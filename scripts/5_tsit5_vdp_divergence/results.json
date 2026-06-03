@@ -1,10 +1,10 @@
 {
   "NVIDIA GeForce RTX 4070 SUPER": {
-    "modax tsit5 jax": {
+    "modax tsit5 array": {
       "0": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 0.0,
         "dim": 64,
         "n_osc": 32,
@@ -21,8 +21,8 @@
       },
       "0.25": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 0.25,
         "dim": 64,
         "n_osc": 32,
@@ -39,8 +39,8 @@
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 0.5,
         "dim": 64,
         "n_osc": 32,
@@ -57,8 +57,8 @@
       },
       "0.75": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 0.75,
         "dim": 64,
         "n_osc": 32,
@@ -75,8 +75,8 @@
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 1.0,
         "dim": 64,
         "n_osc": 32,
@@ -93,8 +93,8 @@
       },
       "1.25": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 1.25,
         "dim": 64,
         "n_osc": 32,
@@ -111,8 +111,8 @@
       },
       "1.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 1.5,
         "dim": 64,
         "n_osc": 32,
@@ -129,8 +129,8 @@
       },
       "2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 2.0,
         "dim": 64,
         "n_osc": 32,
@@ -147,8 +147,8 @@
       },
       "2.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 2.5,
         "dim": 64,
         "n_osc": 32,
@@ -165,8 +165,8 @@
       },
       "3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 3.0,
         "dim": 64,
         "n_osc": 32,
@@ -183,8 +183,8 @@
       },
       "4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 jax",
-        "solver": "modax tsit5 jax",
+        "solver_key": "modax tsit5 array",
+        "solver": "modax tsit5 array",
         "divergence": 4.0,
         "dim": 64,
         "n_osc": 32,
@@ -200,11 +200,11 @@
         "normalized_solve_time_ms_per_step": 0.11256109066569672
       }
     },
-    "modax tsit5 numba": {
+    "modax tsit5 kernel": {
       "0": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 0.0,
         "dim": 64,
         "n_osc": 32,
@@ -221,8 +221,8 @@
       },
       "0.25": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 0.25,
         "dim": 64,
         "n_osc": 32,
@@ -239,8 +239,8 @@
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 0.5,
         "dim": 64,
         "n_osc": 32,
@@ -257,8 +257,8 @@
       },
       "0.75": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 0.75,
         "dim": 64,
         "n_osc": 32,
@@ -275,8 +275,8 @@
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 1.0,
         "dim": 64,
         "n_osc": 32,
@@ -293,8 +293,8 @@
       },
       "1.25": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 1.25,
         "dim": 64,
         "n_osc": 32,
@@ -311,8 +311,8 @@
       },
       "1.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 1.5,
         "dim": 64,
         "n_osc": 32,
@@ -329,8 +329,8 @@
       },
       "2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 2.0,
         "dim": 64,
         "n_osc": 32,
@@ -347,8 +347,8 @@
       },
       "2.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 2.5,
         "dim": 64,
         "n_osc": 32,
@@ -365,8 +365,8 @@
       },
       "3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 3.0,
         "dim": 64,
         "n_osc": 32,
@@ -383,8 +383,8 @@
       },
       "4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba",
-        "solver": "modax tsit5 numba",
+        "solver_key": "modax tsit5 kernel",
+        "solver": "modax tsit5 kernel",
         "divergence": 4.0,
         "dim": 64,
         "n_osc": 32,
@@ -400,11 +400,11 @@
         "normalized_solve_time_ms_per_step": 0.31362222697368913
       }
     },
-    "modax tsit5 numba (sorted)": {
+    "modax tsit5 kernel (sorted)": {
       "0": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 0.0,
         "dim": 64,
         "n_osc": 32,
@@ -421,8 +421,8 @@
       },
       "0.25": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 0.25,
         "dim": 64,
         "n_osc": 32,
@@ -439,8 +439,8 @@
       },
       "0.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 0.5,
         "dim": 64,
         "n_osc": 32,
@@ -457,8 +457,8 @@
       },
       "0.75": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 0.75,
         "dim": 64,
         "n_osc": 32,
@@ -475,8 +475,8 @@
       },
       "1": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 1.0,
         "dim": 64,
         "n_osc": 32,
@@ -493,8 +493,8 @@
       },
       "1.25": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 1.25,
         "dim": 64,
         "n_osc": 32,
@@ -511,8 +511,8 @@
       },
       "1.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 1.5,
         "dim": 64,
         "n_osc": 32,
@@ -529,8 +529,8 @@
       },
       "2": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 2.0,
         "dim": 64,
         "n_osc": 32,
@@ -547,8 +547,8 @@
       },
       "2.5": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 2.5,
         "dim": 64,
         "n_osc": 32,
@@ -565,8 +565,8 @@
       },
       "3": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 3.0,
         "dim": 64,
         "n_osc": 32,
@@ -583,8 +583,8 @@
       },
       "4": {
         "gpu": "NVIDIA GeForce RTX 4070 SUPER",
-        "solver_key": "modax tsit5 numba (sorted)",
-        "solver": "modax tsit5 numba (sorted)",
+        "solver_key": "modax tsit5 kernel (sorted)",
+        "solver": "modax tsit5 kernel (sorted)",
         "divergence": 4.0,
         "dim": 64,
         "n_osc": 32,
