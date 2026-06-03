@@ -49,6 +49,16 @@ modax rodas5P array fp32,modax rodas5P array fp32,48,158.3497190149501
 modax rodas5P array fp32,modax rodas5P array fp32,64,185.56200398597866
 modax rodas5P array fp32,modax rodas5P array fp32,96,133.0104200169444
 modax rodas5P array fp32,modax rodas5P array fp32,128,243.99301095400006
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,4,2.436706912703812
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,8,2.8869929956272244
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,12,4.13316092453897
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,16,7.766808965243399
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,24,16.149120056070387
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,32,55.33638200722635
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,48,96.13894997164607
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,64,271.3639229768887
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,96,2367.7430900279433
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,128,
 diffrax kencarp5,diffrax kencarp5,4,46.07636807486415
 diffrax kencarp5,diffrax kencarp5,8,65.23318029940128
 diffrax kencarp5,diffrax kencarp5,12,59.84588526189327

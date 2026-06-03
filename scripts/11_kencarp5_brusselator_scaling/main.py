@@ -43,6 +43,7 @@ from scripts.benchmark_common import (
 from solvers.kencarp5jax import solve as kencarp5_solve
 from solvers.kencarp5numba import solve as kencarp5numba_solve
 from solvers.rodas5Pjax import solve as rodas5P_solve
+from solvers.rodas5Pnumba import solve as rodas5Pnumba_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -60,7 +61,7 @@ _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
     _ODE_FN,
     _,
     _IMPLICIT_JAC_FN,
-    _,
+    _JAC_FN,
 ) = brusselator.make_system(_N_GRID)
 _SCENARIOS = (
     ("identical", 0.0),
@@ -75,6 +76,7 @@ class Case(BenchmarkCase):
     implicit_ode_fn: Callable[..., Any] | None = None
     implicit_jac_fn: Callable[..., Any] | None = None
     ode_fn: Callable[..., Any] | None = None
+    jac_fn: Callable[..., Any] | None = None
     t_span: Any = None
     kwargs: dict[str, Any] | None = None
     lu_precision: str | None = None
@@ -153,6 +155,19 @@ CASES: tuple[Case, ...] = (
         coerce_jax=True,
     ),
     Case(
+        key="modax rodas5P kernel fp32",
+        color="#8c564b",
+        marker="*",
+        linestyle="--",
+        solve_fn=rodas5Pnumba_solve,
+        ode_fn=_ODE_FN,
+        jac_fn=_JAC_FN,
+        t_span=_T_SPAN,
+        kwargs=_SOLVER_KWARGS,
+        lu_precision="fp32",
+        coerce_numpy=True,
+    ),
+    Case(
         key="diffrax kencarp5",
         color="#2ba84a",
         marker="s",
@@ -211,6 +226,16 @@ def time_case(case: Case, y0, params) -> float:
                 case.explicit_ode_fn,
                 case.implicit_ode_fn,
                 case.implicit_jac_fn,
+                y0=solve_y0,
+                t_span=case.t_span,
+                params=solve_params,
+                lu_precision=case.lu_precision,
+                **kwargs,
+            )
+        if case.ode_fn is not None and case.jac_fn is not None:
+            return case.solve_fn(
+                case.ode_fn,
+                case.jac_fn,
                 y0=solve_y0,
                 t_span=case.t_span,
                 params=solve_params,
