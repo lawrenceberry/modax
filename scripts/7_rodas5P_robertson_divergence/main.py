@@ -1,6 +1,6 @@
 """Robertson divergence-CV benchmark for Rodas5P solvers.
 
-Runs the Robertson system with 400,000 trajectories while sweeping the
+Runs the Robertson system with 30,000 trajectories while sweeping the
 ``make_scenario(..., divergence=...)`` knob. For each solver and divergence
 value, the benchmark records solve time and the actual distribution of accepted
 plus rejected Rodas5P steps.
@@ -47,16 +47,16 @@ _DIM = robertson.N_VARS
 _T_SPAN = robertson.TIMES
 _DIVERGENCES = (
     0.0,
-    0.1,
-    0.2,
-    0.3,
-    0.4,
+    0.25,
     0.5,
-    0.6,
-    0.7,
-    0.8,
-    0.9,
+    0.75,
     1.0,
+    1.25,
+    1.5,
+    1.75,
+    2.0,
+    2.5,
+    3.0,
 )
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 _DIFFRAX_SOLVER_KWARGS = {**_SOLVER_KWARGS, "max_steps": 1_000_000}
@@ -130,6 +130,7 @@ CASES = (
         "v",
         "julia",
         "EnsembleGPUKernel",
+        max_divergence=2.5,
     ),
     Case(
         "julia rodas5P kernel (sorted)",
@@ -138,7 +139,7 @@ CASES = (
         "julia",
         "EnsembleGPUKernel",
         True,
-        None,
+        2.5,
     ),
 )
 

@@ -65,15 +65,29 @@ def make_initial_conditions(
       * alpha controls how long the stiff phase lasts: high alpha means plenty
         of y1 fuel to keep the reactions running, extending the hard region of
         the trajectory.
+
+    ``divergence=0`` returns the identical hard baseline. Larger values draw
+    alpha from a broader range and move epsilon log-uniformly from EPS toward
+    much smaller intermediate-species concentrations. This keeps concentrations
+    non-negative and mass-conserving while spreading Robertson step counts over
+    easy induction-dominated trajectories and hard immediately-stiff ones.
     """
     divergence = _validate_divergence(divergence)
+    base = np.asarray(Y0, dtype=np.float64)
+    if divergence == 0.0:
+        return np.broadcast_to(base, (size, N_VARS)).copy()
+
     rng = np.random.default_rng(seed)
-    alpha = ALPHA * ((1.0 - divergence) + divergence * rng.uniform(0.0, 1.0, size))
+    alpha = ALPHA * rng.uniform(0.0, 1.0, size)
+    eps_blend = rng.uniform(0.0, min(divergence / 4.0, 1.0), size)
+    eps = 10.0 ** (
+        (1.0 - eps_blend) * np.log10(EPS) + eps_blend * np.log10(1e-8)
+    )
     y0 = np.column_stack(
         [
-            (1 - EPS) * alpha,
-            np.full(size, EPS),
-            (1 - EPS) * (1 - alpha),
+            (1 - eps) * alpha,
+            eps,
+            (1 - eps) * (1 - alpha),
         ]
     )
     return y0
@@ -82,8 +96,24 @@ def make_initial_conditions(
 def make_scenario(
     size: int, seed: int = 42, *, divergence: float = 1.0
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Return Robertson initial conditions and parameters.
+
+    The parameter spread is multiplicative so the divergence knob can extend
+    beyond the original +/-10% perturbation without crossing through negative
+    reaction rates. Values up to about 3 are intended for divergence benchmarks;
+    much larger values may intentionally create extreme stiffness.
+    """
     divergence = _validate_divergence(divergence)
-    params = np.asarray(PARAMS) + divergence * (
-        np.asarray(make_params(size, seed)) - np.asarray(PARAMS)
-    )
+    if divergence == 0.0:
+        params = np.broadcast_to(
+            np.asarray(PARAMS, dtype=np.float64), (size, N_PARAMS)
+        ).copy()
+    else:
+        rng = np.random.default_rng(seed)
+        scales = 10.0 ** rng.uniform(
+            -divergence,
+            divergence,
+            size=(size, N_PARAMS),
+        )
+        params = np.asarray(PARAMS, dtype=np.float64) * scales
     return make_initial_conditions(size, seed, divergence=divergence), params
