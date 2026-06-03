@@ -54,7 +54,7 @@ _ENSEMBLE_SIZE = 1000
 _N_RUNS = 1
 
 # Total ODE dimension (= 2 * n_grid). Matches the script 9 VDP sweep shape.
-_DIMENSIONS = (4, 8, 12, 16, 24, 32, 48, 64, 96, 128)
+_DIMENSIONS = (4, 8, 12, 16, 24, 32, 48, 64, 128)
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"

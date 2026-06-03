@@ -7,7 +7,6 @@ modax kencarp5 array fp64,modax kencarp5 array fp64,24,42.67810902092606
 modax kencarp5 array fp64,modax kencarp5 array fp64,32,57.94484599027783
 modax kencarp5 array fp64,modax kencarp5 array fp64,48,85.93246201053262
 modax kencarp5 array fp64,modax kencarp5 array fp64,64,109.74748490843922
-modax kencarp5 array fp64,modax kencarp5 array fp64,96,165.7523299800232
 modax kencarp5 array fp64,modax kencarp5 array fp64,128,245.19633292220533
 modax kencarp5 array fp32,modax kencarp5 array fp32,4,11.140226037241518
 modax kencarp5 array fp32,modax kencarp5 array fp32,8,12.025061063468456
@@ -17,7 +16,6 @@ modax kencarp5 array fp32,modax kencarp5 array fp32,24,18.615199020132422
 modax kencarp5 array fp32,modax kencarp5 array fp32,32,28.114632004871964
 modax kencarp5 array fp32,modax kencarp5 array fp32,48,41.65724408812821
 modax kencarp5 array fp32,modax kencarp5 array fp32,64,48.60510991420597
-modax kencarp5 array fp32,modax kencarp5 array fp32,96,60.718848020769656
 modax kencarp5 array fp32,modax kencarp5 array fp32,128,99.19498197268695
 modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,4,4.853005055338144
 modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,8,5.341932992450893
@@ -27,7 +25,6 @@ modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,24,15.887230052612722
 modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,32,27.98132796306163
 modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,48,50.1372090075165
 modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,64,168.7738309847191
-modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,96,
 modax kencarp5 kernel fp64,modax kencarp5 kernel fp64,128,
 modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,4,3.9982699090614915
 modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,8,4.610447911545634
@@ -37,7 +34,6 @@ modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,24,13.608273002319038
 modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,32,23.70360097847879
 modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,48,38.413833011873066
 modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,64,102.31227893382311
-modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,96,820.4772199969739
 modax kencarp5 kernel fp32,modax kencarp5 kernel fp32,128,
 modax rodas5P array fp32,modax rodas5P array fp32,4,3.22728103492409
 modax rodas5P array fp32,modax rodas5P array fp32,8,3.751598997041583
@@ -47,7 +43,6 @@ modax rodas5P array fp32,modax rodas5P array fp32,24,13.427413068711758
 modax rodas5P array fp32,modax rodas5P array fp32,32,18.81361799314618
 modax rodas5P array fp32,modax rodas5P array fp32,48,41.20938607957214
 modax rodas5P array fp32,modax rodas5P array fp32,64,47.70645801909268
-modax rodas5P array fp32,modax rodas5P array fp32,96,29.904935974627733
 modax rodas5P array fp32,modax rodas5P array fp32,128,57.34026001300663
 modax rodas5P kernel fp32,modax rodas5P kernel fp32,4,1.2369060423225164
 modax rodas5P kernel fp32,modax rodas5P kernel fp32,8,1.1836379999294877
@@ -57,7 +52,6 @@ modax rodas5P kernel fp32,modax rodas5P kernel fp32,24,6.895945989526808
 modax rodas5P kernel fp32,modax rodas5P kernel fp32,32,15.472250990569592
 modax rodas5P kernel fp32,modax rodas5P kernel fp32,48,29.683390981517732
 modax rodas5P kernel fp32,modax rodas5P kernel fp32,64,87.25160197354853
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,96,634.1444600839168
 modax rodas5P kernel fp32,modax rodas5P kernel fp32,128,
 diffrax kencarp5,diffrax kencarp5,4,9.25407512113452
 diffrax kencarp5,diffrax kencarp5,8,11.610319837927818
@@ -67,7 +61,6 @@ diffrax kencarp5,diffrax kencarp5,24,31.890500336885452
 diffrax kencarp5,diffrax kencarp5,32,42.68967593088746
 diffrax kencarp5,diffrax kencarp5,48,66.79342407733202
 diffrax kencarp5,diffrax kencarp5,64,103.07923704385757
-diffrax kencarp5,diffrax kencarp5,96,175.15442240983248
 diffrax kencarp5,diffrax kencarp5,128,275.40905494242907
 julia kencarp5 array,julia kencarp5 array,4,13.691014
 julia kencarp5 array,julia kencarp5 array,8,18.111953
@@ -77,5 +70,4 @@ julia kencarp5 array,julia kencarp5 array,24,62.391987
 julia kencarp5 array,julia kencarp5 array,32,92.118345
 julia kencarp5 array,julia kencarp5 array,48,210.880068
 julia kencarp5 array,julia kencarp5 array,64,270.80069000000003
-julia kencarp5 array,julia kencarp5 array,96,588.938117
 julia kencarp5 array,julia kencarp5 array,128,896.3263049999999
