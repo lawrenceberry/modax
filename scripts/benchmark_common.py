@@ -15,6 +15,19 @@ T = TypeVar("T")
 
 TIMEOUT_ERROR = "exceeded timeout"
 TIMEOUT_STATUS = "timeout"
+LATEX_PLOT_RCPARAMS = {
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman"],
+}
+
+
+def configure_latex_plot_style(plt: Any) -> None:
+    plt.rcParams.update(LATEX_PLOT_RCPARAMS)
+
+
+def print_plot_title(title: str) -> None:
+    print(f"Plot title: {title}")
 
 
 @dataclass(frozen=True, kw_only=True)

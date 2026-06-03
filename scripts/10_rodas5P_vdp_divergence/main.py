@@ -26,10 +26,12 @@ from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import vdp
 from scripts.benchmark_common import (
     TIMEOUT_ERROR,
+    configure_latex_plot_style,
     get_gpu_name,
     is_timeout,
     load_cache,
     output_paths,
+    print_plot_title,
     save_cache,
     time_blocked,
     timeout_cache_entry,
@@ -325,6 +327,9 @@ def rows_for_solver(rows: list[dict], solver_key: str) -> list[dict]:
 
 
 def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
+    configure_latex_plot_style(plt)
+    title = f"64D coupled VDP divergence — 1000 trajectories — {gpu_name}"
+    print_plot_title(title)
     fig, ax = plt.subplots(figsize=(8, 5.5))
     for solver in CASES:
         solver_rows = rows_for_solver(rows, solver.key)
@@ -344,7 +349,6 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
     ax.set_xlabel("Normalized standard deviation of attempted steps")
     ax.set_ylabel("Solve time / mean attempted steps (ms)")
     ax.set_yscale("log")
-    ax.set_title(f"64D coupled VDP divergence — 1000 trajectories — {gpu_name}")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
     fig.tight_layout()

@@ -27,12 +27,14 @@ from reference.systems.python import lorenz
 from scripts.benchmark_common import (
     BenchmarkCase,
     collect_timed_timing,
+    configure_latex_plot_style,
     drop_none_rows,
     format_cached_timing,
     get_gpu_name,
     gpu_slug,
     julia_solve_time_ms,
     load_cache,
+    print_plot_title,
     save_cache,
     time_blocked_ms,
     timing_value_or_none,
@@ -231,6 +233,9 @@ def plot(
     scenario: str,
     output_path: Path,
 ) -> None:
+    configure_latex_plot_style(plt)
+    title = f"Tsit5 scaling — Lorenz ({scenario}) — {gpu_name}"
+    print_plot_title(title)
     fig, ax = plt.subplots(figsize=(7, 5))
     for case in cases:
         sizes, times_ms = drop_none_rows(rows, case.key)
@@ -248,7 +253,6 @@ def plot(
     ax.set_yscale("log")
     ax.set_xlabel("Ensemble size")
     ax.set_ylabel("Solve time (ms)")
-    ax.set_title(f"Tsit5 scaling — Lorenz ({scenario}) — {gpu_name}")
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_ENSEMBLE_SIZES)
     ax.set_xticklabels([str(n) for n in _ENSEMBLE_SIZES], rotation=45, ha="right")

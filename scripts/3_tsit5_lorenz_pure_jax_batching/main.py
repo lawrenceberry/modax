@@ -47,10 +47,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from reference.systems.python import lorenz
 from scripts.benchmark_common import (
     TIMEOUT_ERROR,
+    configure_latex_plot_style,
     get_gpu_name,
     gpu_slug,
     is_timeout,
     load_cache,
+    print_plot_title,
     save_cache,
 )
 from solvers.tsit5jax import solve as tsit5_solve
@@ -287,6 +289,9 @@ def rows_for_case(
 
 
 def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
+    configure_latex_plot_style(plt)
+    title = f"Tsit5 divergence — Lorenz (rho={_RHO}) — {gpu_name}"
+    print_plot_title(title)
     fig, ax_time = plt.subplots(figsize=(11, 6))
     ax_waste = ax_time.twinx()
 
@@ -324,7 +329,6 @@ def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
     ax_time.set_ylabel("Solve time (ms)")
     ax_waste.set_ylabel("Wasted lane-iteration ratio")
     ax_waste.set_ylim(0.0, 1.0)
-    ax_time.set_title(f"Tsit5 divergence — Lorenz (rho={_RHO}) — {gpu_name}")
     ax_time.grid(True, which="both", linestyle="--", alpha=0.35)
     ax_time.set_xticks(_BATCH_SIZES)
     ax_time.set_xticklabels([str(bs) for bs in _BATCH_SIZES], rotation=45, ha="right")

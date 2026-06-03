@@ -30,12 +30,14 @@ from reference.systems.python import vdp
 from scripts.benchmark_common import (
     BenchmarkCase,
     collect_timed_timing,
+    configure_latex_plot_style,
     drop_none_rows,
     format_cached_timing,
     get_gpu_name,
     gpu_slug,
     julia_solve_time_ms,
     load_cache,
+    print_plot_title,
     save_cache,
     time_blocked_ms,
     timing_value_or_none,
@@ -79,8 +81,9 @@ class Case(BenchmarkCase):
 CASES: tuple[Case, ...] = (
     Case(
         key="modax rodas5P array fp32",
-        color="#2b7be0",
+        color="#e02b2b",
         marker="o",
+        linestyle="--",
         solve_fn=rodas5P_solve,
         mode="rodas",
         t_span=_T_SPAN,
@@ -99,8 +102,9 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="modax rodas5P kernel fp32",
-        color="#f0a202",
+        color="#8c564b",
         marker="P",
+        linestyle="--",
         solve_fn=rodas5Pnumba_solve,
         mode="custom",
         t_span=_T_SPAN,
@@ -276,6 +280,9 @@ def plot(
     output_path: Path,
     scenario: str,
 ) -> None:
+    configure_latex_plot_style(plt)
+    title = f"Rodas5P dimensionality — {scenario} — coupled VDP lattice — {gpu_name}"
+    print_plot_title(title)
     fig, ax = plt.subplots(figsize=(7, 5))
     for case in cases:
         dims, times_ms = drop_none_rows(rows, case.key)
@@ -293,9 +300,6 @@ def plot(
     ax.set_yscale("log")
     ax.set_xlabel("ODE dimension")
     ax.set_ylabel("Solve time (ms)")
-    ax.set_title(
-        f"Rodas5P dimensionality — {scenario} — coupled VDP lattice — {gpu_name}"
-    )
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_DIMENSIONS)
     ax.set_xticklabels([str(d) for d in _DIMENSIONS], rotation=45, ha="right")

@@ -30,12 +30,14 @@ from reference.systems.python import brusselator
 from scripts.benchmark_common import (
     BenchmarkCase,
     collect_timed_timing,
+    configure_latex_plot_style,
     drop_none_rows,
     format_cached_timing,
     get_gpu_name,
     gpu_slug,
     julia_solve_time_ms,
     load_cache,
+    print_plot_title,
     save_cache,
     time_blocked_ms,
     timing_value_or_none,
@@ -91,8 +93,9 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="modax kencarp5 array fp32",
-        color="#e02b2b",
+        color="#2b7be0",
         marker="D",
+        linestyle="--",
         solve_fn=kencarp5_solve,
         mode="kencarp",
         t_span=_T_SPAN,
@@ -111,8 +114,9 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         key="modax kencarp5 kernel fp32",
-        color="#d35400",
+        color="#f0a202",
         marker="X",
+        linestyle="--",
         solve_fn=kencarp5numba_solve,
         mode="custom",
         t_span=_T_SPAN,
@@ -284,6 +288,9 @@ def plot(
     output_path: Path,
     scenario: str,
 ) -> None:
+    configure_latex_plot_style(plt)
+    title = f"KenCarp5 dimensionality — {scenario} — Brusselator — {gpu_name}"
+    print_plot_title(title)
     fig, ax = plt.subplots(figsize=(7, 5))
     for case in cases:
         dims, times_ms = drop_none_rows(rows, case.key)
@@ -301,7 +308,6 @@ def plot(
     ax.set_yscale("log")
     ax.set_xlabel("ODE dimension")
     ax.set_ylabel("Solve time (ms)")
-    ax.set_title(f"KenCarp5 dimensionality — {scenario} — Brusselator — {gpu_name}")
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_DIMENSIONS)
     ax.set_xticklabels([str(d) for d in _DIMENSIONS], rotation=45, ha="right")

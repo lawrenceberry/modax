@@ -35,12 +35,14 @@ from reference.systems.python import vdp
 from scripts.benchmark_common import (
     BenchmarkCase,
     collect_timed_timing,
+    configure_latex_plot_style,
     drop_none_rows,
     format_cached_timing,
     get_gpu_name,
     gpu_slug,
     julia_solve_time_ms,
     load_cache,
+    print_plot_title,
     save_cache,
     time_blocked_ms,
     timing_value_or_none,
@@ -267,6 +269,12 @@ def plot(
     output_path: Path,
     scenario: str,
 ) -> None:
+    configure_latex_plot_style(plt)
+    title = (
+        f"Tsit5 dimensionality — {scenario} — coupled VDP lattice "
+        f"(μ={_MU_NONSTIFF}) — {gpu_name}"
+    )
+    print_plot_title(title)
     fig, ax = plt.subplots(figsize=(7, 5))
     for case in cases:
         dims, times_ms = drop_none_rows(rows, case.key)
@@ -284,10 +292,6 @@ def plot(
     ax.set_yscale("log")
     ax.set_xlabel("ODE dimension")
     ax.set_ylabel("Solve time (ms)")
-    ax.set_title(
-        f"Tsit5 dimensionality — {scenario} — coupled VDP lattice "
-        f"(μ={_MU_NONSTIFF}) — {gpu_name}"
-    )
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_DIMENSIONS)
     ax.set_xticklabels([str(d) for d in _DIMENSIONS], rotation=45, ha="right")
