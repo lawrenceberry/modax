@@ -221,20 +221,27 @@ def prepare_mode_problem(tables, n_modes=N_MODES):
     return physical_k, code_k, y0, params
 
 
-def make_mode_ode(tables):
-    """Create the Mukhanov-Sasaki RHS using background interpolation tables."""
-    n_table = jnp.asarray(tables["n"], dtype=jnp.float64)
-    epsilon_table = jnp.asarray(tables["epsilon"], dtype=jnp.float64)
-    log_a_h_table = jnp.asarray(tables["log_a_h"], dtype=jnp.float64)
-    q_table = jnp.asarray(tables["q"], dtype=jnp.float64)
+class ModeODE:
+    """Picklable callable for the Mukhanov-Sasaki RHS.
 
-    def mode_ode(y, s, params):
+    Holds the background interpolation tables as instance state so that the
+    callable can be sent to ``multiprocessing`` workers via stdlib pickle.  A
+    closure that captured the same arrays would not be picklable.
+    """
+
+    def __init__(self, tables):
+        self.n_table = jnp.asarray(tables["n"], dtype=jnp.float64)
+        self.epsilon_table = jnp.asarray(tables["epsilon"], dtype=jnp.float64)
+        self.log_a_h_table = jnp.asarray(tables["log_a_h"], dtype=jnp.float64)
+        self.q_table = jnp.asarray(tables["q"], dtype=jnp.float64)
+
+    def __call__(self, y, s, params):
         code_k, n_start, n_stop = params
         delta_n = n_stop - n_start
         n_now = n_start + s * delta_n
-        epsilon = jnp.interp(n_now, n_table, epsilon_table)
-        log_a_h = jnp.interp(n_now, n_table, log_a_h_table)
-        q = jnp.interp(n_now, n_table, q_table)
+        epsilon = jnp.interp(n_now, self.n_table, self.epsilon_table)
+        log_a_h = jnp.interp(n_now, self.n_table, self.log_a_h_table)
+        q = jnp.interp(n_now, self.n_table, self.q_table)
         k_over_a_h = code_k * jnp.exp(-log_a_h)
 
         v_re, v_im, dv_re, dv_im = y
@@ -243,7 +250,10 @@ def make_mode_ode(tables):
         d2v_im = -(1.0 - epsilon) * dv_im - omega_sq * v_im
         return delta_n * jnp.array([dv_re, dv_im, d2v_re, d2v_im])
 
-    return mode_ode
+
+def make_mode_ode(tables):
+    """Create the Mukhanov-Sasaki RHS using background interpolation tables."""
+    return ModeODE(tables)
 
 
 def make_solver(backend):
