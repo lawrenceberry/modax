@@ -46,10 +46,58 @@ where $T_k$ is the gas kinetic temperature, $x_e$ is the residual electron
 fraction in the bulk IGM, and $Q$ is a volume-filling ionized fraction.  The
 log/logit state keeps the evolved quantities in physical ranges.
 
-The thermal equation includes adiabatic cooling, Compton coupling to the CMB,
-X-ray heating, and a smaller Ly-alpha heating term.  The ionization equations
-include recombination, X-ray ionization, and an ionizing emissivity term that
-tracks the star-formation source history.
+Writing the dynamics in cosmic time $t$, to which the integration variable is
+related by $\mathrm{d}u = H\,\mathrm{d}t$, the three physical quantities obey
+
+$$
+\begin{aligned}
+\frac{\mathrm{d}T_k}{\mathrm{d}t}
+  &= -2H\,T_k + \Gamma_C\,(T_\gamma - T_k) + \epsilon_X + \epsilon_\alpha, \\
+\frac{\mathrm{d}x_e}{\mathrm{d}t}
+  &= -\alpha_B(T_k)\,n_H\,x_e^2 + \gamma_X\,(1 - x_e), \\
+\frac{\mathrm{d}Q}{\mathrm{d}t}
+  &= \Lambda_\mathrm{ion}\,(1 - Q) - \mathcal{R}\,Q^2.
+\end{aligned}
+$$
+
+The thermal equation combines adiabatic cooling $-2H\,T_k$, Compton coupling to
+the CMB at temperature $T_\gamma = T_{\gamma,0}(1+z)$, X-ray heating, and a
+smaller Ly-alpha heating term.  The free-electron equation balances case-B
+recombination against X-ray ionization, and the filling-fraction equation
+balances an ionizing emissivity against recombinations.
+
+The astrophysical parameter dependence enters through a smooth star-formation
+history surrogate
+
+$$
+S(z) = 10\,f_\star\,
+       \sigma\!\left(\tfrac{z_\mathrm{on} - z}{2}\right)
+       \sigma\!\left(\tfrac{z - 5.8}{0.7}\right)
+       \left(\tfrac{1 + z}{20}\right)^{-1.7},
+\qquad
+z_\mathrm{on} = 31 - 7\,(\log_{10} T_\mathrm{vir} - 4),
+$$
+
+where $\sigma$ is the logistic function.  The rate coefficients follow standard
+global-signal scalings, calibrated here for the surrogate (cgs units):
+
+$$
+\begin{aligned}
+\Gamma_C &= 8\times10^{-20}\,(1+z)^4\,\frac{x_e}{1 + x_\mathrm{He} + x_e}, &
+\alpha_B(T_k) &= 2.6\times10^{-13}\,(T_k/10^4\,\mathrm{K})^{-0.7}, \\
+\epsilon_X &= 3.5\times10^{-16}\,f_X\,S, &
+\gamma_X &= 1.8\times10^{-17}\,f_X\,S, \\
+\epsilon_\alpha &= 1.2\times10^{-17}\,(f_\star/0.01)\,S, &
+\Lambda_\mathrm{ion} &= 1.1\times10^{-16}\,(f_\star/0.01)\,S, \\
+n_H &= n_{H,0}\,(1+z)^3, &
+\mathcal{R} &= 2\times10^{-17}\,\big((1+z)/8\big)^3.
+\end{aligned}
+$$
+
+For numerical conditioning the solver advances $\log T_k$ together with the
+logits of $x_e$ and $Q$ -- keeping the temperature positive and the two
+fractions within $[0, 1]$ -- and rescales each right-hand side by $1/H$ to
+integrate against $u$ rather than $t$.
 
 This is a calibrated surrogate for a batching demonstration, not a precision
 global-signal code.
