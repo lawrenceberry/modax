@@ -54,7 +54,6 @@ diffrax kvaerno5,diffrax kvaerno5,3000,978.0444311909378
 diffrax kvaerno5,diffrax kvaerno5,10000,1206.6811067052186
 diffrax kvaerno5,diffrax kvaerno5,30000,1944.3096318282187
 diffrax kvaerno5,diffrax kvaerno5,100000,4431.085018906742
-julia rodas5P array,julia rodas5P array,1,0.365131
 julia rodas5P array,julia rodas5P array,3,135.262246
 julia rodas5P array,julia rodas5P array,10,143.349179
 julia rodas5P array,julia rodas5P array,30,142.419611

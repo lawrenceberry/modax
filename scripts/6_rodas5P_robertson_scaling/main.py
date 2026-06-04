@@ -230,6 +230,16 @@ def collect_timing(case: Case, size: int, y0, params):
 _Row = tuple[str, str, int, float | None]
 
 
+def skip_case_size(case: Case, size: int) -> str | None:
+    if case.ensemble_backend == "EnsembleGPUArray" and size == 1:
+        # DiffEqGPU branches `trajectories == 1` to EnsembleSerial before the
+        # EnsembleGPUArray path runs. That value is therefore neither a GPU
+        # ensemble timing nor directly comparable to the larger-size scaling
+        # curve, so omit the point instead of recording a misleading fast path.
+        return "scalar fast path is not comparable to EnsembleGPUArray scaling"
+    return None
+
+
 def run_benchmarks(
     cases: Sequence[Case], gpu_name: str, cache: dict
 ) -> dict[str, list[_Row]]:
@@ -242,6 +252,14 @@ def run_benchmarks(
             print(f"{case.key}:")
             solver_cache = gpu_cache.setdefault(f"{scenario}_{case.key}", {})
             for size in _ENSEMBLE_SIZES:
+                if skip_reason := skip_case_size(case, size):
+                    print(
+                        f"  {case.key:<24} n={size:>7} ... skipped "
+                        f"({skip_reason})"
+                    )
+                    if solver_cache.pop(str(size), None) is not None:
+                        save_cache(_CACHE_PATH, cache)
+                    continue
                 size_key = str(size)
                 if size_key in solver_cache:
                     ms = solver_cache[size_key]
@@ -296,7 +314,7 @@ def plot(
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.set_xticks(_ENSEMBLE_SIZES)
     ax.set_xticklabels([str(n) for n in _ENSEMBLE_SIZES], rotation=45, ha="right")
-    ax.legend()
+    ax.legend(loc="upper left")
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {output_path}")
