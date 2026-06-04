@@ -172,6 +172,7 @@ def predict_abundances(params):
         initial_conditions(),
         X_SAVE,
         params,
+        lu_precision="fp32",
         rtol=SOLVER_RTOL,
         atol=SOLVER_ATOL,
         first_step=SOLVER_FIRST_STEP,
@@ -202,7 +203,7 @@ def make_solver(backend):
     if backend == "modax":
         return lambda f, y0, ts, p: rodas5P_solve(
             f, y0, ts, p,
-            lu_precision="fp64",
+            lu_precision="fp32",
             rtol=SOLVER_RTOL, atol=SOLVER_ATOL,
             first_step=SOLVER_FIRST_STEP, max_steps=SOLVER_MAX_STEPS,
         )

@@ -215,7 +215,7 @@ def make_solver(backend):
     if backend == "modax":
         return lambda f, y0, ts, p: rodas5P_solve(
             f, y0, ts, p,
-            lu_precision="fp64",
+            lu_precision="fp32",
             rtol=SOLVER_RTOL, atol=SOLVER_ATOL,
             first_step=SOLVER_FIRST_STEP, max_steps=SOLVER_MAX_STEPS,
             error_weights=jnp.array([1.0, 0.2, 0.2], dtype=jnp.float64),
@@ -249,7 +249,7 @@ def solve_histories(params, n_save=N_SAVE, batch_size=None, backend="modax"):
             initial_state(),
             u_span,
             params,
-            lu_precision="fp64",
+            lu_precision="fp32",
             batch_size=batch_size,
             rtol=SOLVER_RTOL,
             atol=SOLVER_ATOL,
