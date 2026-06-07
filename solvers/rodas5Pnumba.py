@@ -205,14 +205,15 @@ def _make_kernel(
     jac_device = as_cuda_device(jac_fn)
 
     @cuda.jit(device=True)
-    def assemble_lu(y, t, p, lu_buf, a_off, dtgamma_inv, i):
+    def assemble_lu(y, t, p, lu_buf, a_off, dtgamma_inv, i, lane, stride):
         # Build the Rosenbrock--Wanner iteration matrix M = 1/(h*gamma)*I - J
         # straight into the shared LU buffer. Evaluating the Jacobian and
         # writing M here (rather than staging J through a global array and
         # reading it back) avoids a per-step global-memory round-trip of the
-        # full n_vars*n_vars matrix.
+        # full n_vars*n_vars matrix. Each lane writes a disjoint row-stripe so
+        # the O(n_vars^2) transform/write is shared across the batch's lanes.
         values = jac_device(y[i], t, p[i])
-        for row in range(n_vars):
+        for row in range(lane, n_vars, stride):
             base = a_off + row * n_vars
             for col in range(n_vars):
                 v = values[row][col]
@@ -360,25 +361,27 @@ def _make_kernel(
             cuda.syncthreads()
 
             dtgamma_inv = 1.0 / (smem_dt_use[batch] * GAMMA)
-            if lane == 0:
-                if active:
-                    assemble_lu(
-                        y_global,
-                        smem_t[batch],
-                        params,
-                        smem_lu,
-                        a_offset,
-                        dtgamma_inv,
-                        i,
-                    )
+            if active:
+                assemble_lu(
+                    y_global,
+                    smem_t[batch],
+                    params,
+                    smem_lu,
+                    a_offset,
+                    dtgamma_inv,
+                    i,
+                    lane,
+                    batch_lanes,
+                )
+                if lane == 0:
                     time_jac_write(y_global, smem_t[batch], params, dT_global, i)
-                else:
-                    for idx_local in range(n_vars * n_vars):
-                        row = idx_local // n_vars
-                        col = idx_local - row * n_vars
-                        smem_lu[a_offset + idx_local] = 1.0 if row == col else 0.0
-                    for j in range(n_vars):
-                        smem_rhs[b_offset + j] = 0.0
+            else:
+                for idx_local in range(lane, n_vars * n_vars, batch_lanes):
+                    row = idx_local // n_vars
+                    col = idx_local - row * n_vars
+                    smem_lu[a_offset + idx_local] = 1.0 if row == col else 0.0
+                for j in range(lane, n_vars, batch_lanes):
+                    smem_rhs[b_offset + j] = 0.0
             cuda.syncthreads()
             lu_solver.factorize(smem_lu, smem_ipiv, smem_info)
             cuda.syncthreads()
