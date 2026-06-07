@@ -35,6 +35,7 @@ from solvers._numba_common import (
     copy_workspace_inputs,
     initial_step,
     jax_stats,
+    make_cuda_striped_vector_writer,
     make_cuda_vector_writer,
     make_cuda_zero_vector_writer,
     numpy_stats,
@@ -201,7 +202,7 @@ def _make_kernel(
     # systems where the FP32 factorisation degrades the step-size control.
     lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
     lu_solver = make_lu_solver(n_vars, precision=lu_dtype)
-    ode_write = make_cuda_vector_writer(ode_fn, n_vars)
+    ode_write = make_cuda_striped_vector_writer(ode_fn, n_vars)
     jac_device = as_cuda_device(jac_fn)
 
     @cuda.jit(device=True)
@@ -386,8 +387,10 @@ def _make_kernel(
             lu_solver.factorize(smem_lu, smem_ipiv, smem_info)
             cuda.syncthreads()
 
-            if lane == 0 and active:
-                ode_write(y_global, smem_t[batch], params, work_global, i)
+            if active:
+                ode_write(
+                    y_global, smem_t[batch], params, work_global, i, lane, batch_lanes
+                )
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -408,13 +411,15 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
+            if active:
                 ode_write(
                     u_global,
                     smem_t[batch] + C2 * smem_dt_use[batch],
                     params,
                     work_global,
                     i,
+                    lane,
+                    batch_lanes,
                 )
             cuda.syncthreads()
             if active:
@@ -438,13 +443,15 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
+            if active:
                 ode_write(
                     u_global,
                     smem_t[batch] + C3 * smem_dt_use[batch],
                     params,
                     work_global,
                     i,
+                    lane,
+                    batch_lanes,
                 )
             cuda.syncthreads()
             if active:
@@ -471,13 +478,15 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
+            if active:
                 ode_write(
                     u_global,
                     smem_t[batch] + C4 * smem_dt_use[batch],
                     params,
                     work_global,
                     i,
+                    lane,
+                    batch_lanes,
                 )
             cuda.syncthreads()
             if active:
@@ -509,13 +518,15 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
+            if active:
                 ode_write(
                     u_global,
                     smem_t[batch] + C5 * smem_dt_use[batch],
                     params,
                     work_global,
                     i,
+                    lane,
+                    batch_lanes,
                 )
             cuda.syncthreads()
             if active:
@@ -549,8 +560,16 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
-                ode_write(u_global, smem_t_end[batch], params, work_global, i)
+            if active:
+                ode_write(
+                    u_global,
+                    smem_t_end[batch],
+                    params,
+                    work_global,
+                    i,
+                    lane,
+                    batch_lanes,
+                )
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -575,8 +594,16 @@ def _make_kernel(
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
 
-            if lane == 0 and active:
-                ode_write(u_global, smem_t_end[batch], params, work_global, i)
+            if active:
+                ode_write(
+                    u_global,
+                    smem_t_end[batch],
+                    params,
+                    work_global,
+                    i,
+                    lane,
+                    batch_lanes,
+                )
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -602,8 +629,16 @@ def _make_kernel(
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
 
-            if lane == 0 and active:
-                ode_write(u_global, smem_t_end[batch], params, work_global, i)
+            if active:
+                ode_write(
+                    u_global,
+                    smem_t_end[batch],
+                    params,
+                    work_global,
+                    i,
+                    lane,
+                    batch_lanes,
+                )
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):

@@ -165,6 +165,23 @@ def make_cuda_vector_writer(fn, n_vars: int):
 
 
 @functools.cache
+def make_cuda_striped_vector_writer(fn, n_vars: int):
+    """Like :func:`make_cuda_vector_writer`, but each lane writes a disjoint
+    output stripe ``j = lane, lane + stride, ...`` so a batch's lanes share the
+    n_vars-element write. Every lane evaluates the full callback (cheap and
+    wall-clock-free under SIMT lockstep); only the global write is split."""
+    fn_device = as_cuda_device(fn)
+
+    @cuda.jit(device=True)
+    def write_vector(y, t, p, out, i, lane, stride):
+        values = fn_device(y[i], t, p[i])
+        for j in range(lane, n_vars, stride):
+            out[i, j] = values[j]
+
+    return write_vector
+
+
+@functools.cache
 def make_cuda_matrix_writer(fn, n_vars: int):
     fn_device = as_cuda_device(fn)
 
