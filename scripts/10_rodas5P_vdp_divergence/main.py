@@ -2,9 +2,10 @@
 
 Runs the 96D coupled VDP lattice (n_osc = 48) with 1000 trajectories while
 sweeping the ``make_scenario(..., divergence=...)`` knob, comparing the fp32
-Rodas5P array (JAX) backend against the fp32 Rodas5P custom kernel. For each
-solver and divergence value, the benchmark records solve time and the actual
-distribution of accepted plus rejected Rodas5P steps.
+Rodas5P array (JAX) backend against the fp32 Rodas5P custom kernel, both as-is
+and with trajectories pre-sorted by attempted step count. For each solver and
+divergence value, the benchmark records solve time and the actual distribution
+of accepted plus rejected Rodas5P steps.
 
 Usage:
     uv run python scripts/10_rodas5P_vdp_divergence/main.py
@@ -88,6 +89,13 @@ class Case:
 CASES = (
     Case("modax rodas5P array fp32", "#2b7be0", "o", "stats"),
     Case("modax rodas5P kernel fp32", "#f0a202", "s", "stats"),
+    Case(
+        "modax rodas5P kernel fp32 (sorted)",
+        "#f0a202",
+        "P",
+        "stats",
+        sort_by_steps=True,
+    ),
 )
 
 
