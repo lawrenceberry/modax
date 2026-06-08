@@ -29,14 +29,14 @@ from solvers._jax_numba_custom_call import (
 from solvers._numba_common import (
     NumbaWorkspace,
     PreparedNumbaSolve,
+    as_cuda_device,
     as_launch_block_dim,
     block_threads_x,
     build_error_weights,
     copy_workspace_inputs,
     initial_step,
     jax_stats,
-    make_cuda_matrix_writer,
-    make_cuda_vector_writer,
+    make_cuda_striped_vector_writer,
     numpy_stats,
 )
 from solvers._numba_common import (
@@ -100,7 +100,6 @@ class Workspace(NumbaWorkspace):
     stage_y_dev: Any
     stage_fe_dev: Any
     stage_fi_dev: Any
-    jac_dev: Any
     weights_dev: Any
 
 
@@ -152,7 +151,6 @@ def get_workspace(
         stage_y_dev=cuda.device_array((n, 8, n_vars), dtype=np.float64),
         stage_fe_dev=cuda.device_array((n, 8, n_vars), dtype=np.float64),
         stage_fi_dev=cuda.device_array((n, 8, n_vars), dtype=np.float64),
-        jac_dev=cuda.device_array((n, n_vars, n_vars), dtype=np.float64),
         weights_dev=cuda.device_array((n, n_vars), dtype=np.float64),
     )
     cache[key] = workspace
@@ -360,13 +358,6 @@ def _predictor_coeff(stage, prev):
     return 0.0
 
 
-@cuda.jit(device=True)
-def _clear_jac(jac, i, n_vars):
-    for r in range(n_vars):
-        for c in range(n_vars):
-            jac[i, r, c] = 0.0
-
-
 @functools.cache
 def _make_kernel(
     explicit_ode_fn,
@@ -390,9 +381,26 @@ def _make_kernel(
     # footprint.
     lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
     lu_solver = make_lu_solver(n_vars, precision=lu_dtype, batches_per_block=1)
-    explicit_ode_write = make_cuda_vector_writer(explicit_ode_fn, n_vars)
-    implicit_ode_write = make_cuda_vector_writer(implicit_ode_fn, n_vars)
-    implicit_jac_write = make_cuda_matrix_writer(implicit_jac_fn, n_vars)
+    explicit_ode_write = make_cuda_striped_vector_writer(explicit_ode_fn, n_vars)
+    implicit_ode_write = make_cuda_striped_vector_writer(implicit_ode_fn, n_vars)
+    implicit_jac_device = as_cuda_device(implicit_jac_fn)
+
+    @cuda.jit(device=True)
+    def assemble_w(y, t, p, lu_buf, a_off, gamma_dt, i, lane, stride):
+        # Build the ESDIRK Newton iteration matrix W = I - gamma*dt*J straight
+        # into the shared LU buffer. Each lane evaluates the full implicit
+        # Jacobian (cheap and wall-clock-free under SIMT lockstep) and writes a
+        # disjoint row-stripe, so neither the n_vars*n_vars matrix nor its
+        # transform is staged through global memory or serialized on one lane.
+        values = implicit_jac_device(y[i], t, p[i])
+        for row in range(lane, n_vars, stride):
+            base = a_off + row * n_vars
+            for col in range(n_vars):
+                v = -gamma_dt * values[row][col]
+                if row == col:
+                    v += 1.0
+                lu_buf[base + col] = lu_dtype(v)
+
     batches_per_block = int(lu_solver.batches_per_block)
 
     block_dim = as_launch_block_dim(lu_solver.block_dim)
@@ -423,7 +431,6 @@ def _make_kernel(
         stage_y,
         stage_fe,
         stage_fi,
-        jac,
     ):
         tx = cuda.threadIdx.x
         batch = tx % batches_per_block
@@ -477,16 +484,14 @@ def _make_kernel(
                 stage_y[i, 0, j] = y[i, j]
                 u[i, j] = y[i, j]
             cuda.syncthreads()
-            if lane == 0:
-                explicit_ode_write(u, t, params, tmp, i)
+            explicit_ode_write(u, t, params, tmp, i, lane, batch_lanes)
             cuda.syncthreads()
             for j in range(lane, n_vars, batch_lanes):
                 stage_fe[i, 0, j] = tmp[i, j]
                 if not math.isfinite(tmp[i, j]):
                     failed = True
             cuda.syncthreads()
-            if lane == 0:
-                implicit_ode_write(u, t, params, tmp, i)
+            implicit_ode_write(u, t, params, tmp, i, lane, batch_lanes)
             cuda.syncthreads()
             for j in range(lane, n_vars, batch_lanes):
                 stage_fi[i, 0, j] = tmp[i, j]
@@ -507,17 +512,7 @@ def _make_kernel(
             # converges to.  J is NOT reused across steps -- it is re-evaluated
             # and re-factored every step.
             gamma_dt = GAMMA * dt_use
-            if lane == 0:
-                _clear_jac(jac, i, n_vars)
-                implicit_jac_write(u, t, params, jac, i)
-            cuda.syncthreads()
-            for idx_local in range(lane, n_vars * n_vars, batch_lanes):
-                row = idx_local // n_vars
-                col = idx_local - row * n_vars
-                val = -gamma_dt * jac[i, row, col]
-                if row == col:
-                    val += 1.0
-                smem_lu[a_offset + idx_local] = lu_dtype(val)
+            assemble_w(u, t, params, smem_lu, a_offset, gamma_dt, i, lane, batch_lanes)
             cuda.syncthreads()
             lu_solver.factorize(smem_lu, smem_ipiv, smem_info)
             cuda.syncthreads()
@@ -556,8 +551,7 @@ def _make_kernel(
                     # residual exactly; the iteration matrix W is the cached
                     # step-start factorization in smem_lu/smem_ipiv (no
                     # re-Jacobian, no re-factorize this iteration).
-                    if lane == 0:
-                        implicit_ode_write(u, t_stage, params, tmp, i)
+                    implicit_ode_write(u, t_stage, params, tmp, i, lane, batch_lanes)
                     cuda.syncthreads()
                     delta_norm_acc = 0.0
                     for j in range(lane, n_vars, batch_lanes):
@@ -602,8 +596,7 @@ def _make_kernel(
                 if not converged:
                     failed = True
                 cuda.syncthreads()
-                if lane == 0:
-                    implicit_ode_write(u, t_stage, params, tmp, i)
+                implicit_ode_write(u, t_stage, params, tmp, i, lane, batch_lanes)
                 cuda.syncthreads()
                 for j in range(lane, n_vars, batch_lanes):
                     stage_y[i, stage, j] = u[i, j]
@@ -612,8 +605,7 @@ def _make_kernel(
                         failed = True
 
                 cuda.syncthreads()
-                if lane == 0:
-                    explicit_ode_write(u, t_stage, params, tmp, i)
+                explicit_ode_write(u, t_stage, params, tmp, i, lane, batch_lanes)
                 cuda.syncthreads()
                 for j in range(lane, n_vars, batch_lanes):
                     stage_fe[i, stage, j] = tmp[i, j]
@@ -781,7 +773,6 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
         workspace.stage_y_dev,
         workspace.stage_fe_dev,
         workspace.stage_fi_dev,
-        workspace.jac_dev,
     )
     cuda.synchronize()
 
@@ -843,7 +834,6 @@ def _make_jax_launch(
         f64_2d,
         f64_2d,
         f64_2d,
-        f64_3d,
         f64_3d,
         f64_3d,
         f64_3d,
@@ -959,7 +949,6 @@ def _solve_impl(
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
     work_spec = jax.ShapeDtypeStruct((n, n_vars), jnp.float64)
     stage_spec = jax.ShapeDtypeStruct((n, 8, n_vars), jnp.float64)
-    jac_spec = jax.ShapeDtypeStruct((n, n_vars, n_vars), jnp.float64)
     output_specs = (
         hist_spec,
         int_spec,
@@ -973,7 +962,6 @@ def _solve_impl(
         stage_spec,
         stage_spec,
         stage_spec,
-        jac_spec,
     )
     result = ffi_abi_call(
         launch,
