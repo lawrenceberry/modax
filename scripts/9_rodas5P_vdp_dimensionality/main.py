@@ -52,7 +52,7 @@ _ENSEMBLE_SIZE = 1000
 _N_RUNS = 1
 
 # Powers of 2 from 2 to 128 (n_osc = dim // 2: 1, 2, 4, 8, 16, 32, 64)
-_DIMENSIONS = (2, 4, 6, 8, 10, 12, 16, 32, 64, 128)
+_DIMENSIONS = (2, 4, 6, 8, 10, 12, 16, 32, 64, 96, 128)
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"

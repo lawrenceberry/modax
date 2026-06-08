@@ -8,6 +8,7 @@ modax rodas5P array fp32,modax rodas5P array fp32,12,9.716310072690248
 modax rodas5P array fp32,modax rodas5P array fp32,16,14.92996804881841
 modax rodas5P array fp32,modax rodas5P array fp32,32,55.500971036963165
 modax rodas5P array fp32,modax rodas5P array fp32,64,145.6009449902922
+modax rodas5P array fp32,modax rodas5P array fp32,96,208.20437802467495
 modax rodas5P array fp32,modax rodas5P array fp32,128,197.28946895338595
 modax rodas5P array fp64,modax rodas5P array fp64,2,3.917161957360804
 modax rodas5P array fp64,modax rodas5P array fp64,4,4.311741096898913
@@ -18,26 +19,29 @@ modax rodas5P array fp64,modax rodas5P array fp64,12,12.042773072607815
 modax rodas5P array fp64,modax rodas5P array fp64,16,17.68738206010312
 modax rodas5P array fp64,modax rodas5P array fp64,32,87.54679700359702
 modax rodas5P array fp64,modax rodas5P array fp64,64,210.8890430536121
+modax rodas5P array fp64,modax rodas5P array fp64,96,366.948569950182
 modax rodas5P array fp64,modax rodas5P array fp64,128,431.012126035057
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,2,1.315175904892385
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,4,1.588665065355599
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,6,1.6999850049614906
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,8,1.8820440163835883
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,10,2.563372952863574
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,12,2.832002006471157
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,16,6.064112996682525
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,32,30.5534660583362
-modax rodas5P kernel fp32,modax rodas5P kernel fp32,64,189.8805380333215
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,2,1.3029080000706017
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,4,1.6454379656352103
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,6,1.65891699725762
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,8,1.8241070210933685
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,10,2.2456669830717146
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,12,2.85467499634251
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,16,4.5632830006070435
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,32,14.112559030763805
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,64,69.86897601746023
+modax rodas5P kernel fp32,modax rodas5P kernel fp32,96,554.004976991564
 modax rodas5P kernel fp32,modax rodas5P kernel fp32,128,
-modax rodas5P kernel fp64,modax rodas5P kernel fp64,2,1.2997479643672705
-modax rodas5P kernel fp64,modax rodas5P kernel fp64,4,1.707378076389432
-modax rodas5P kernel fp64,modax rodas5P kernel fp64,6,1.8438179977238178
-modax rodas5P kernel fp64,modax rodas5P kernel fp64,8,2.034908044151962
-modax rodas5P kernel fp64,modax rodas5P kernel fp64,10,3.125005983747542
-modax rodas5P kernel fp64,modax rodas5P kernel fp64,12,3.26253694947809
-modax rodas5P kernel fp64,modax rodas5P kernel fp64,16,7.5583040015771985
-modax rodas5P kernel fp64,modax rodas5P kernel fp64,32,32.02135697938502
-modax rodas5P kernel fp64,modax rodas5P kernel fp64,64,299.33713003993034
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,2,1.3318079872988164
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,4,1.7187269986607134
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,6,2.1624069777317345
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,8,1.985256967600435
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,10,3.0209050164557993
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,12,3.4920540056191385
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,16,6.367599999066442
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,32,18.163609958719462
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,64,136.59907202236354
+modax rodas5P kernel fp64,modax rodas5P kernel fp64,96,
 modax rodas5P kernel fp64,modax rodas5P kernel fp64,128,
 diffrax kvaerno5,diffrax kvaerno5,2,19.522276241332293
 diffrax kvaerno5,diffrax kvaerno5,4,19.855352118611336
@@ -48,6 +52,7 @@ diffrax kvaerno5,diffrax kvaerno5,12,28.431786224246025
 diffrax kvaerno5,diffrax kvaerno5,16,30.68596264347434
 diffrax kvaerno5,diffrax kvaerno5,32,94.27400073036551
 diffrax kvaerno5,diffrax kvaerno5,64,214.39460618421435
+diffrax kvaerno5,diffrax kvaerno5,96,
 diffrax kvaerno5,diffrax kvaerno5,128,649.8776786029339
 julia rodas5P array,julia rodas5P array,2,26.264737999999998
 julia rodas5P array,julia rodas5P array,4,28.291712
@@ -58,6 +63,7 @@ julia rodas5P array,julia rodas5P array,12,41.018587000000004
 julia rodas5P array,julia rodas5P array,16,66.125743
 julia rodas5P array,julia rodas5P array,32,163.83114500000002
 julia rodas5P array,julia rodas5P array,64,517.121348
+julia rodas5P array,julia rodas5P array,96,1238.340536
 julia rodas5P array,julia rodas5P array,128,1860.960041
 julia rodas5P kernel,julia rodas5P kernel,2,4.149939
 julia rodas5P kernel,julia rodas5P kernel,4,4.331199
@@ -68,4 +74,5 @@ julia rodas5P kernel,julia rodas5P kernel,12,
 julia rodas5P kernel,julia rodas5P kernel,16,
 julia rodas5P kernel,julia rodas5P kernel,32,
 julia rodas5P kernel,julia rodas5P kernel,64,
+julia rodas5P kernel,julia rodas5P kernel,96,
 julia rodas5P kernel,julia rodas5P kernel,128,

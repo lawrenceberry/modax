@@ -1,9 +1,10 @@
 """High-dimensional VDP divergence benchmark for Rodas5P solvers.
 
-Runs the 64D coupled VDP lattice (n_osc = 32) with 1000 trajectories while
-sweeping the ``make_scenario(..., divergence=...)`` knob. For each solver and
-divergence value, the benchmark records solve time and the actual distribution
-of accepted plus rejected Rodas5P steps.
+Runs the 96D coupled VDP lattice (n_osc = 48) with 1000 trajectories while
+sweeping the ``make_scenario(..., divergence=...)`` knob, comparing the fp32
+Rodas5P array (JAX) backend against the fp32 Rodas5P custom kernel. For each
+solver and divergence value, the benchmark records solve time and the actual
+distribution of accepted plus rejected Rodas5P steps.
 
 Usage:
     uv run python scripts/10_rodas5P_vdp_divergence/main.py
@@ -41,7 +42,7 @@ from solvers.rodas5Pnumba import solve as rodas5Pnumba_solve
 
 jax.config.update("jax_enable_x64", True)
 
-_N_OSC = 32
+_N_OSC = 48
 _DIM = 2 * _N_OSC
 _ENSEMBLE_SIZE = 1000
 _N_RUNS = 1
@@ -87,13 +88,6 @@ class Case:
 CASES = (
     Case("modax rodas5P array fp32", "#2b7be0", "o", "stats"),
     Case("modax rodas5P kernel fp32", "#f0a202", "s", "stats"),
-    Case(
-        "modax rodas5P kernel fp32 (sorted)",
-        "#f0a202",
-        "P",
-        "stats",
-        sort_by_steps=True,
-    ),
 )
 
 
@@ -328,7 +322,7 @@ def rows_for_solver(rows: list[dict], solver_key: str) -> list[dict]:
 
 def plot(rows: list[dict], gpu_name: str, output_path: Path) -> None:
     configure_latex_plot_style(plt)
-    title = f"64D coupled VDP divergence — 1000 trajectories — {gpu_name}"
+    title = f"{_DIM}D coupled VDP divergence — 1000 trajectories — {gpu_name}"
     print_plot_title(title)
     fig, ax = plt.subplots(figsize=(8, 5.5))
     for solver in CASES:

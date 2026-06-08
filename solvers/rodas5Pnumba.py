@@ -28,13 +28,14 @@ from solvers._jax_numba_custom_call import (
 from solvers._numba_common import (
     NumbaWorkspace,
     PreparedNumbaSolve,
+    as_cuda_device,
     as_launch_block_dim,
     block_threads_x,
     build_error_weights,
     copy_workspace_inputs,
     initial_step,
     jax_stats,
-    make_cuda_matrix_writer,
+    make_cuda_striped_vector_writer,
     make_cuda_vector_writer,
     make_cuda_zero_vector_writer,
     numpy_stats,
@@ -124,7 +125,6 @@ _WORKSPACE_CACHE: dict[tuple[int, int, int, int], object] = {}
 @dataclass
 class Workspace(NumbaWorkspace):
     work: list[Any]
-    jac_dev: Any
     dT_dev: Any
     weights_dev: Any
 
@@ -170,7 +170,6 @@ def get_workspace(
         rejected_dev=cuda.device_array(n, dtype=np.int32),
         loop_dev=cuda.device_array(n, dtype=np.int32),
         work=[cuda.device_array((n, n_vars), dtype=np.float64) for _ in range(10)],
-        jac_dev=cuda.device_array((n, n_vars, n_vars), dtype=np.float64),
         dT_dev=cuda.device_array((n, n_vars), dtype=np.float64),
         weights_dev=cuda.device_array((n, n_vars), dtype=np.float64),
     )
@@ -203,8 +202,27 @@ def _make_kernel(
     # systems where the FP32 factorisation degrades the step-size control.
     lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
     lu_solver = make_lu_solver(n_vars, precision=lu_dtype)
-    ode_write = make_cuda_vector_writer(ode_fn, n_vars)
-    jac_write = make_cuda_matrix_writer(jac_fn, n_vars)
+    ode_write = make_cuda_striped_vector_writer(ode_fn, n_vars)
+    jac_device = as_cuda_device(jac_fn)
+
+    @cuda.jit(device=True)
+    def assemble_lu(y, t, p, lu_buf, a_off, dtgamma_inv, i, lane, stride):
+        # Build the Rosenbrock--Wanner iteration matrix M = 1/(h*gamma)*I - J
+        # straight into the shared LU buffer. Evaluating the Jacobian and
+        # writing M here (rather than staging J through a global array and
+        # reading it back) avoids a per-step global-memory round-trip of the
+        # full n_vars*n_vars matrix. Each lane writes a disjoint row-stripe so
+        # the O(n_vars^2) transform/write is shared across the batch's lanes.
+        values = jac_device(y[i], t, p[i])
+        for row in range(lane, n_vars, stride):
+            base = a_off + row * n_vars
+            for col in range(n_vars):
+                v = values[row][col]
+                if row == col:
+                    lu_buf[base + col] = lu_dtype(dtgamma_inv - v)
+                else:
+                    lu_buf[base + col] = lu_dtype(-v)
+
     time_jac_write = (
         make_cuda_zero_vector_writer(n_vars)
         if time_jac_fn is None
@@ -236,7 +254,6 @@ def _make_kernel(
         y_global,
         u_global,
         work_global,
-        jac,
         dT_global,
     ):
         tx = cuda.threadIdx.x
@@ -343,32 +360,37 @@ def _make_kernel(
                 for j in range(lane, n_vars, batch_lanes):
                     y_global[i, j] = smem_y[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
-                jac_write(y_global, smem_t[batch], params, jac, i)
-                time_jac_write(y_global, smem_t[batch], params, dT_global, i)
-            cuda.syncthreads()
 
             dtgamma_inv = 1.0 / (smem_dt_use[batch] * GAMMA)
-            for idx_local in range(lane, n_vars * n_vars, batch_lanes):
-                row = idx_local // n_vars
-                col = idx_local - row * n_vars
-                idx = a_offset + idx_local
-                if active:
-                    if row == col:
-                        smem_lu[idx] = lu_dtype(dtgamma_inv - jac[i, row, col])
-                    else:
-                        smem_lu[idx] = lu_dtype(-jac[i, row, col])
-                else:
-                    smem_lu[idx] = 1.0 if row == col else 0.0
-            if not active:
+            if active:
+                assemble_lu(
+                    y_global,
+                    smem_t[batch],
+                    params,
+                    smem_lu,
+                    a_offset,
+                    dtgamma_inv,
+                    i,
+                    lane,
+                    batch_lanes,
+                )
+                if lane == 0:
+                    time_jac_write(y_global, smem_t[batch], params, dT_global, i)
+            else:
+                for idx_local in range(lane, n_vars * n_vars, batch_lanes):
+                    row = idx_local // n_vars
+                    col = idx_local - row * n_vars
+                    smem_lu[a_offset + idx_local] = 1.0 if row == col else 0.0
                 for j in range(lane, n_vars, batch_lanes):
                     smem_rhs[b_offset + j] = 0.0
             cuda.syncthreads()
             lu_solver.factorize(smem_lu, smem_ipiv, smem_info)
             cuda.syncthreads()
 
-            if lane == 0 and active:
-                ode_write(y_global, smem_t[batch], params, work_global, i)
+            if active:
+                ode_write(
+                    y_global, smem_t[batch], params, work_global, i, lane, batch_lanes
+                )
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -389,13 +411,15 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
+            if active:
                 ode_write(
                     u_global,
                     smem_t[batch] + C2 * smem_dt_use[batch],
                     params,
                     work_global,
                     i,
+                    lane,
+                    batch_lanes,
                 )
             cuda.syncthreads()
             if active:
@@ -419,13 +443,15 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
+            if active:
                 ode_write(
                     u_global,
                     smem_t[batch] + C3 * smem_dt_use[batch],
                     params,
                     work_global,
                     i,
+                    lane,
+                    batch_lanes,
                 )
             cuda.syncthreads()
             if active:
@@ -452,13 +478,15 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
+            if active:
                 ode_write(
                     u_global,
                     smem_t[batch] + C4 * smem_dt_use[batch],
                     params,
                     work_global,
                     i,
+                    lane,
+                    batch_lanes,
                 )
             cuda.syncthreads()
             if active:
@@ -490,13 +518,15 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
+            if active:
                 ode_write(
                     u_global,
                     smem_t[batch] + C5 * smem_dt_use[batch],
                     params,
                     work_global,
                     i,
+                    lane,
+                    batch_lanes,
                 )
             cuda.syncthreads()
             if active:
@@ -530,8 +560,16 @@ def _make_kernel(
                     )
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
-            if lane == 0 and active:
-                ode_write(u_global, smem_t_end[batch], params, work_global, i)
+            if active:
+                ode_write(
+                    u_global,
+                    smem_t_end[batch],
+                    params,
+                    work_global,
+                    i,
+                    lane,
+                    batch_lanes,
+                )
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -556,8 +594,16 @@ def _make_kernel(
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
 
-            if lane == 0 and active:
-                ode_write(u_global, smem_t_end[batch], params, work_global, i)
+            if active:
+                ode_write(
+                    u_global,
+                    smem_t_end[batch],
+                    params,
+                    work_global,
+                    i,
+                    lane,
+                    batch_lanes,
+                )
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -583,8 +629,16 @@ def _make_kernel(
                     u_global[i, j] = smem_u[v_offset + j]
             cuda.syncthreads()
 
-            if lane == 0 and active:
-                ode_write(u_global, smem_t_end[batch], params, work_global, i)
+            if active:
+                ode_write(
+                    u_global,
+                    smem_t_end[batch],
+                    params,
+                    work_global,
+                    i,
+                    lane,
+                    batch_lanes,
+                )
             cuda.syncthreads()
             if active:
                 for j in range(lane, n_vars, batch_lanes):
@@ -775,7 +829,6 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
         workspace.work[0],
         workspace.work[1],
         workspace.work[2],
-        workspace.jac_dev,
         workspace.dT_dev,
     )
     cuda.synchronize()
@@ -828,7 +881,6 @@ def _make_jax_launch(
         f64_2d,
         f64_2d,
         f64_2d,
-        types.float64[:, :, ::1],
         f64_2d,
     )
     batches_per_block = int(lu_solver.batches_per_block)
@@ -954,12 +1006,7 @@ def _solve_impl(
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
     work_spec = jax.ShapeDtypeStruct((n, n_vars), jnp.float64)
-    jac_spec = jax.ShapeDtypeStruct((n, n_vars, n_vars), jnp.float64)
-    output_specs = (
-        (hist_spec, int_spec, int_spec, int_spec)
-        + (work_spec,) * 3
-        + (jac_spec, work_spec)
-    )
+    output_specs = (hist_spec, int_spec, int_spec, int_spec) + (work_spec,) * 4
     result = ffi_abi_call(
         launch,
         (y0_arr, times, params_arr, weights_arr),
