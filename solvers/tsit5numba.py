@@ -29,10 +29,9 @@ from solvers._numba_common import (
     NumbaWorkspace,
     PreparedNumbaSolve,
     build_error_weights,
-    copy_workspace_inputs,
     initial_step,
     jax_stats,
-    make_cuda_vector_writer,
+    make_cuda_transposed_vector_writer,
     numpy_stats,
 )
 from solvers._numba_common import (
@@ -134,16 +133,20 @@ def get_workspace(
     if workspace is not None:
         return workspace
 
+    # State and stage vectors are stored transposed (n_vars, n) so that for a
+    # fixed component the trajectory axis is contiguous, giving coalesced warp
+    # accesses independent of n_vars. hist keeps the (n, n_save, n_vars) output
+    # layout (written only at save points).
     workspace = Workspace(
-        y0_dev=cuda.device_array((n, n_vars), dtype=np.float64),
+        y0_dev=cuda.device_array((n_vars, n), dtype=np.float64),
         times_dev=cuda.device_array(n_save, dtype=np.float64),
         params_dev=cuda.device_array((n, n_params), dtype=np.float64),
         hist_dev=cuda.device_array((n, n_save, n_vars), dtype=np.float64),
         accepted_dev=cuda.device_array(n, dtype=np.int32),
         rejected_dev=cuda.device_array(n, dtype=np.int32),
         loop_dev=cuda.device_array(n, dtype=np.int32),
-        work=[cuda.device_array((n, n_vars), dtype=np.float64) for _ in range(9)],
-        weights_dev=cuda.device_array((n, n_vars), dtype=np.float64),
+        work=[cuda.device_array((n_vars, n), dtype=np.float64) for _ in range(9)],
+        weights_dev=cuda.device_array((n_vars, n), dtype=np.float64),
     )
     cache[key] = workspace
     return workspace
@@ -162,7 +165,7 @@ def _make_kernel(
     e1 = EXPONENT * (icoeff + pcoeff + dcoeff)
     e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
     e3 = EXPONENT * dcoeff
-    ode_write = make_cuda_vector_writer(ode_fn, n_vars)
+    ode_write = make_cuda_transposed_vector_writer(ode_fn, n_vars)
 
     @cuda.jit
     def kernel(
@@ -189,13 +192,13 @@ def _make_kernel(
         k7,
     ):
         i = cuda.grid(1)
-        if i >= y0.shape[0]:
+        if i >= y0.shape[1]:
             return
 
         for j in range(n_vars):
-            y[i, j] = y0[i, j]
-            hist[i, 0, j] = y0[i, j]
-            k7[i, j] = 0.0
+            y[j, i] = y0[j, i]
+            hist[i, 0, j] = y0[j, i]
+            k7[j, i] = 0.0
 
         n_save = times.shape[0]
         t = times[0]
@@ -219,64 +222,64 @@ def _make_kernel(
 
             if has_fsal:
                 for j in range(n_vars):
-                    k1[i, j] = k7[i, j]
+                    k1[j, i] = k7[j, i]
             else:
                 ode_write(y, t, params, k1, i)
 
             for j in range(n_vars):
-                u[i, j] = y[i, j] + dt_use * (A21 * k1[i, j])
+                u[j, i] = y[j, i] + dt_use * (A21 * k1[j, i])
             ode_write(u, t + C2 * dt_use, params, k2, i)
 
             for j in range(n_vars):
-                u[i, j] = y[i, j] + dt_use * (A31 * k1[i, j] + A32 * k2[i, j])
+                u[j, i] = y[j, i] + dt_use * (A31 * k1[j, i] + A32 * k2[j, i])
             ode_write(u, t + C3 * dt_use, params, k3, i)
 
             for j in range(n_vars):
-                u[i, j] = y[i, j] + dt_use * (
-                    A41 * k1[i, j] + A42 * k2[i, j] + A43 * k3[i, j]
+                u[j, i] = y[j, i] + dt_use * (
+                    A41 * k1[j, i] + A42 * k2[j, i] + A43 * k3[j, i]
                 )
             ode_write(u, t + C4 * dt_use, params, k4, i)
 
             for j in range(n_vars):
-                u[i, j] = y[i, j] + dt_use * (
-                    A51 * k1[i, j] + A52 * k2[i, j] + A53 * k3[i, j] + A54 * k4[i, j]
+                u[j, i] = y[j, i] + dt_use * (
+                    A51 * k1[j, i] + A52 * k2[j, i] + A53 * k3[j, i] + A54 * k4[j, i]
                 )
             ode_write(u, t + C5 * dt_use, params, k5, i)
 
             for j in range(n_vars):
-                u[i, j] = y[i, j] + dt_use * (
-                    A61 * k1[i, j]
-                    + A62 * k2[i, j]
-                    + A63 * k3[i, j]
-                    + A64 * k4[i, j]
-                    + A65 * k5[i, j]
+                u[j, i] = y[j, i] + dt_use * (
+                    A61 * k1[j, i]
+                    + A62 * k2[j, i]
+                    + A63 * k3[j, i]
+                    + A64 * k4[j, i]
+                    + A65 * k5[j, i]
                 )
             ode_write(u, t + C6 * dt_use, params, k6, i)
 
             for j in range(n_vars):
-                u[i, j] = y[i, j] + dt_use * (
-                    B1 * k1[i, j]
-                    + B2 * k2[i, j]
-                    + B3 * k3[i, j]
-                    + B4 * k4[i, j]
-                    + B5 * k5[i, j]
-                    + B6 * k6[i, j]
+                u[j, i] = y[j, i] + dt_use * (
+                    B1 * k1[j, i]
+                    + B2 * k2[j, i]
+                    + B3 * k3[j, i]
+                    + B4 * k4[j, i]
+                    + B5 * k5[j, i]
+                    + B6 * k6[j, i]
                 )
             ode_write(u, t + C7 * dt_use, params, k7, i)
 
             err_sum = 0.0
             for j in range(n_vars):
                 err_est = dt_use * (
-                    E1 * k1[i, j]
-                    + E2 * k2[i, j]
-                    + E3 * k3[i, j]
-                    + E4 * k4[i, j]
-                    + E5 * k5[i, j]
-                    + E6 * k6[i, j]
-                    + E7 * k7[i, j]
+                    E1 * k1[j, i]
+                    + E2 * k2[j, i]
+                    + E3 * k3[j, i]
+                    + E4 * k4[j, i]
+                    + E5 * k5[j, i]
+                    + E6 * k6[j, i]
+                    + E7 * k7[j, i]
                 )
-                scale = atol + rtol * max(abs(y[i, j]), abs(u[i, j]))
-                r = weights[i, j] * err_est / scale
+                scale = atol + rtol * max(abs(y[j, i]), abs(u[j, i]))
+                r = weights[j, i] * err_est / scale
                 err_sum += r * r
             err_norm = math.sqrt(err_sum / n_vars)
             accept = err_norm <= 1.0 and not math.isnan(err_norm)
@@ -284,14 +287,14 @@ def _make_kernel(
             if accept:
                 t_new = t + dt_use
                 for j in range(n_vars):
-                    y[i, j] = u[i, j]
+                    y[j, i] = u[j, i]
                 accepted_steps += 1
                 has_fsal = True
             else:
                 t_new = t
                 rejected_steps += 1
                 for j in range(n_vars):
-                    k7[i, j] = 0.0
+                    k7[j, i] = 0.0
                 has_fsal = False
 
             reached = accept and (
@@ -299,7 +302,7 @@ def _make_kernel(
             )
             if reached:
                 for j in range(n_vars):
-                    hist[i, save_idx, j] = y[i, j]
+                    hist[i, save_idx, j] = y[j, i]
                 save_idx += 1
 
             if math.isnan(err_norm) or err_norm > 1e18:
@@ -354,8 +357,12 @@ def prepare_solve(
     weights_arr = build_error_weights(error_weights, n, n_vars)
 
     workspace = get_workspace(_WORKSPACE_CACHE, n, n_vars, n_save, n_params)
-    copy_workspace_inputs(workspace, y0_arr, times, params_arr)
-    workspace.weights_dev.copy_to_device(weights_arr)
+    # State/weights live transposed (n_vars, n) on the device; params keep the
+    # (n, n_params) row layout consumed by the callback.
+    workspace.y0_dev.copy_to_device(np.ascontiguousarray(y0_arr.T))
+    workspace.times_dev.copy_to_device(times)
+    workspace.params_dev.copy_to_device(params_arr)
+    workspace.weights_dev.copy_to_device(np.ascontiguousarray(weights_arr.T))
 
     threads = 128
     blocks = (n + threads - 1) // threads
@@ -514,17 +521,22 @@ def _solve_impl(
     n_params = params_arr.shape[1]
     dt0 = initial_step(times, first_step)
     weights_arr = jnp.asarray(build_error_weights(error_weights, n, n_vars))
+    # State/stage/weights are transposed (n_vars, n) so the kernel's warp
+    # accesses are coalesced; XLA materializes the transpose as a C-contiguous
+    # operand. hist keeps the (n, n_save, n_vars) output layout.
+    y0_t = y0_arr.T
+    weights_t = weights_arr.T
 
     launch = _make_jax_launch(
         ode_fn, n, n_vars, n_save, n_params, pcoeff, icoeff, dcoeff
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
-    work_spec = jax.ShapeDtypeStruct((n, n_vars), jnp.float64)
+    work_spec = jax.ShapeDtypeStruct((n_vars, n), jnp.float64)
     output_specs = (hist_spec, int_spec, int_spec, int_spec) + (work_spec,) * 9
     result = ffi_abi_call(
         launch,
-        (y0_arr, times, params_arr, weights_arr),
+        (y0_t, times, params_arr, weights_t),
         output_specs,
         input_kinds=(
             ABI_ARRAY,

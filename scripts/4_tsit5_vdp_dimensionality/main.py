@@ -24,8 +24,6 @@ from typing import Any, Callable, Sequence
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import numpy as np
-from numba import cuda
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -140,22 +138,6 @@ CASES: tuple[Case, ...] = (
 )
 
 
-@cuda.jit(device=True)
-def ode_fn_vdp_numba(y, t, p, dy, i):
-    n_osc = int(p[i, 0])
-    scale = p[i, 1]
-    mu = 1.0
-    diffusion = 10.0
-    for k in range(n_osc):
-        kp1 = (k + 1) % n_osc
-        km1 = (k + n_osc - 1) % n_osc
-        xk = y[i, 2 * k]
-        vk = y[i, 2 * k + 1]
-        lap = y[i, 2 * kp1] - 2.0 * xk + y[i, 2 * km1]
-        dy[i, 2 * k] = vk
-        dy[i, 2 * k + 1] = scale * mu * (1.0 - xk * xk) * vk - xk + diffusion * lap
-
-
 def _vdp_system_config(n_osc: int) -> dict[str, float | int]:
     return {"n_osc": n_osc, "mu": _MU_NONSTIFF, "d": _D, "omega": _OMEGA}
 
@@ -178,17 +160,12 @@ def time_case(case: Case, dim: int, *, divergence: float) -> float:
         )
 
     if case.mode == "custom":
-        custom_params = np.column_stack(
-            [
-                np.full(_ENSEMBLE_SIZE, float(n_osc), dtype=np.float64),
-                params[:, 0],
-            ]
-        )
+        ode_fn, _, _ = vdp.make_system(n_osc, mu=_MU_NONSTIFF)
         prepared = tsit5numba_prepare_solve(
-            ode_fn_vdp_numba,
+            ode_fn,
             y0=y0_batch,
             t_span=case.t_span,
-            params=custom_params,
+            params=params,
             **kwargs,
         )
 

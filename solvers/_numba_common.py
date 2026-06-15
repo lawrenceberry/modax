@@ -165,6 +165,26 @@ def make_cuda_vector_writer(fn, n_vars: int):
 
 
 @functools.cache
+def make_cuda_transposed_vector_writer(fn, n_vars: int):
+    """Like :func:`make_cuda_vector_writer`, but for transposed (SoA) state.
+
+    State/work arrays are laid out ``(n_vars, n)`` so that for a fixed component
+    the trajectory axis is contiguous. The strided column ``y[:, i]`` passed to
+    the callback is coalesced across the warp (all lanes read the same component
+    at consecutive ``i``), so no per-lane gather is needed.
+    """
+    fn_device = as_cuda_device(fn)
+
+    @cuda.jit(device=True)
+    def write_vector(y, t, p, out, i):
+        values = fn_device(y[:, i], t, p[i])
+        for j in range(n_vars):
+            out[j, i] = values[j]
+
+    return write_vector
+
+
+@functools.cache
 def make_cuda_striped_vector_writer(fn, n_vars: int):
     """Like :func:`make_cuda_vector_writer`, but each lane writes a disjoint
     output stripe ``j = lane, lane + stride, ...`` so a batch's lanes share the
