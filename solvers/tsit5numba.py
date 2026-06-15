@@ -99,6 +99,36 @@ EXPONENT = -1.0 / 5.0
 
 _WORKSPACE_CACHE: dict[tuple[int, int, int, int], object] = {}
 
+# Hybrid backend. The shared-memory kernel keeps all stage vectors in on-chip
+# shared memory (one thread per trajectory, BLOCK = _SHARED_BLOCK). It wins in
+# the latency-bound regime -- small ensembles and/or low dimension, where the
+# device is under-occupied and shared memory's low latency dominates -- but
+# needs ~9 * _SHARED_BLOCK * n_vars * 8 bytes of static shared memory per block
+# (capping n_vars) and its low occupancy loses to the transposed-global kernel
+# once the ensemble is large enough to saturate the GPU. The thresholds bound
+# the regime where shared was measured to win on an RTX 4070 SUPER; outside it
+# the global kernel is used. Retune per GPU or override via ``backend``.
+_SHARED_BLOCK = 32
+_SHARED_MAX_NVARS = 16
+_SHARED_MAX_ENSEMBLE = 16384
+
+
+def _use_shared_backend(n: int, n_vars: int, backend: str) -> bool:
+    if backend == "global":
+        return False
+    if backend == "shared":
+        if n_vars > _SHARED_MAX_NVARS:
+            raise ValueError(
+                "shared backend requires n_vars <= "
+                f"{_SHARED_MAX_NVARS}; got n_vars={n_vars}"
+            )
+        return True
+    if backend != "auto":
+        raise ValueError(
+            f"backend must be 'auto', 'shared', or 'global'; got {backend!r}"
+        )
+    return n_vars <= _SHARED_MAX_NVARS and n <= _SHARED_MAX_ENSEMBLE
+
 
 def clear_caches() -> None:
     """Drop the cached device workspaces and compiled kernels.
@@ -109,8 +139,11 @@ def clear_caches() -> None:
     module-level caches.
     """
     _WORKSPACE_CACHE.clear()
+    _make_body.cache_clear()
     _make_kernel.cache_clear()
+    _make_shared_kernel.cache_clear()
     _make_jax_launch.cache_clear()
+    _make_shared_jax_launch.cache_clear()
     gc.collect()
 
 
@@ -123,6 +156,7 @@ class Workspace(NumbaWorkspace):
 @dataclass(frozen=True)
 class PreparedSolve(PreparedNumbaSolve):
     workspace: Workspace
+    uses_shared: bool = False
 
 
 def get_workspace(
@@ -153,6 +187,193 @@ def get_workspace(
 
 
 @functools.cache
+def _make_body(
+    ode_fn,
+    n_vars: int,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+):
+    """Build the per-trajectory Tsit5 integration loop as a CUDA device fn.
+
+    The body is storage-agnostic: ``i`` indexes the per-trajectory global arrays
+    (``y0``/``weights``/``hist``/stats) while ``s`` indexes the stage workspace
+    columns. The global kernel passes ``s = i`` (stage vectors are global
+    ``(n_vars, n)`` arrays); the shared kernel passes ``s = threadIdx.x`` (stage
+    vectors are per-block shared ``(n_vars, BLOCK)`` arrays). This keeps both
+    backends sharing a single integrator implementation.
+    """
+    # PID step-control exponents (Soderlind). Defaults (0, 1, 0) give E1=EXPONENT
+    # and E2=E3=0, recovering the elementary I-controller exactly.
+    e1 = EXPONENT * (icoeff + pcoeff + dcoeff)
+    e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
+    e3 = EXPONENT * dcoeff
+    ode_write = make_cuda_transposed_vector_writer(ode_fn, n_vars)
+
+    @cuda.jit(device=True)
+    def body(
+        y0,
+        times,
+        params,
+        dt0,
+        rtol,
+        atol,
+        max_steps,
+        weights,
+        hist,
+        accepted_out,
+        rejected_out,
+        loop_out,
+        y,
+        u,
+        k1,
+        k2,
+        k3,
+        k4,
+        k5,
+        k6,
+        k7,
+        i,
+        s,
+    ):
+        prow = params[i]
+        for j in range(n_vars):
+            y[j, s] = y0[j, i]
+            hist[i, 0, j] = y0[j, i]
+            k7[j, s] = 0.0
+
+        n_save = times.shape[0]
+        t = times[0]
+        tf = times[n_save - 1]
+        dt = dt0
+        save_idx = 1
+        n_steps = 0
+        accepted_steps = 0
+        rejected_steps = 0
+        has_fsal = False
+        err_prev = 1.0
+        err_prev2 = 1.0
+
+        while save_idx < n_save and t < tf and n_steps < max_steps:
+            next_target = times[save_idx]
+            dt_use = dt
+            if dt_use > next_target - t:
+                dt_use = next_target - t
+            if dt_use < 1e-30:
+                dt_use = 1e-30
+
+            if has_fsal:
+                for j in range(n_vars):
+                    k1[j, s] = k7[j, s]
+            else:
+                ode_write(y, t, prow, k1, s)
+
+            for j in range(n_vars):
+                u[j, s] = y[j, s] + dt_use * (A21 * k1[j, s])
+            ode_write(u, t + C2 * dt_use, prow, k2, s)
+
+            for j in range(n_vars):
+                u[j, s] = y[j, s] + dt_use * (A31 * k1[j, s] + A32 * k2[j, s])
+            ode_write(u, t + C3 * dt_use, prow, k3, s)
+
+            for j in range(n_vars):
+                u[j, s] = y[j, s] + dt_use * (
+                    A41 * k1[j, s] + A42 * k2[j, s] + A43 * k3[j, s]
+                )
+            ode_write(u, t + C4 * dt_use, prow, k4, s)
+
+            for j in range(n_vars):
+                u[j, s] = y[j, s] + dt_use * (
+                    A51 * k1[j, s] + A52 * k2[j, s] + A53 * k3[j, s] + A54 * k4[j, s]
+                )
+            ode_write(u, t + C5 * dt_use, prow, k5, s)
+
+            for j in range(n_vars):
+                u[j, s] = y[j, s] + dt_use * (
+                    A61 * k1[j, s]
+                    + A62 * k2[j, s]
+                    + A63 * k3[j, s]
+                    + A64 * k4[j, s]
+                    + A65 * k5[j, s]
+                )
+            ode_write(u, t + C6 * dt_use, prow, k6, s)
+
+            for j in range(n_vars):
+                u[j, s] = y[j, s] + dt_use * (
+                    B1 * k1[j, s]
+                    + B2 * k2[j, s]
+                    + B3 * k3[j, s]
+                    + B4 * k4[j, s]
+                    + B5 * k5[j, s]
+                    + B6 * k6[j, s]
+                )
+            ode_write(u, t + C7 * dt_use, prow, k7, s)
+
+            err_sum = 0.0
+            for j in range(n_vars):
+                err_est = dt_use * (
+                    E1 * k1[j, s]
+                    + E2 * k2[j, s]
+                    + E3 * k3[j, s]
+                    + E4 * k4[j, s]
+                    + E5 * k5[j, s]
+                    + E6 * k6[j, s]
+                    + E7 * k7[j, s]
+                )
+                scale = atol + rtol * max(abs(y[j, s]), abs(u[j, s]))
+                r = weights[j, i] * err_est / scale
+                err_sum += r * r
+            err_norm = math.sqrt(err_sum / n_vars)
+            accept = err_norm <= 1.0 and not math.isnan(err_norm)
+
+            if accept:
+                t_new = t + dt_use
+                for j in range(n_vars):
+                    y[j, s] = u[j, s]
+                accepted_steps += 1
+                has_fsal = True
+            else:
+                t_new = t
+                rejected_steps += 1
+                for j in range(n_vars):
+                    k7[j, s] = 0.0
+                has_fsal = False
+
+            reached = accept and (
+                abs(t_new - next_target) <= 1e-12 * max(1.0, abs(next_target))
+            )
+            if reached:
+                for j in range(n_vars):
+                    hist[i, save_idx, j] = y[j, s]
+                save_idx += 1
+
+            if math.isnan(err_norm) or err_norm > 1e18:
+                safe_err = 1e18
+            elif err_norm == 0.0:
+                safe_err = 1e-18
+            else:
+                safe_err = err_norm
+            factor = SAFETY * safe_err**e1 * err_prev**e2 * err_prev2**e3
+            # Advance the PID error history only on accepted steps.
+            if accept:
+                err_prev2 = err_prev
+                err_prev = safe_err
+            if factor < FACTOR_MIN:
+                factor = FACTOR_MIN
+            elif factor > FACTOR_MAX:
+                factor = FACTOR_MAX
+            dt = dt_use * factor
+            t = t_new
+            n_steps += 1
+
+        accepted_out[i] = accepted_steps
+        rejected_out[i] = rejected_steps
+        loop_out[i] = n_steps
+
+    return body
+
+
+@functools.cache
 def _make_kernel(
     ode_fn,
     n_vars: int,
@@ -160,12 +381,8 @@ def _make_kernel(
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
 ):
-    # PID step-control exponents (Soderlind). Defaults (0, 1, 0) give E1=EXPONENT
-    # and E2=E3=0, recovering the elementary I-controller exactly.
-    e1 = EXPONENT * (icoeff + pcoeff + dcoeff)
-    e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
-    e3 = EXPONENT * dcoeff
-    ode_write = make_cuda_transposed_vector_writer(ode_fn, n_vars)
+    """Transposed-global kernel: stage vectors are global ``(n_vars, n)`` arrays."""
+    body = _make_body(ode_fn, n_vars, pcoeff, icoeff, dcoeff)
 
     @cuda.jit
     def kernel(
@@ -194,139 +411,106 @@ def _make_kernel(
         i = cuda.grid(1)
         if i >= y0.shape[1]:
             return
+        body(
+            y0,
+            times,
+            params,
+            dt0,
+            rtol,
+            atol,
+            max_steps,
+            weights,
+            hist,
+            accepted_out,
+            rejected_out,
+            loop_out,
+            y,
+            u,
+            k1,
+            k2,
+            k3,
+            k4,
+            k5,
+            k6,
+            k7,
+            i,
+            i,
+        )
 
-        for j in range(n_vars):
-            y[j, i] = y0[j, i]
-            hist[i, 0, j] = y0[j, i]
-            k7[j, i] = 0.0
+    return kernel
 
-        n_save = times.shape[0]
-        t = times[0]
-        tf = times[n_save - 1]
-        dt = dt0
-        save_idx = 1
-        n_steps = 0
-        accepted_steps = 0
-        rejected_steps = 0
-        has_fsal = False
-        err_prev = 1.0
-        err_prev2 = 1.0
 
-        while save_idx < n_save and t < tf and n_steps < max_steps:
-            next_target = times[save_idx]
-            dt_use = dt
-            if dt_use > next_target - t:
-                dt_use = next_target - t
-            if dt_use < 1e-30:
-                dt_use = 1e-30
+@functools.cache
+def _make_shared_kernel(
+    ode_fn,
+    n_vars: int,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+):
+    """Shared-memory kernel: stage vectors live in per-block shared memory.
 
-            if has_fsal:
-                for j in range(n_vars):
-                    k1[j, i] = k7[j, i]
-            else:
-                ode_write(y, t, params, k1, i)
+    One thread per trajectory, ``_SHARED_BLOCK`` threads per block. The stage
+    workspace is nine ``(n_vars, _SHARED_BLOCK)`` shared arrays (transposed so
+    consecutive lanes are contiguous -> bank-conflict-free), indexed by
+    ``threadIdx.x``. No scratch is passed in or written out.
+    """
+    body = _make_body(ode_fn, n_vars, pcoeff, icoeff, dcoeff)
+    shape = (n_vars, _SHARED_BLOCK)
 
-            for j in range(n_vars):
-                u[j, i] = y[j, i] + dt_use * (A21 * k1[j, i])
-            ode_write(u, t + C2 * dt_use, params, k2, i)
-
-            for j in range(n_vars):
-                u[j, i] = y[j, i] + dt_use * (A31 * k1[j, i] + A32 * k2[j, i])
-            ode_write(u, t + C3 * dt_use, params, k3, i)
-
-            for j in range(n_vars):
-                u[j, i] = y[j, i] + dt_use * (
-                    A41 * k1[j, i] + A42 * k2[j, i] + A43 * k3[j, i]
-                )
-            ode_write(u, t + C4 * dt_use, params, k4, i)
-
-            for j in range(n_vars):
-                u[j, i] = y[j, i] + dt_use * (
-                    A51 * k1[j, i] + A52 * k2[j, i] + A53 * k3[j, i] + A54 * k4[j, i]
-                )
-            ode_write(u, t + C5 * dt_use, params, k5, i)
-
-            for j in range(n_vars):
-                u[j, i] = y[j, i] + dt_use * (
-                    A61 * k1[j, i]
-                    + A62 * k2[j, i]
-                    + A63 * k3[j, i]
-                    + A64 * k4[j, i]
-                    + A65 * k5[j, i]
-                )
-            ode_write(u, t + C6 * dt_use, params, k6, i)
-
-            for j in range(n_vars):
-                u[j, i] = y[j, i] + dt_use * (
-                    B1 * k1[j, i]
-                    + B2 * k2[j, i]
-                    + B3 * k3[j, i]
-                    + B4 * k4[j, i]
-                    + B5 * k5[j, i]
-                    + B6 * k6[j, i]
-                )
-            ode_write(u, t + C7 * dt_use, params, k7, i)
-
-            err_sum = 0.0
-            for j in range(n_vars):
-                err_est = dt_use * (
-                    E1 * k1[j, i]
-                    + E2 * k2[j, i]
-                    + E3 * k3[j, i]
-                    + E4 * k4[j, i]
-                    + E5 * k5[j, i]
-                    + E6 * k6[j, i]
-                    + E7 * k7[j, i]
-                )
-                scale = atol + rtol * max(abs(y[j, i]), abs(u[j, i]))
-                r = weights[j, i] * err_est / scale
-                err_sum += r * r
-            err_norm = math.sqrt(err_sum / n_vars)
-            accept = err_norm <= 1.0 and not math.isnan(err_norm)
-
-            if accept:
-                t_new = t + dt_use
-                for j in range(n_vars):
-                    y[j, i] = u[j, i]
-                accepted_steps += 1
-                has_fsal = True
-            else:
-                t_new = t
-                rejected_steps += 1
-                for j in range(n_vars):
-                    k7[j, i] = 0.0
-                has_fsal = False
-
-            reached = accept and (
-                abs(t_new - next_target) <= 1e-12 * max(1.0, abs(next_target))
-            )
-            if reached:
-                for j in range(n_vars):
-                    hist[i, save_idx, j] = y[j, i]
-                save_idx += 1
-
-            if math.isnan(err_norm) or err_norm > 1e18:
-                safe_err = 1e18
-            elif err_norm == 0.0:
-                safe_err = 1e-18
-            else:
-                safe_err = err_norm
-            factor = SAFETY * safe_err**e1 * err_prev**e2 * err_prev2**e3
-            # Advance the PID error history only on accepted steps.
-            if accept:
-                err_prev2 = err_prev
-                err_prev = safe_err
-            if factor < FACTOR_MIN:
-                factor = FACTOR_MIN
-            elif factor > FACTOR_MAX:
-                factor = FACTOR_MAX
-            dt = dt_use * factor
-            t = t_new
-            n_steps += 1
-
-        accepted_out[i] = accepted_steps
-        rejected_out[i] = rejected_steps
-        loop_out[i] = n_steps
+    @cuda.jit
+    def kernel(
+        y0,
+        times,
+        params,
+        dt0,
+        rtol,
+        atol,
+        max_steps,
+        weights,
+        hist,
+        accepted_out,
+        rejected_out,
+        loop_out,
+    ):
+        i = cuda.grid(1)
+        tx = cuda.threadIdx.x
+        if i >= y0.shape[1]:
+            return
+        y = cuda.shared.array(shape=shape, dtype=np.float64)
+        u = cuda.shared.array(shape=shape, dtype=np.float64)
+        k1 = cuda.shared.array(shape=shape, dtype=np.float64)
+        k2 = cuda.shared.array(shape=shape, dtype=np.float64)
+        k3 = cuda.shared.array(shape=shape, dtype=np.float64)
+        k4 = cuda.shared.array(shape=shape, dtype=np.float64)
+        k5 = cuda.shared.array(shape=shape, dtype=np.float64)
+        k6 = cuda.shared.array(shape=shape, dtype=np.float64)
+        k7 = cuda.shared.array(shape=shape, dtype=np.float64)
+        body(
+            y0,
+            times,
+            params,
+            dt0,
+            rtol,
+            atol,
+            max_steps,
+            weights,
+            hist,
+            accepted_out,
+            rejected_out,
+            loop_out,
+            y,
+            u,
+            k1,
+            k2,
+            k3,
+            k4,
+            k5,
+            k6,
+            k7,
+            i,
+            tx,
+        )
 
     return kernel
 
@@ -346,6 +530,7 @@ def prepare_solve(
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
+    backend="auto",
 ):
     del batch_size
     y0_arr, times, params_arr, dt0 = _normalize_inputs(
@@ -364,10 +549,16 @@ def prepare_solve(
     workspace.params_dev.copy_to_device(params_arr)
     workspace.weights_dev.copy_to_device(np.ascontiguousarray(weights_arr.T))
 
-    threads = 128
+    uses_shared = _use_shared_backend(n, n_vars, backend)
+    if uses_shared:
+        kernel = _make_shared_kernel(ode_fn, n_vars, pcoeff, icoeff, dcoeff)
+        threads = _SHARED_BLOCK
+    else:
+        kernel = _make_kernel(ode_fn, n_vars, pcoeff, icoeff, dcoeff)
+        threads = 128
     blocks = (n + threads - 1) // threads
     return PreparedSolve(
-        kernel=_make_kernel(ode_fn, n_vars, pcoeff, icoeff, dcoeff),
+        kernel=kernel,
         workspace=workspace,
         dt0=np.float64(dt0),
         rtol=np.float64(rtol),
@@ -375,11 +566,15 @@ def prepare_solve(
         max_steps=np.int32(max_steps),
         blocks=blocks,
         threads=threads,
+        uses_shared=uses_shared,
     )
 
 
 def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=True):
     workspace = prepared.workspace
+    # The shared-memory kernel allocates its stage workspace in shared memory and
+    # takes no scratch arrays; the global kernel takes the nine work buffers.
+    scratch = () if prepared.uses_shared else tuple(workspace.work)
     prepared.kernel[prepared.blocks, prepared.threads](
         workspace.y0_dev,
         workspace.times_dev,
@@ -393,7 +588,7 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
         workspace.accepted_dev,
         workspace.rejected_dev,
         workspace.loop_dev,
-        *workspace.work,
+        *scratch,
     )
     cuda.synchronize()
 
@@ -442,6 +637,41 @@ def _make_jax_launch(
     return make_launch(kernel, argtypes, grid=blocks, block=threads)
 
 
+@functools.cache
+def _make_shared_jax_launch(
+    ode_fn,
+    n: int,
+    n_vars: int,
+    n_save: int,
+    n_params: int,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+):
+    kernel = _make_shared_kernel(ode_fn, n_vars, pcoeff, icoeff, dcoeff)
+    f64_2d = types.float64[:, ::1]
+    f64_1d = types.float64[::1]
+    i32_1d = types.int32[::1]
+    # No scratch arrays: the shared kernel keeps its stage workspace on chip.
+    argtypes = (
+        f64_2d,
+        f64_1d,
+        f64_2d,
+        types.float64,
+        types.float64,
+        types.float64,
+        types.int32,
+        f64_2d,
+        types.float64[:, :, ::1],
+        i32_1d,
+        i32_1d,
+        i32_1d,
+    )
+    threads = _SHARED_BLOCK
+    blocks = (n + threads - 1) // threads
+    return make_launch(kernel, argtypes, grid=blocks, block=threads)
+
+
 def solve(
     ode_fn,
     y0,
@@ -458,6 +688,7 @@ def solve(
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
+    backend="auto",
 ):
     """JAX-callable Tsit5 custom-kernel solve.
 
@@ -470,6 +701,11 @@ def solve(
 
     ``pcoeff``/``icoeff``/``dcoeff`` are the PID step-controller gains; the
     default ``(0, 1, 0)`` is the classic I-controller.
+
+    ``backend`` selects the kernel: ``"auto"`` (default) uses the shared-memory
+    kernel for small ensembles at low dimension and the transposed-global kernel
+    otherwise; ``"shared"`` and ``"global"`` force a backend (``"shared"`` errors
+    if ``n_vars`` exceeds the shared-memory capacity).
     """
 
     def solve_impl(y0_arr, t_span_arr, params_arr):
@@ -488,6 +724,7 @@ def solve(
             pcoeff=pcoeff,
             icoeff=icoeff,
             dcoeff=dcoeff,
+            backend=backend,
         )
 
     return make_custom_vmap_solver(
@@ -513,6 +750,7 @@ def _solve_impl(
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
+    backend="auto",
 ):
     del batch_size
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
@@ -527,27 +765,36 @@ def _solve_impl(
     y0_t = y0_arr.T
     weights_t = weights_arr.T
 
-    launch = _make_jax_launch(
-        ode_fn, n, n_vars, n_save, n_params, pcoeff, icoeff, dcoeff
+    inputs = (y0_t, times, params_arr, weights_t)
+    input_kinds = (
+        ABI_ARRAY,
+        ABI_ARRAY,
+        ABI_ARRAY,
+        ABI_SCALAR_F64,
+        ABI_SCALAR_F64,
+        ABI_SCALAR_F64,
+        ABI_SCALAR_I32,
+        ABI_ARRAY,
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
-    work_spec = jax.ShapeDtypeStruct((n_vars, n), jnp.float64)
-    output_specs = (hist_spec, int_spec, int_spec, int_spec) + (work_spec,) * 9
+    if _use_shared_backend(n, n_vars, backend):
+        launch = _make_shared_jax_launch(
+            ode_fn, n, n_vars, n_save, n_params, pcoeff, icoeff, dcoeff
+        )
+        # Shared kernel keeps its stage workspace on chip: no scratch outputs.
+        output_specs = (hist_spec, int_spec, int_spec, int_spec)
+    else:
+        launch = _make_jax_launch(
+            ode_fn, n, n_vars, n_save, n_params, pcoeff, icoeff, dcoeff
+        )
+        work_spec = jax.ShapeDtypeStruct((n_vars, n), jnp.float64)
+        output_specs = (hist_spec, int_spec, int_spec, int_spec) + (work_spec,) * 9
     result = ffi_abi_call(
         launch,
-        (y0_t, times, params_arr, weights_t),
+        inputs,
         output_specs,
-        input_kinds=(
-            ABI_ARRAY,
-            ABI_ARRAY,
-            ABI_ARRAY,
-            ABI_SCALAR_F64,
-            ABI_SCALAR_F64,
-            ABI_SCALAR_F64,
-            ABI_SCALAR_I32,
-            ABI_ARRAY,
-        ),
+        input_kinds=input_kinds,
         output_kinds=(ABI_ARRAY,) * len(output_specs),
         scalar_f64_values=(dt0, rtol, atol),
         scalar_i32_values=(max_steps,),

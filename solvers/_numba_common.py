@@ -169,17 +169,21 @@ def make_cuda_transposed_vector_writer(fn, n_vars: int):
     """Like :func:`make_cuda_vector_writer`, but for transposed (SoA) state.
 
     State/work arrays are laid out ``(n_vars, n)`` so that for a fixed component
-    the trajectory axis is contiguous. The strided column ``y[:, i]`` passed to
+    the trajectory axis is contiguous. The strided column ``y[:, s]`` passed to
     the callback is coalesced across the warp (all lanes read the same component
-    at consecutive ``i``), so no per-lane gather is needed.
+    at consecutive ``s``), so no per-lane gather is needed. ``prow`` is the
+    trajectory's parameter row and ``s`` indexes the column of both the input
+    state and the output array; this lets the same writer drive a global
+    workspace (``s`` = global trajectory index) or a per-block shared workspace
+    (``s`` = thread-within-block index).
     """
     fn_device = as_cuda_device(fn)
 
     @cuda.jit(device=True)
-    def write_vector(y, t, p, out, i):
-        values = fn_device(y[:, i], t, p[i])
+    def write_vector(y, t, prow, out, s):
+        values = fn_device(y[:, s], t, prow)
         for j in range(n_vars):
-            out[j, i] = values[j]
+            out[j, s] = values[j]
 
     return write_vector
 
