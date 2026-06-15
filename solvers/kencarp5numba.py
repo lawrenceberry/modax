@@ -92,14 +92,8 @@ def clear_caches() -> None:
 
 @dataclass
 class Workspace(NumbaWorkspace):
-    y_dev: Any
     u_dev: Any
     tmp_dev: Any
-    base_dev: Any
-    rhs_dev: Any
-    stage_y_dev: Any
-    stage_fe_dev: Any
-    stage_fi_dev: Any
     weights_dev: Any
 
 
@@ -114,7 +108,7 @@ def make_lu_solver(
     n_vars: int,
     *,
     precision=np.float64,
-    batches_per_block=1,
+    batches_per_block="suggested",
     block_dim="suggested",
 ):
     return LUPivotSolver(
@@ -143,14 +137,8 @@ def get_workspace(
         accepted_dev=cuda.device_array(n, dtype=np.int32),
         rejected_dev=cuda.device_array(n, dtype=np.int32),
         loop_dev=cuda.device_array(n, dtype=np.int32),
-        y_dev=cuda.device_array((n, n_vars), dtype=np.float64),
         u_dev=cuda.device_array((n, n_vars), dtype=np.float64),
         tmp_dev=cuda.device_array((n, n_vars), dtype=np.float64),
-        base_dev=cuda.device_array((n, n_vars), dtype=np.float64),
-        rhs_dev=cuda.device_array((n, n_vars), dtype=np.float64),
-        stage_y_dev=cuda.device_array((n, 8, n_vars), dtype=np.float64),
-        stage_fe_dev=cuda.device_array((n, 8, n_vars), dtype=np.float64),
-        stage_fi_dev=cuda.device_array((n, 8, n_vars), dtype=np.float64),
         weights_dev=cuda.device_array((n, n_vars), dtype=np.float64),
     )
     cache[key] = workspace
@@ -368,6 +356,7 @@ def _make_kernel(
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
     lu_precision: str = "fp64",
+    batches_per_block="suggested",
 ):
     # PID step-control exponents (Soderlind). Defaults (0, 1, 0) give E1=EXPONENT
     # and E2=E3=0, recovering the elementary I-controller exactly.
@@ -380,7 +369,9 @@ def _make_kernel(
     # not the converged stage solution. fp32 also halves the LU shared-memory
     # footprint.
     lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
-    lu_solver = make_lu_solver(n_vars, precision=lu_dtype, batches_per_block=1)
+    lu_solver = make_lu_solver(
+        n_vars, precision=lu_dtype, batches_per_block=batches_per_block
+    )
     explicit_ode_write = make_cuda_striped_vector_writer(explicit_ode_fn, n_vars)
     implicit_ode_write = make_cuda_striped_vector_writer(implicit_ode_fn, n_vars)
     implicit_jac_device = as_cuda_device(implicit_jac_fn)
@@ -408,6 +399,8 @@ def _make_kernel(
     a_size = int(lu_solver.a_size())
     b_size = int(lu_solver.b_size())
     ipiv_size = int(lu_solver.ipiv_size)
+    vec_size = batches_per_block * n_vars
+    stage_vec_size = batches_per_block * 8 * n_vars
 
     @cuda.jit
     def kernel(
@@ -423,14 +416,8 @@ def _make_kernel(
         accepted_out,
         rejected_out,
         loop_out,
-        y,
-        u,
-        tmp,
-        base_vec,
-        rhs,
-        stage_y,
-        stage_fe,
-        stage_fi,
+        u_global,
+        tmp_global,
     ):
         tx = cuda.threadIdx.x
         batch = tx % batches_per_block
@@ -442,253 +429,423 @@ def _make_kernel(
         i = block_start + batch
         a_offset = batch * n_vars * n_vars
         b_offset = batch * n_vars
+        v_offset = batch * n_vars
+        s_offset = batch * 8 * n_vars
+
+        n_save = times.shape[0]
+        tf = times[n_save - 1]
 
         smem_lu = cuda.shared.array(shape=a_size, dtype=lu_dtype)
         smem_rhs = cuda.shared.array(shape=b_size, dtype=lu_dtype)
         smem_ipiv = cuda.shared.array(shape=ipiv_size, dtype=np.int32)
         smem_info = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
-        smem_delta = cuda.shared.array(shape=block_threads, dtype=np.float64)
-        smem_dt = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
-        smem_failed = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
-        smem_converged = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
 
-        for j in range(n_vars):
-            if i < y0.shape[0] and j % batch_lanes == lane:
-                y[i, j] = y0[i, j]
-                u[i, j] = y0[i, j]
-                hist[i, 0, j] = y0[i, j]
+        # The complete per-trajectory state lives in shared memory: the working
+        # vectors below and the eight-stage history (solution, explicit RHS,
+        # implicit RHS) further down. The global ``u``/``tmp`` arrays are only
+        # marshalling scratch for the user ODE/Jacobian callbacks (which read and
+        # write global rows ``[i]``); no integration state round-trips through
+        # global memory. Keeping the stage history in shared memory caps the
+        # usable ODE dimension at the per-block shared-memory budget.
+        smem_y = cuda.shared.array(shape=vec_size, dtype=np.float64)
+        smem_u = cuda.shared.array(shape=vec_size, dtype=np.float64)
+        smem_base = cuda.shared.array(shape=vec_size, dtype=np.float64)
+        smem_stage_y = cuda.shared.array(shape=stage_vec_size, dtype=np.float64)
+        smem_stage_fe = cuda.shared.array(shape=stage_vec_size, dtype=np.float64)
+        smem_stage_fi = cuda.shared.array(shape=stage_vec_size, dtype=np.float64)
+
+        smem_delta = cuda.shared.array(shape=block_threads, dtype=np.float64)
+        smem_active = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
+        smem_t = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
+        smem_dt = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
+        smem_dt_use = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
+        smem_next_target = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
+        smem_err_prev = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
+        smem_err_prev2 = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
+        smem_save_idx = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
+        smem_n_steps = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
+        smem_accepted = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
+        smem_rejected = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
+        smem_converged = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
+        smem_failed = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
+        smem_accept = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
+        smem_reached = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
+        smem_newton_go = cuda.shared.array(shape=1, dtype=np.int32)
+        smem_continue = cuda.shared.array(shape=1, dtype=np.int32)
+
+        if i < y0.shape[0]:
+            for j in range(lane, n_vars, batch_lanes):
+                val = y0[i, j]
+                smem_y[v_offset + j] = val
+                hist[i, 0, j] = val
+        if tx < batches_per_block:
+            if i < y0.shape[0]:
+                smem_t[batch] = times[0]
+                smem_save_idx[batch] = 1
+            else:
+                smem_t[batch] = tf
+                smem_save_idx[batch] = n_save
+            smem_dt[batch] = dt0
+            smem_n_steps[batch] = 0
+            smem_accepted[batch] = 0
+            smem_rejected[batch] = 0
+            smem_err_prev[batch] = 1.0
+            smem_err_prev2[batch] = 1.0
+        if tx == 0:
+            smem_continue[0] = 1
         cuda.syncthreads()
 
-        n_save = times.shape[0]
-        t = times[0]
-        tf = times[n_save - 1]
-        dt = dt0
-        save_idx = 1
-        n_steps = 0
-        accepted = 0
-        rejected = 0
-        # PID error history (only lane 0 reads/writes these).
-        err_prev = 1.0
-        err_prev2 = 1.0
+        while smem_continue[0] != 0:
+            if lane == 0:
+                if (
+                    i < y0.shape[0]
+                    and smem_save_idx[batch] < n_save
+                    and smem_t[batch] < tf
+                    and smem_n_steps[batch] < max_steps
+                ):
+                    smem_active[batch] = 1
+                else:
+                    smem_active[batch] = 0
+            cuda.syncthreads()
+            active = smem_active[batch] != 0
 
-        while i < y0.shape[0] and save_idx < n_save and t < tf and n_steps < max_steps:
-            next_target = times[save_idx]
-            dt_use = dt
-            if dt_use > next_target - t:
-                dt_use = next_target - t
-            if dt_use < 1e-30:
-                dt_use = 1e-30
+            # Clamp the trial step to the next save target.
+            if lane == 0:
+                if active:
+                    next_target = times[smem_save_idx[batch]]
+                    dt_use = smem_dt[batch]
+                    if dt_use > next_target - smem_t[batch]:
+                        dt_use = next_target - smem_t[batch]
+                    if dt_use < 1e-30:
+                        dt_use = 1e-30
+                    smem_next_target[batch] = next_target
+                    smem_dt_use[batch] = dt_use
+                else:
+                    smem_dt_use[batch] = dt0
+                smem_failed[batch] = 0
+            cuda.syncthreads()
 
-            failed = False
-            for j in range(lane, n_vars, batch_lanes):
-                stage_y[i, 0, j] = y[i, j]
-                u[i, j] = y[i, j]
-            cuda.syncthreads()
-            explicit_ode_write(u, t, params, tmp, i, lane, batch_lanes)
-            cuda.syncthreads()
-            for j in range(lane, n_vars, batch_lanes):
-                stage_fe[i, 0, j] = tmp[i, j]
-                if not math.isfinite(tmp[i, j]):
-                    failed = True
-            cuda.syncthreads()
-            implicit_ode_write(u, t, params, tmp, i, lane, batch_lanes)
-            cuda.syncthreads()
-            for j in range(lane, n_vars, batch_lanes):
-                stage_fi[i, 0, j] = tmp[i, j]
-                if not math.isfinite(tmp[i, j]):
-                    failed = True
-
-            # --- Freeze the implicit Jacobian once per step -----------------
-            # KenCarp5 is an ESDIRK method: every implicit diagonal coefficient
-            # equals GAMMA, so each implicit stage's Newton iteration matrix is
-            # the same W = I - gamma*dt*J (gamma and dt are fixed within a
-            # step).  Evaluate J once, at the step-start point (u == y, time t),
-            # and factor W a single time.  The factors held in smem_lu /
-            # smem_ipiv are then reused by every stage's solve and every
-            # modified-Newton iteration below.  This is safe because each
-            # Newton iteration still forms the residual
-            # u - base - gamma*dt*f_impl(u) exactly; a frozen iteration matrix
-            # changes only Newton's convergence rate, not the stage solution it
-            # converges to.  J is NOT reused across steps -- it is re-evaluated
-            # and re-factored every step.
+            dt_use = smem_dt_use[batch]
             gamma_dt = GAMMA * dt_use
-            assemble_w(u, t, params, smem_lu, a_offset, gamma_dt, i, lane, batch_lanes)
+
+            # --- Stage 0: explicit/implicit RHS at the step start ----------
+            if active:
+                for j in range(lane, n_vars, batch_lanes):
+                    val = smem_y[v_offset + j]
+                    smem_u[v_offset + j] = val
+                    u_global[i, j] = val
+                    smem_stage_y[s_offset + j] = val
+            cuda.syncthreads()
+            if active:
+                explicit_ode_write(
+                    u_global, smem_t[batch], params, tmp_global, i, lane, batch_lanes
+                )
+            cuda.syncthreads()
+            if active:
+                for j in range(lane, n_vars, batch_lanes):
+                    fe0 = tmp_global[i, j]
+                    smem_stage_fe[s_offset + j] = fe0
+                    if not math.isfinite(fe0):
+                        smem_failed[batch] = 1
+            cuda.syncthreads()
+            if active:
+                implicit_ode_write(
+                    u_global, smem_t[batch], params, tmp_global, i, lane, batch_lanes
+                )
+            cuda.syncthreads()
+            if active:
+                for j in range(lane, n_vars, batch_lanes):
+                    fi0 = tmp_global[i, j]
+                    smem_stage_fi[s_offset + j] = fi0
+                    if not math.isfinite(fi0):
+                        smem_failed[batch] = 1
+            cuda.syncthreads()
+
+            # --- Freeze and factor the Newton matrix W once per step -------
+            # KenCarp5 is an ESDIRK method: every implicit diagonal coefficient
+            # equals GAMMA, so each implicit stage shares the iteration matrix
+            # W = I - gamma*dt*J.  Evaluate J once at the step-start point
+            # (u == y, time t) and factor W a single time; the factors in
+            # smem_lu/smem_ipiv are reused by every stage solve and every Newton
+            # iteration.  Inactive batches load an identity so the cooperative,
+            # block-wide factorization and solves stay well defined across the
+            # whole block.
+            if active:
+                assemble_w(
+                    u_global,
+                    smem_t[batch],
+                    params,
+                    smem_lu,
+                    a_offset,
+                    gamma_dt,
+                    i,
+                    lane,
+                    batch_lanes,
+                )
+            else:
+                for idx_local in range(lane, n_vars * n_vars, batch_lanes):
+                    row = idx_local // n_vars
+                    col = idx_local - row * n_vars
+                    smem_lu[a_offset + idx_local] = lu_dtype(1.0 if row == col else 0.0)
             cuda.syncthreads()
             lu_solver.factorize(smem_lu, smem_ipiv, smem_info)
             cuda.syncthreads()
 
+            # --- Implicit stages 1..7 --------------------------------------
             for stage in range(1, 8):
-                t_stage = t + _c(stage) * dt_use
-                for j in range(lane, n_vars, batch_lanes):
-                    base = y[i, j]
-                    pred = 0.0
-                    for prev in range(stage):
-                        ae = _a_explicit(stage, prev)
-                        ai = _a_implicit(stage, prev)
-                        pc = _predictor_coeff(stage, prev)
-                        if ae != 0.0:
-                            base += dt_use * ae * stage_fe[i, prev, j]
-                        if ai != 0.0:
-                            base += dt_use * ai * stage_fi[i, prev, j]
-                        if pc != 0.0:
-                            pred += pc * stage_y[i, prev, j]
-                    base_vec[i, j] = base
-                    rhs[i, j] = base
-                    u[i, j] = pred
-                cuda.syncthreads()
-                if lane == 0:
-                    smem_failed[batch] = 0
-                cuda.syncthreads()
-                if failed:
-                    smem_failed[batch] = 1
-                cuda.syncthreads()
-                failed = smem_failed[batch] != 0
-
-                converged = False
-                it = 0
-                while (not converged) and (not failed) and it < NEWTON_MAX_ITERS:
-                    # Modified Newton: re-evaluate only f_impl(u) to build the
-                    # residual exactly; the iteration matrix W is the cached
-                    # step-start factorization in smem_lu/smem_ipiv (no
-                    # re-Jacobian, no re-factorize this iteration).
-                    implicit_ode_write(u, t_stage, params, tmp, i, lane, batch_lanes)
-                    cuda.syncthreads()
-                    delta_norm_acc = 0.0
+                t_stage = smem_t[batch] + _c(stage) * dt_use
+                if active:
                     for j in range(lane, n_vars, batch_lanes):
-                        rhs[i, j] = u[i, j] - base_vec[i, j] - gamma_dt * tmp[i, j]
-                        smem_rhs[b_offset + j] = lu_dtype(rhs[i, j])
+                        base = smem_y[v_offset + j]
+                        pred = 0.0
+                        for prev in range(stage):
+                            ae = _a_explicit(stage, prev)
+                            ai = _a_implicit(stage, prev)
+                            pc = _predictor_coeff(stage, prev)
+                            if ae != 0.0:
+                                base += (
+                                    dt_use
+                                    * ae
+                                    * smem_stage_fe[s_offset + prev * n_vars + j]
+                                )
+                            if ai != 0.0:
+                                base += (
+                                    dt_use
+                                    * ai
+                                    * smem_stage_fi[s_offset + prev * n_vars + j]
+                                )
+                            if pc != 0.0:
+                                pred += pc * smem_stage_y[s_offset + prev * n_vars + j]
+                        smem_base[v_offset + j] = base
+                        smem_u[v_offset + j] = pred
+                if lane == 0:
+                    smem_converged[batch] = 0
+                cuda.syncthreads()
+
+                # Modified-Newton iteration with the frozen factorization. The
+                # trip count is data dependent per trajectory, so the loop runs
+                # a fixed maximum and a block-wide flag breaks every lane out
+                # together once all active batches have converged or failed,
+                # keeping the cooperative solve and every barrier uniform.
+                for _it in range(NEWTON_MAX_ITERS):
+                    do_iter = (
+                        active
+                        and smem_converged[batch] == 0
+                        and smem_failed[batch] == 0
+                    )
+                    if do_iter:
+                        for j in range(lane, n_vars, batch_lanes):
+                            u_global[i, j] = smem_u[v_offset + j]
+                    cuda.syncthreads()
+                    if do_iter:
+                        implicit_ode_write(
+                            u_global, t_stage, params, tmp_global, i, lane, batch_lanes
+                        )
+                    cuda.syncthreads()
+                    if do_iter:
+                        for j in range(lane, n_vars, batch_lanes):
+                            res = (
+                                smem_u[v_offset + j]
+                                - smem_base[v_offset + j]
+                                - gamma_dt * tmp_global[i, j]
+                            )
+                            smem_rhs[b_offset + j] = lu_dtype(res)
+                    else:
+                        for j in range(lane, n_vars, batch_lanes):
+                            smem_rhs[b_offset + j] = lu_dtype(0.0)
                     cuda.syncthreads()
                     lu_solver.solve(smem_lu, smem_ipiv, smem_rhs)
                     cuda.syncthreads()
-                    for j in range(lane, n_vars, batch_lanes):
-                        delta = smem_rhs[b_offset + j]
-                        rhs[i, j] = delta
-                        u_new = u[i, j] - delta
-                        scale = atol + rtol * max(math.fabs(u[i, j]), math.fabs(u_new))
-                        ratio = delta / scale
-                        delta_norm_acc += ratio * ratio
-                        if not math.isfinite(u_new) or not math.isfinite(delta):
-                            failed = True
-                        u[i, j] = u_new
-                    smem_delta[tx] = delta_norm_acc
-                    if lane == 0:
-                        smem_failed[batch] = 0
+                    delta_acc = 0.0
+                    if do_iter:
+                        for j in range(lane, n_vars, batch_lanes):
+                            delta = np.float64(smem_rhs[b_offset + j])
+                            u_old = smem_u[v_offset + j]
+                            u_new = u_old - delta
+                            scale = atol + rtol * max(
+                                math.fabs(u_old), math.fabs(u_new)
+                            )
+                            ratio = delta / scale
+                            delta_acc += ratio * ratio
+                            if not math.isfinite(u_new) or not math.isfinite(delta):
+                                smem_failed[batch] = 1
+                            smem_u[v_offset + j] = u_new
+                    smem_delta[tx] = delta_acc
                     cuda.syncthreads()
-                    if failed:
-                        smem_failed[batch] = 1
-                    cuda.syncthreads()
-                    if lane == 0:
+                    if lane == 0 and do_iter:
+                        acc = smem_delta[tx]
                         for other_lane in range(1, batch_lanes):
-                            smem_delta[tx] += smem_delta[
-                                batch + other_lane * batches_per_block
-                            ]
-                        delta_norm = math.sqrt(smem_delta[tx] / n_vars)
-                        if delta_norm <= 1.0 and not math.isnan(delta_norm):
-                            smem_converged[batch] = 1
-                        else:
-                            smem_converged[batch] = 0
+                            acc += smem_delta[batch + other_lane * batches_per_block]
+                        delta_norm = math.sqrt(acc / n_vars)
                         if math.isnan(delta_norm):
                             smem_failed[batch] = 1
+                        elif delta_norm <= 1.0:
+                            smem_converged[batch] = 1
                     cuda.syncthreads()
-                    converged = smem_converged[batch] != 0
-                    failed = smem_failed[batch] != 0
-                    it += 1
-                if not converged:
-                    failed = True
-                cuda.syncthreads()
-                implicit_ode_write(u, t_stage, params, tmp, i, lane, batch_lanes)
-                cuda.syncthreads()
-                for j in range(lane, n_vars, batch_lanes):
-                    stage_y[i, stage, j] = u[i, j]
-                    stage_fi[i, stage, j] = tmp[i, j]
-                    if not math.isfinite(tmp[i, j]) or not math.isfinite(u[i, j]):
-                        failed = True
+                    if tx == 0:
+                        go = 0
+                        for b in range(batches_per_block):
+                            if (
+                                smem_active[b] != 0
+                                and smem_converged[b] == 0
+                                and smem_failed[b] == 0
+                            ):
+                                go = 1
+                        smem_newton_go[0] = go
+                    cuda.syncthreads()
+                    if smem_newton_go[0] == 0:
+                        break
 
-                cuda.syncthreads()
-                explicit_ode_write(u, t_stage, params, tmp, i, lane, batch_lanes)
-                cuda.syncthreads()
-                for j in range(lane, n_vars, batch_lanes):
-                    stage_fe[i, stage, j] = tmp[i, j]
-                    if not math.isfinite(tmp[i, j]):
-                        failed = True
+                if lane == 0 and active and smem_converged[batch] == 0:
+                    smem_failed[batch] = 1
                 cuda.syncthreads()
 
-            err_norm_acc = 0.0
-            for j in range(lane, n_vars, batch_lanes):
-                y_new = stage_y[i, 7, j]
-                err_est = 0.0
-                for stage in range(8):
-                    err_est += (
-                        dt_use
-                        * _b_err(stage)
-                        * (stage_fe[i, stage, j] + stage_fi[i, stage, j])
-                    )
-                scale = atol + rtol * max(math.fabs(y[i, j]), math.fabs(y_new))
-                r = weights[i, j] * err_est / scale
-                err_norm_acc += r * r
-                if not math.isfinite(y_new) or not math.isfinite(err_est):
-                    failed = True
-            smem_delta[tx] = err_norm_acc
-            if lane == 0:
-                smem_failed[batch] = 0
-            cuda.syncthreads()
-            if failed:
-                smem_failed[batch] = 1
-            cuda.syncthreads()
-            if lane == 0:
-                for other_lane in range(1, batch_lanes):
-                    smem_delta[tx] += smem_delta[batch + other_lane * batches_per_block]
-                err_norm = math.sqrt(smem_delta[tx] / n_vars)
-                accept = (
-                    err_norm <= 1.0
-                    and (not math.isnan(err_norm))
-                    and smem_failed[batch] == 0
-                )
-                if smem_failed[batch] != 0 or math.isnan(err_norm) or err_norm > 1e18:
-                    safe_err = 1e18
-                elif err_norm == 0.0:
-                    safe_err = 1e-18
-                else:
-                    safe_err = err_norm
-                factor = SAFETY * safe_err**e1 * err_prev**e2 * err_prev2**e3
-                # Advance the PID error history only on accepted steps.
-                if accept:
-                    err_prev2 = err_prev
-                    err_prev = safe_err
-                if factor < FACTOR_MIN:
-                    factor = FACTOR_MIN
-                elif factor > FACTOR_MAX:
-                    factor = FACTOR_MAX
-                smem_dt[batch] = dt_use * factor
-                smem_converged[batch] = 1 if accept else 0
-            cuda.syncthreads()
-            accept = smem_converged[batch] != 0
-            dt = smem_dt[batch]
-
-            if accept:
-                t_new = t + dt_use
-                t = t_new
-                accepted += 1
-                for j in range(lane, n_vars, batch_lanes):
-                    y[i, j] = stage_y[i, 7, j]
-                cuda.syncthreads()
-                if math.fabs(t_new - next_target) <= 1e-12 * max(
-                    1.0, math.fabs(next_target)
-                ):
+                # Converged stage solution and its explicit/implicit RHS.
+                if active:
                     for j in range(lane, n_vars, batch_lanes):
-                        hist[i, save_idx, j] = y[i, j]
-                    cuda.syncthreads()
-                    save_idx += 1
-            else:
-                rejected += 1
+                        sol = smem_u[v_offset + j]
+                        smem_stage_y[s_offset + stage * n_vars + j] = sol
+                        u_global[i, j] = sol
+                cuda.syncthreads()
+                if active:
+                    implicit_ode_write(
+                        u_global, t_stage, params, tmp_global, i, lane, batch_lanes
+                    )
+                cuda.syncthreads()
+                if active:
+                    for j in range(lane, n_vars, batch_lanes):
+                        fij = tmp_global[i, j]
+                        smem_stage_fi[s_offset + stage * n_vars + j] = fij
+                        if not math.isfinite(fij):
+                            smem_failed[batch] = 1
+                cuda.syncthreads()
+                if active:
+                    explicit_ode_write(
+                        u_global, t_stage, params, tmp_global, i, lane, batch_lanes
+                    )
+                cuda.syncthreads()
+                if active:
+                    for j in range(lane, n_vars, batch_lanes):
+                        fej = tmp_global[i, j]
+                        smem_stage_fe[s_offset + stage * n_vars + j] = fej
+                        if not math.isfinite(fej):
+                            smem_failed[batch] = 1
+                cuda.syncthreads()
 
-            n_steps += 1
+            # --- Embedded error estimate and PID step control --------------
+            err_acc = 0.0
+            if active:
+                for j in range(lane, n_vars, batch_lanes):
+                    y_new = smem_stage_y[s_offset + 7 * n_vars + j]
+                    err_est = 0.0
+                    for stage in range(8):
+                        err_est += (
+                            dt_use
+                            * _b_err(stage)
+                            * (
+                                smem_stage_fe[s_offset + stage * n_vars + j]
+                                + smem_stage_fi[s_offset + stage * n_vars + j]
+                            )
+                        )
+                    scale = atol + rtol * max(
+                        math.fabs(smem_y[v_offset + j]), math.fabs(y_new)
+                    )
+                    r = weights[i, j] * err_est / scale
+                    err_acc += r * r
+                    if not math.isfinite(y_new) or not math.isfinite(err_est):
+                        smem_failed[batch] = 1
+            smem_delta[tx] = err_acc
+            cuda.syncthreads()
+
+            if lane == 0:
+                if active:
+                    acc = smem_delta[tx]
+                    for other_lane in range(1, batch_lanes):
+                        acc += smem_delta[batch + other_lane * batches_per_block]
+                    err_norm = math.sqrt(acc / n_vars)
+                    accept = (
+                        err_norm <= 1.0
+                        and (not math.isnan(err_norm))
+                        and smem_failed[batch] == 0
+                    )
+                    if (
+                        smem_failed[batch] != 0
+                        or math.isnan(err_norm)
+                        or err_norm > 1e18
+                    ):
+                        safe_err = 1e18
+                    elif err_norm == 0.0:
+                        safe_err = 1e-18
+                    else:
+                        safe_err = err_norm
+                    factor = (
+                        SAFETY
+                        * safe_err**e1
+                        * smem_err_prev[batch] ** e2
+                        * smem_err_prev2[batch] ** e3
+                    )
+                    # Advance the PID error history only on accepted steps.
+                    if accept:
+                        smem_err_prev2[batch] = smem_err_prev[batch]
+                        smem_err_prev[batch] = safe_err
+                    if factor < FACTOR_MIN:
+                        factor = FACTOR_MIN
+                    elif factor > FACTOR_MAX:
+                        factor = FACTOR_MAX
+                    smem_dt[batch] = dt_use * factor
+                    smem_accept[batch] = 1 if accept else 0
+                    reached = 0
+                    if accept:
+                        t_new = smem_t[batch] + dt_use
+                        if math.fabs(t_new - smem_next_target[batch]) <= 1e-12 * max(
+                            1.0, math.fabs(smem_next_target[batch])
+                        ):
+                            reached = 1
+                    smem_reached[batch] = reached
+                else:
+                    smem_accept[batch] = 0
+                    smem_reached[batch] = 0
+            cuda.syncthreads()
+
+            if smem_accept[batch] != 0:
+                for j in range(lane, n_vars, batch_lanes):
+                    smem_y[v_offset + j] = smem_stage_y[s_offset + 7 * n_vars + j]
+            cuda.syncthreads()
+            if smem_reached[batch] != 0:
+                save_idx = smem_save_idx[batch]
+                for j in range(lane, n_vars, batch_lanes):
+                    hist[i, save_idx, j] = smem_y[v_offset + j]
+            cuda.syncthreads()
+
+            if lane == 0 and active:
+                if smem_accept[batch] != 0:
+                    smem_t[batch] += dt_use
+                    smem_accepted[batch] += 1
+                    if smem_reached[batch] != 0:
+                        smem_save_idx[batch] += 1
+                else:
+                    smem_rejected[batch] += 1
+                smem_n_steps[batch] += 1
+            cuda.syncthreads()
+
+            if tx == 0:
+                keep_going = 0
+                for b in range(batches_per_block):
+                    bi = block_start + b
+                    if (
+                        bi < y0.shape[0]
+                        and smem_save_idx[b] < n_save
+                        and smem_t[b] < tf
+                        and smem_n_steps[b] < max_steps
+                    ):
+                        keep_going = 1
+                smem_continue[0] = keep_going
             cuda.syncthreads()
 
         if i < y0.shape[0] and lane == 0:
-            accepted_out[i] = accepted
-            rejected_out[i] = rejected
-            loop_out[i] = n_steps
+            accepted_out[i] = smem_accepted[batch]
+            rejected_out[i] = smem_rejected[batch]
+            loop_out[i] = smem_n_steps[batch]
 
     return kernel, lu_solver
 
@@ -710,6 +867,7 @@ def prepare_solve(
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
+    batches_per_block="suggested",
 ):
     y0_arr, times, params_arr, dt0 = _normalize_inputs(
         y0, t_span, params, first_step, solver_name="KenCarp5"
@@ -732,6 +890,7 @@ def prepare_solve(
         icoeff,
         dcoeff,
         lu_precision,
+        batches_per_block,
     )
     threads = as_launch_block_dim(lu_solver.block_dim)
     batches_per_block = int(lu_solver.batches_per_block)
@@ -765,14 +924,8 @@ def run_prepared(prepared: PreparedSolve, *, return_stats=False, copy_solution=T
         workspace.accepted_dev,
         workspace.rejected_dev,
         workspace.loop_dev,
-        workspace.y_dev,
         workspace.u_dev,
         workspace.tmp_dev,
-        workspace.base_dev,
-        workspace.rhs_dev,
-        workspace.stage_y_dev,
-        workspace.stage_fe_dev,
-        workspace.stage_fi_dev,
     )
     cuda.synchronize()
 
@@ -801,6 +954,7 @@ def _make_jax_launch(
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
     lu_precision: str = "fp64",
+    batches_per_block="suggested",
 ):
     kernel, lu_solver = _make_kernel(
         explicit_ode_fn,
@@ -811,6 +965,7 @@ def _make_jax_launch(
         icoeff,
         dcoeff,
         lu_precision,
+        batches_per_block,
     )
     f64_2d = types.float64[:, ::1]
     f64_1d = types.float64[::1]
@@ -831,12 +986,6 @@ def _make_jax_launch(
         i32_1d,
         f64_2d,
         f64_2d,
-        f64_2d,
-        f64_2d,
-        f64_2d,
-        f64_3d,
-        f64_3d,
-        f64_3d,
     )
     threads = as_launch_block_dim(lu_solver.block_dim)
     batches_per_block = int(lu_solver.batches_per_block)
@@ -862,6 +1011,7 @@ def solve(
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
+    batches_per_block="suggested",
 ):
     """JAX-callable KenCarp5 custom-kernel solve.
 
@@ -877,6 +1027,15 @@ def solve(
 
     ``pcoeff``/``icoeff``/``dcoeff`` are the PID step-controller gains; the
     default ``(0, 1, 0)`` is the classic I-controller.
+
+    ``batches_per_block`` sets how many trajectories are packed into (and solved
+    cooperatively by) a single CUDA block; it is forwarded to the nvmath
+    ``LUPivotSolver`` and the whole kernel is sized from it. The default
+    ``"suggested"`` lets nvmath pick a value tuned for LU throughput; an explicit
+    integer overrides that to trade occupancy against per-trajectory lanes and
+    shared-memory footprint. The full per-trajectory state -- including the
+    eight-stage history -- lives in shared memory, so the usable ODE dimension
+    is bounded by the per-block shared-memory budget.
     """
 
     def solve_impl(y0_arr, t_span_arr, params_arr):
@@ -897,6 +1056,7 @@ def solve(
             pcoeff=pcoeff,
             icoeff=icoeff,
             dcoeff=dcoeff,
+            batches_per_block=batches_per_block,
         )
 
     return make_custom_vmap_solver(
@@ -924,6 +1084,7 @@ def _solve_impl(
     pcoeff=0.0,
     icoeff=1.0,
     dcoeff=0.0,
+    batches_per_block="suggested",
 ):
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
@@ -944,11 +1105,11 @@ def _solve_impl(
         icoeff,
         dcoeff,
         lu_precision,
+        batches_per_block,
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
     work_spec = jax.ShapeDtypeStruct((n, n_vars), jnp.float64)
-    stage_spec = jax.ShapeDtypeStruct((n, 8, n_vars), jnp.float64)
     output_specs = (
         hist_spec,
         int_spec,
@@ -956,12 +1117,6 @@ def _solve_impl(
         int_spec,
         work_spec,
         work_spec,
-        work_spec,
-        work_spec,
-        work_spec,
-        stage_spec,
-        stage_spec,
-        stage_spec,
     )
     result = ffi_abi_call(
         launch,
