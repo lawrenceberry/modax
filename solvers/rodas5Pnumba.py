@@ -187,6 +187,7 @@ def _make_kernel(
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
     lu_precision: str = "fp32",
+    batches_per_block="suggested",
 ):
     # PID step-control exponents (Soderlind). Defaults (0, 1, 0) give E1=EXPONENT
     # and E2=E3=0, recovering the elementary I-controller exactly.
@@ -201,7 +202,9 @@ def _make_kernel(
     # the historical kernel behaviour; fp64 is available for ill-conditioned
     # systems where the FP32 factorisation degrades the step-size control.
     lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
-    lu_solver = make_lu_solver(n_vars, precision=lu_dtype)
+    lu_solver = make_lu_solver(
+        n_vars, precision=lu_dtype, batches_per_block=batches_per_block
+    )
     ode_write = make_cuda_striped_vector_writer(ode_fn, n_vars)
     jac_device = as_cuda_device(jac_fn)
 
@@ -777,6 +780,7 @@ def prepare_solve(
     icoeff=1.0,
     dcoeff=0.0,
     lu_precision: str = "fp32",
+    batches_per_block="suggested",
 ):
     del batch_size
     y0_arr, times, params_arr, dt0 = _normalize_inputs(
@@ -792,7 +796,15 @@ def prepare_solve(
     workspace.weights_dev.copy_to_device(weights_arr)
 
     kernel, lu_solver = _make_kernel(
-        ode_fn, jac_fn, time_jac_fn, n_vars, pcoeff, icoeff, dcoeff, lu_precision
+        ode_fn,
+        jac_fn,
+        time_jac_fn,
+        n_vars,
+        pcoeff,
+        icoeff,
+        dcoeff,
+        lu_precision,
+        batches_per_block,
     )
     batches_per_block = int(lu_solver.batches_per_block)
     threads = as_launch_block_dim(lu_solver.block_dim)
@@ -858,9 +870,18 @@ def _make_jax_launch(
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
     lu_precision: str = "fp32",
+    batches_per_block="suggested",
 ):
     kernel, lu_solver = _make_kernel(
-        ode_fn, jac_fn, time_jac_fn, n_vars, pcoeff, icoeff, dcoeff, lu_precision
+        ode_fn,
+        jac_fn,
+        time_jac_fn,
+        n_vars,
+        pcoeff,
+        icoeff,
+        dcoeff,
+        lu_precision,
+        batches_per_block,
     )
     f64_2d = types.float64[:, ::1]
     f64_1d = types.float64[::1]
@@ -908,6 +929,7 @@ def solve(
     icoeff=1.0,
     dcoeff=0.0,
     lu_precision: str = "fp32",
+    batches_per_block="suggested",
 ):
     """JAX-callable Rodas5 custom-kernel solve.
 
@@ -932,6 +954,13 @@ def solve(
 
     ``pcoeff``/``icoeff``/``dcoeff`` are the PID step-controller gains; the
     default ``(0, 1, 0)`` is the classic I-controller.
+
+    ``batches_per_block`` sets how many trajectories are packed into (and solved
+    cooperatively by) a single CUDA block; it is forwarded to the nvmath
+    ``LUPivotSolver`` and the whole kernel is sized from it. The default
+    ``"suggested"`` lets nvmath pick a value tuned for LU throughput; an explicit
+    integer overrides that to trade occupancy against per-trajectory lanes and
+    shared-memory footprint (bounded by available shared memory).
     """
 
     def solve_impl(y0_arr, t_span_arr, params_arr):
@@ -953,6 +982,7 @@ def solve(
             icoeff=icoeff,
             dcoeff=dcoeff,
             lu_precision=lu_precision,
+            batches_per_block=batches_per_block,
         )
 
     return make_custom_vmap_solver(
@@ -981,6 +1011,7 @@ def _solve_impl(
     icoeff=1.0,
     dcoeff=0.0,
     lu_precision: str = "fp32",
+    batches_per_block="suggested",
 ):
     del batch_size
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
@@ -1002,6 +1033,7 @@ def _solve_impl(
         icoeff,
         dcoeff,
         lu_precision,
+        batches_per_block,
     )
     hist_spec = jax.ShapeDtypeStruct((n, n_save, n_vars), jnp.float64)
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
