@@ -203,22 +203,20 @@ def _solve_impl(
     error_weights_arr = build_error_weights(error_weights, n, n_vars)
 
     def step_factory(params_one):
-        extra_init = (
-            jnp.zeros((n_vars,), dtype=jnp.float64),
-            jnp.bool_(False),
-        )
-
-        def _fresh_k1(y, t, k_fsal, has_fsal):
-            return jax.lax.cond(
-                has_fsal,
-                lambda _: k_fsal,
-                lambda _: eval_ode_fn(ode_fn, y, t, params_one),
-                operand=None,
-            )
+        # FSAL (First Same As Last): Tsit5 has c7 = 1, so an accepted step's
+        # final stage k7 = f(t+dt, y_new) is exactly the next step's first stage
+        # k1 = f(t+dt, y_new); a rejected step retries from the same (t, y) so
+        # its k1 = f(t, y) is unchanged too. We therefore carry the next k1 in
+        # the loop state and never recompute it inside the loop. A per-step
+        # ``lax.cond`` would be defeated here because, under the ensemble vmap,
+        # cond lowers to a select that executes both branches -- evaluating the
+        # RHS anyway. Carrying k1 unconditionally avoids that wasted evaluation,
+        # cutting the explicit RHS evaluations per step from 7 to 6.
+        def extra_init(y0_one, t0):
+            return eval_ode_fn(ode_fn, y0_one, t0, params_one)
 
         def _step_one(y, t, dt, extra):
-            k_fsal, has_fsal = extra
-            k1 = _fresh_k1(y, t, k_fsal, has_fsal)
+            k1 = extra  # carried first stage: FSAL k7 (accept) or reused k1 (reject)
 
             u = y + dt * (_A21 * k1)
             k2 = eval_ode_fn(ode_fn, u, t + _C2 * dt, params_one)
@@ -252,8 +250,9 @@ def _solve_impl(
             return y_new, err_est, jnp.bool_(False), k7
 
         def update_extra(extra, k7, accept):
-            k_fsal, _ = extra
-            return jnp.where(accept, k7, jnp.zeros_like(k_fsal)), accept
+            # Next first stage: k7 on an accepted step (FSAL), otherwise the
+            # current k1 (the retried step starts from the same t, y).
+            return jnp.where(accept, k7, extra)
 
         return _step_one, extra_init, update_extra
 

@@ -299,6 +299,12 @@ def solve_adaptive_ensemble(
         y_init = y0_one.copy()
         hist_init = initial_history(y_init, n_save, n_vars)
         step_one, extra_init, update_extra = step_factory(params_one)
+        # ``extra_init`` may be a plain pytree (implicit solvers) or a callable
+        # that seeds the initial loop-carry from the starting state -- used by
+        # the explicit Tsit5 solver to precompute the first-stage k1 = f(t0, y0)
+        # so the FSAL reuse needs no per-step branch inside the vmapped loop.
+        if callable(extra_init):
+            extra_init = extra_init(y_init, times[0])
 
         def cond_fn(state):
             t, _, _, _, save_idx, n_steps, _, _, _, _, _ = state
