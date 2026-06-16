@@ -78,6 +78,21 @@ _SAFETY = 0.9
 _FACTOR_MIN = 0.2
 _FACTOR_MAX = 10.0
 
+_A = jnp.array(
+    [
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [_A21, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [_A31, _A32, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [_A41, _A42, _A43, 0.0, 0.0, 0.0, 0.0],
+        [_A51, _A52, _A53, _A54, 0.0, 0.0, 0.0],
+        [_A61, _A62, _A63, _A64, _A65, 0.0, 0.0],
+    ],
+    dtype=jnp.float64,
+)
+_C = jnp.array([0.0, _C2, _C3, _C4, _C5, _C6], dtype=jnp.float64)
+_B = jnp.array([_B1, _B2, _B3, _B4, _B5, _B6, _B7], dtype=jnp.float64)
+_E = jnp.array([_E1, _E2, _E3, _E4, _E5, _E6, _E7], dtype=jnp.float64)
+
 
 def _dense_coeffs(theta):
     b1 = (
@@ -237,7 +252,9 @@ def _solve_impl(
     y0_arr, times, params_arr, n, n_vars, _, dt0, bs, n_chunks = normalize_inputs(
         y0, t_span, params, first_step, batch_size
     )
-    error_weights_arr = build_error_weights(error_weights, n, n_vars)
+    error_weights_arr = (
+        None if error_weights is None else build_error_weights(error_weights, n, n_vars)
+    )
 
     def step_factory(params_one):
         # FSAL (First Same As Last): Tsit5 has c7 = 1, so an accepted step's
@@ -254,38 +271,19 @@ def _solve_impl(
 
         def _step_one(y, t, dt, extra):
             k1 = extra  # carried first stage: FSAL k7 (accept) or reused k1 (reject)
+            k = jnp.zeros((7, y.shape[0]), dtype=y.dtype).at[0].set(dt * k1)
 
-            u = y + dt * (_A21 * k1)
-            k2 = eval_ode_fn(ode_fn, u, t + _C2 * dt, params_one)
+            def stage_body(i, k_acc):
+                u = y + _A[i] @ k_acc
+                ki = dt * eval_ode_fn(ode_fn, u, t + _C[i] * dt, params_one)
+                return k_acc.at[i].set(ki)
 
-            u = y + dt * (_A31 * k1 + _A32 * k2)
-            k3 = eval_ode_fn(ode_fn, u, t + _C3 * dt, params_one)
-
-            u = y + dt * (_A41 * k1 + _A42 * k2 + _A43 * k3)
-            k4 = eval_ode_fn(ode_fn, u, t + _C4 * dt, params_one)
-
-            u = y + dt * (_A51 * k1 + _A52 * k2 + _A53 * k3 + _A54 * k4)
-            k5 = eval_ode_fn(ode_fn, u, t + _C5 * dt, params_one)
-
-            u = y + dt * (_A61 * k1 + _A62 * k2 + _A63 * k3 + _A64 * k4 + _A65 * k5)
-            k6 = eval_ode_fn(ode_fn, u, t + _C6 * dt, params_one)
-
-            y_new = y + dt * (
-                _B1 * k1 + _B2 * k2 + _B3 * k3 + _B4 * k4 + _B5 * k5 + _B6 * k6
-            )
+            k = jax.lax.fori_loop(1, 6, stage_body, k)
+            y_new = y + _B @ k
             k7 = eval_ode_fn(ode_fn, y_new, t + _C7 * dt, params_one)
-
-            err_est = dt * (
-                _E1 * k1
-                + _E2 * k2
-                + _E3 * k3
-                + _E4 * k4
-                + _E5 * k5
-                + _E6 * k6
-                + _E7 * k7
-            )
-            dense_data = jnp.stack([k1, k2, k3, k4, k5, k6, k7])
-            return y_new, err_est, jnp.bool_(False), k7, (dt, dense_data)
+            k = k.at[6].set(dt * k7)
+            err_est = _E @ k
+            return y_new, err_est, jnp.bool_(False), k7, k
 
         def update_extra(extra, k7, accept):
             # Next first stage: k7 on an accepted step (FSAL), otherwise the
@@ -294,12 +292,8 @@ def _solve_impl(
 
         def dense_eval(theta, y, y_new, dense_data):
             del y_new
-            dt_step, stages = dense_data
             coeffs = _dense_coeffs(theta)
-            out = jnp.broadcast_to(y, (theta.shape[0], y.shape[0]))
-            for i in range(7):
-                out = out + dt_step * coeffs[:, i, None] * stages[i]
-            return out
+            return y[None, :] + coeffs @ dense_data
 
         return _step_one, extra_init, update_extra, dense_eval
 

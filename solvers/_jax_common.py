@@ -73,6 +73,14 @@ def error_norm(y, y_new, err_est, rtol, atol, error_weights):
     return jnp.sqrt(jnp.sum(scaled_error**2) / denom)
 
 
+def error_norm_unweighted(y, y_new, err_est, rtol, atol):
+    # Common case fast path: avoid carrying and multiplying an all-ones
+    # ``error_weights`` vector through the vmapped adaptive loop.
+    scale = atol + rtol * jnp.maximum(jnp.abs(y), jnp.abs(y_new))
+    scaled_error = err_est / scale
+    return jnp.sqrt(jnp.mean(scaled_error**2))
+
+
 def build_error_weights(error_weights, n: int, n_vars: int):
     """Broadcast a user ``error_weights`` argument to ``(n, n_vars)``.
 
@@ -130,6 +138,11 @@ def step_size_factor(
     history is ignored.
     """
     safe_err = clamp_err_norm(err_norm, failed)
+    # Default PID coefficients reduce to the plain I-controller; avoid tracing
+    # the zero exponent history terms in the adaptive loop.
+    if pcoeff == 0.0 and icoeff == 1.0 and dcoeff == 0.0:
+        factor = safety * safe_err**exponent
+        return jnp.clip(factor, factor_min, factor_max)
     e1 = exponent * (icoeff + pcoeff + dcoeff)
     e2 = -exponent * (pcoeff + 2.0 * dcoeff)
     e3 = exponent * dcoeff
@@ -292,10 +305,7 @@ def solve_adaptive_ensemble(
     n_save = times.shape[0]
     tf = times[-1]
 
-    if error_weights_arr is None:
-        error_weights_arr = jnp.ones((n, n_vars), dtype=jnp.float64)
-
-    def _solve_one(params_one, y0_one, error_weights_one):
+    def _solve_one(params_one, y0_one, error_weights_one=None):
         y_init = y0_one.copy()
         hist_init = initial_history(y_init, n_save, n_vars)
         step_info = step_factory(params_one)
@@ -329,7 +339,16 @@ def solve_adaptive_ensemble(
                 err_prev,
                 err_prev2,
             ) = state
-            dt_use = jnp.maximum(jnp.minimum(dt, tf - t), 1e-30)
+            if dense_eval is None:
+                # Without dense output, the adaptive mesh must land exactly on
+                # the next requested save time so the accepted state can be
+                # written directly.
+                dt_limit = times[save_idx] - t
+            else:
+                # Dense output lets the adaptive stepper choose its own mesh;
+                # save points are filled by interpolation after accepted steps.
+                dt_limit = tf - t
+            dt_use = jnp.maximum(jnp.minimum(dt, dt_limit), 1e-30)
 
             step_out = step_one(y, t, dt_use, extra)
             if len(step_out) == 4:
@@ -337,7 +356,13 @@ def solve_adaptive_ensemble(
                 dense_data = None
             else:
                 y_new, err_est, failed, extra_candidate, dense_data = step_out
-            err_norm = error_norm(y, y_new, err_est, rtol, atol, error_weights_one)
+            if error_weights_one is None:
+                # Keep the no-weights case out of the weighted norm path; the
+                # weighted path must carry a per-trajectory vector and count
+                # nonzero weights every step.
+                err_norm = error_norm_unweighted(y, y_new, err_est, rtol, atol)
+            else:
+                err_norm = error_norm(y, y_new, err_est, rtol, atol, error_weights_one)
 
             accept = (err_norm <= 1.0) & ~jnp.isnan(err_norm) & ~failed
             t_new = jnp.where(accept, t + dt_use, t)
@@ -348,11 +373,20 @@ def solve_adaptive_ensemble(
                 & (jnp.arange(n_save) >= save_idx)
                 & (times <= t_new + 1e-12 * jnp.maximum(1.0, jnp.abs(times)))
             )
+
             if dense_eval is None:
                 dense_values = jnp.broadcast_to(y_out, (n_save, n_vars))
             else:
                 theta = (times - t) / dt_use
-                dense_values = dense_eval(theta, y, y_new, dense_data)
+                # Interpolation is only needed when the accepted step actually
+                # crosses a save time. Otherwise return ``hist`` with matching
+                # shape and let the ``save_mask`` select keep the buffer as-is.
+                dense_values = jax.lax.cond(
+                    jnp.any(save_mask),
+                    lambda _: dense_eval(theta, y, y_new, dense_data),
+                    lambda _: hist,
+                    operand=None,
+                )
             hist_new = jnp.where(save_mask[:, None], dense_values, hist)
             save_count = jnp.sum(save_mask.astype(jnp.int32)).astype(jnp.int32)
             save_idx_new = save_idx + save_count
@@ -369,6 +403,13 @@ def solve_adaptive_ensemble(
                 safety=safety,
                 factor_min=factor_min,
                 factor_max=factor_max,
+            )
+            # Controller policy: an accepted step should not immediately shrink
+            # the next step, and a rejected step should not grow it.
+            factor = jnp.where(
+                accept,
+                jnp.maximum(factor, 1.0),
+                jnp.minimum(factor, safety),
             )
             dt_new = dt_use * factor
             rejected = ~accept
