@@ -58,6 +58,42 @@ _d2 = -0.42387512638858027
 _d3 = -0.3384627126235924
 _d4 =  1.8046452872882734
 _d5 =  2.325825639765069
+
+_H_DENSE = jnp.array(
+    [
+        [
+            25.948786856663858,
+            -2.5579724845846235,
+            10.433815404888879,
+            -2.3679251022685204,
+            0.524948541321073,
+            1.1241088310450404,
+            0.4272876194431874,
+            -0.17202221070155493,
+        ],
+        [
+            -9.91568850695171,
+            -0.9689944594115154,
+            3.0438037242978453,
+            -24.495224566215796,
+            20.176138334709044,
+            15.98066361424651,
+            -6.789040303419874,
+            -6.710236069923372,
+        ],
+        [
+            11.419903575922262,
+            2.8879645146136994,
+            72.92137995996029,
+            80.12511834622643,
+            -52.072871366152654,
+            -59.78993625266729,
+            -0.15582684282751913,
+            4.883087185713722,
+        ],
+    ],
+    dtype=jnp.float64,
+)
 # fmt: on
 
 
@@ -277,9 +313,30 @@ def _solve_impl(
                 * inv_dt
             )
 
-            return u + k8, k8, jnp.bool_(False), ()
+            y_new = u + k8
+            dense_stages = (k1, k2, k3, k4, k5, k6, k7, k8)
+            dense_coeffs = []
+            for row in range(3):
+                accum = jnp.zeros_like(y)
+                for col, stage in enumerate(dense_stages):
+                    accum = accum + _H_DENSE[row, col] * stage
+                dense_coeffs.append(accum)
+            return y_new, k8, jnp.bool_(False), (), tuple(dense_coeffs)
 
-        return _step_one, (), lambda extra, candidate, accept: extra
+        def dense_eval(theta, y, y_new, dense_data):
+            h1, h2, h3 = dense_data
+            theta1 = 1.0 - theta
+            return (
+                theta1[:, None] * y
+                + theta[:, None]
+                * (
+                    y_new
+                    + theta1[:, None]
+                    * (h1 + theta[:, None] * (h2 + theta[:, None] * h3))
+                )
+            )
+
+        return _step_one, (), lambda extra, candidate, accept: extra, dense_eval
 
     return solve_adaptive_ensemble(
         params_arr=params_arr,

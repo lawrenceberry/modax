@@ -80,12 +80,12 @@ B4 = A74
 B5 = A75
 B6 = A76
 
-E1 = 0.0017800620525794302
-E2 = 0.000816434459656747
-E3 = -0.007880878010261985
-E4 = 0.14471100717326298
-E5 = -0.5823571654525553
-E6 = 0.45808210592918695
+E1 = 0.0017800110522257773
+E2 = 0.0008164344596567463
+E3 = -0.007880878010261994
+E4 = 0.1447110071732629
+E5 = -0.5823571654525552
+E6 = 0.45808210592918686
 E7 = -1.0 / 66.0
 # fmt: on
 
@@ -255,10 +255,9 @@ def _make_body(
         err_prev2 = 1.0
 
         while save_idx < n_save and t < tf and n_steps < max_steps:
-            next_target = times[save_idx]
             dt_use = dt
-            if dt_use > next_target - t:
-                dt_use = next_target - t
+            if dt_use > tf - t:
+                dt_use = tf - t
             if dt_use < 1e-30:
                 dt_use = 1e-30
 
@@ -326,26 +325,85 @@ def _make_body(
             err_norm = math.sqrt(err_sum / n_vars)
             accept = err_norm <= 1.0 and not math.isnan(err_norm)
 
+            t_new = t
             if accept:
                 t_new = t + dt_use
+                while save_idx < n_save and times[save_idx] <= t_new + 1e-12 * max(
+                    1.0, abs(times[save_idx])
+                ):
+                    theta = (times[save_idx] - t) / dt_use
+                    b1 = (
+                        -1.0530884977290216
+                        * theta
+                        * (theta - 1.3299890189751412)
+                        * (
+                            theta * theta
+                            - 1.4364028541716351 * theta
+                            + 0.7139816917074209
+                        )
+                    )
+                    b2 = (
+                        0.1017
+                        * theta
+                        * theta
+                        * (
+                            theta * theta
+                            - 2.1966568338249754 * theta
+                            + 1.2949852507374631
+                        )
+                    )
+                    b3 = (
+                        2.490627285651252793
+                        * theta
+                        * theta
+                        * (
+                            theta * theta
+                            - 2.38535645472061657 * theta
+                            + 1.57803468208092486
+                        )
+                    )
+                    b4 = (
+                        -16.54810288924490272
+                        * (theta - 1.21712927295533244)
+                        * (theta - 0.61620406037800089)
+                        * theta
+                        * theta
+                    )
+                    b5 = (
+                        47.37952196281928122
+                        * (theta - 1.203071208372362603)
+                        * (theta - 0.658047292653547382)
+                        * theta
+                        * theta
+                    )
+                    b6 = (
+                        -34.87065786149660974
+                        * (theta - 1.2)
+                        * (theta - 0.666666666666666667)
+                        * theta
+                        * theta
+                    )
+                    b7 = 2.5 * (theta - 1.0) * (theta - 0.6) * theta * theta
+                    for j in range(n_vars):
+                        hist[i, save_idx, j] = y[j, s] + dt_use * (
+                            b1 * k1[j, s]
+                            + b2 * k2[j, s]
+                            + b3 * k3[j, s]
+                            + b4 * k4[j, s]
+                            + b5 * k5[j, s]
+                            + b6 * k6[j, s]
+                            + b7 * k7[j, s]
+                        )
+                    save_idx += 1
                 for j in range(n_vars):
                     y[j, s] = u[j, s]
                 accepted_steps += 1
                 has_fsal = True
             else:
-                t_new = t
                 rejected_steps += 1
                 for j in range(n_vars):
                     k7[j, s] = 0.0
                 has_fsal = False
-
-            reached = accept and (
-                abs(t_new - next_target) <= 1e-12 * max(1.0, abs(next_target))
-            )
-            if reached:
-                for j in range(n_vars):
-                    hist[i, save_idx, j] = y[j, s]
-                save_idx += 1
 
             if math.isnan(err_norm) or err_norm > 1e18:
                 safe_err = 1e18

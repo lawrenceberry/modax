@@ -298,14 +298,11 @@ def _make_kernel(
         smem_dt_use = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
         smem_inv_dt = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
         smem_t_end = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
-        smem_next_target = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
         smem_save_idx = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
         smem_n_steps = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
         smem_accepted = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
         smem_rejected = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
         smem_accept = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
-        smem_reached = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
-        smem_hist_idx = cuda.shared.array(shape=batches_per_block, dtype=np.int32)
         smem_continue = cuda.shared.array(shape=1, dtype=np.int32)
 
         if i < y0.shape[0]:
@@ -326,7 +323,6 @@ def _make_kernel(
             smem_accepted[batch] = 0
             smem_rejected[batch] = 0
             smem_accept[batch] = 0
-            smem_reached[batch] = 0
             smem_err_prev[batch] = 1.0
             smem_err_prev2[batch] = 1.0
         if tx == 0:
@@ -343,13 +339,11 @@ def _make_kernel(
 
             if lane == 0:
                 if active:
-                    next_target = times[smem_save_idx[batch]]
                     dt_use = smem_dt[batch]
-                    if dt_use > next_target - smem_t[batch]:
-                        dt_use = next_target - smem_t[batch]
+                    if dt_use > tf - smem_t[batch]:
+                        dt_use = tf - smem_t[batch]
                     if dt_use < 1e-30:
                         dt_use = 1e-30
-                    smem_next_target[batch] = next_target
                     smem_dt_use[batch] = dt_use
                     smem_inv_dt[batch] = 1.0 / dt_use
                     smem_t_end[batch] = smem_t[batch] + dt_use
@@ -685,21 +679,6 @@ def _make_kernel(
                     err_norm = math.sqrt(smem_err[tx] / n_vars)
                     accept = err_norm <= 1.0 and not math.isnan(err_norm)
                     smem_accept[batch] = 1 if accept else 0
-                    smem_reached[batch] = 0
-                    smem_hist_idx[batch] = smem_save_idx[batch]
-
-                    t_new = smem_t[batch]
-                    if accept:
-                        t_new = smem_t[batch] + smem_dt_use[batch]
-                        smem_accepted[batch] += 1
-                        reached = abs(t_new - smem_next_target[batch]) <= 1e-12 * max(
-                            1.0, abs(smem_next_target[batch])
-                        )
-                        smem_reached[batch] = 1 if reached else 0
-                        if reached:
-                            smem_save_idx[batch] += 1
-                    else:
-                        smem_rejected[batch] += 1
 
                     if math.isnan(err_norm) or err_norm > 1e18:
                         safe_err = 1e18
@@ -722,22 +701,70 @@ def _make_kernel(
                     elif factor > FACTOR_MAX:
                         factor = FACTOR_MAX
                     smem_dt[batch] = smem_dt_use[batch] * factor
-                    smem_t[batch] = t_new
-                    smem_n_steps[batch] += 1
                 else:
                     smem_accept[batch] = 0
-                    smem_reached[batch] = 0
             cuda.syncthreads()
 
             if smem_accept[batch] != 0:
+                t_old = smem_t[batch]
+                t_new = t_old + smem_dt_use[batch]
+                save_idx = smem_save_idx[batch]
+                while save_idx < n_save and times[save_idx] <= t_new + 1e-12 * max(
+                    1.0, math.fabs(times[save_idx])
+                ):
+                    theta = (times[save_idx] - t_old) / smem_dt_use[batch]
+                    theta1 = 1.0 - theta
+                    for j in range(lane, n_vars, batch_lanes):
+                        h1 = (
+                            25.948786856663858 * smem_k1[v_offset + j]
+                            - 2.5579724845846235 * smem_k2[v_offset + j]
+                            + 10.433815404888879 * smem_k3[v_offset + j]
+                            - 2.3679251022685204 * smem_k4[v_offset + j]
+                            + 0.524948541321073 * smem_k5[v_offset + j]
+                            + 1.1241088310450404 * smem_k6[v_offset + j]
+                            + 0.4272876194431874 * smem_k7[v_offset + j]
+                            - 0.17202221070155493 * smem_k8[v_offset + j]
+                        )
+                        h2 = (
+                            -9.91568850695171 * smem_k1[v_offset + j]
+                            - 0.9689944594115154 * smem_k2[v_offset + j]
+                            + 3.0438037242978453 * smem_k3[v_offset + j]
+                            - 24.495224566215796 * smem_k4[v_offset + j]
+                            + 20.176138334709044 * smem_k5[v_offset + j]
+                            + 15.98066361424651 * smem_k6[v_offset + j]
+                            - 6.789040303419874 * smem_k7[v_offset + j]
+                            - 6.710236069923372 * smem_k8[v_offset + j]
+                        )
+                        h3 = (
+                            11.419903575922262 * smem_k1[v_offset + j]
+                            + 2.8879645146136994 * smem_k2[v_offset + j]
+                            + 72.92137995996029 * smem_k3[v_offset + j]
+                            + 80.12511834622643 * smem_k4[v_offset + j]
+                            - 52.072871366152654 * smem_k5[v_offset + j]
+                            - 59.78993625266729 * smem_k6[v_offset + j]
+                            - 0.15582684282751913 * smem_k7[v_offset + j]
+                            + 4.883087185713722 * smem_k8[v_offset + j]
+                        )
+                        y_new_j = smem_u[v_offset + j] + smem_k8[v_offset + j]
+                        hist[i, save_idx, j] = theta1 * smem_y[
+                            v_offset + j
+                        ] + theta * (
+                            y_new_j + theta1 * (h1 + theta * (h2 + theta * h3))
+                        )
+                    save_idx += 1
+                if lane == 0:
+                    smem_save_idx[batch] = save_idx
                 for j in range(lane, n_vars, batch_lanes):
                     smem_y[v_offset + j] = smem_u[v_offset + j] + smem_k8[v_offset + j]
             cuda.syncthreads()
 
-            if smem_reached[batch] != 0:
-                hist_idx = smem_hist_idx[batch]
-                for j in range(lane, n_vars, batch_lanes):
-                    hist[i, hist_idx, j] = smem_y[v_offset + j]
+            if lane == 0 and active:
+                if smem_accept[batch] != 0:
+                    smem_t[batch] += smem_dt_use[batch]
+                    smem_accepted[batch] += 1
+                else:
+                    smem_rejected[batch] += 1
+                smem_n_steps[batch] += 1
             cuda.syncthreads()
 
             if tx == 0:

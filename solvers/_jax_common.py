@@ -298,7 +298,12 @@ def solve_adaptive_ensemble(
     def _solve_one(params_one, y0_one, error_weights_one):
         y_init = y0_one.copy()
         hist_init = initial_history(y_init, n_save, n_vars)
-        step_one, extra_init, update_extra = step_factory(params_one)
+        step_info = step_factory(params_one)
+        if len(step_info) == 3:
+            step_one, extra_init, update_extra = step_info
+            dense_eval = None
+        else:
+            step_one, extra_init, update_extra, dense_eval = step_info
         # ``extra_init`` may be a plain pytree (implicit solvers) or a callable
         # that seeds the initial loop-carry from the starting state -- used by
         # the explicit Tsit5 solver to precompute the first-stage k1 = f(t0, y0)
@@ -324,23 +329,33 @@ def solve_adaptive_ensemble(
                 err_prev,
                 err_prev2,
             ) = state
-            next_target = times[save_idx]
-            dt_use = jnp.maximum(jnp.minimum(dt, next_target - t), 1e-30)
+            dt_use = jnp.maximum(jnp.minimum(dt, tf - t), 1e-30)
 
-            y_new, err_est, failed, extra_candidate = step_one(y, t, dt_use, extra)
+            step_out = step_one(y, t, dt_use, extra)
+            if len(step_out) == 4:
+                y_new, err_est, failed, extra_candidate = step_out
+                dense_data = None
+            else:
+                y_new, err_est, failed, extra_candidate, dense_data = step_out
             err_norm = error_norm(y, y_new, err_est, rtol, atol, error_weights_one)
 
             accept = (err_norm <= 1.0) & ~jnp.isnan(err_norm) & ~failed
             t_new = jnp.where(accept, t + dt_use, t)
             y_out = jnp.where(accept, y_new, y)
 
-            reached = accept & (
-                jnp.abs(t_new - next_target)
-                <= 1e-12 * jnp.maximum(1.0, jnp.abs(next_target))
+            save_mask = (
+                accept
+                & (jnp.arange(n_save) >= save_idx)
+                & (times <= t_new + 1e-12 * jnp.maximum(1.0, jnp.abs(times)))
             )
-            slot_mask = jax.nn.one_hot(save_idx, n_save, dtype=jnp.bool_) & reached
-            hist_new = jnp.where(slot_mask[:, None], y_out[None, :], hist)
-            save_idx_new = save_idx + reached.astype(jnp.int32)
+            if dense_eval is None:
+                dense_values = jnp.broadcast_to(y_out, (n_save, n_vars))
+            else:
+                theta = (times - t) / dt_use
+                dense_values = dense_eval(theta, y, y_new, dense_data)
+            hist_new = jnp.where(save_mask[:, None], dense_values, hist)
+            save_count = jnp.sum(save_mask.astype(jnp.int32)).astype(jnp.int32)
+            save_idx_new = save_idx + save_count
 
             factor = step_size_factor(
                 err_norm,

@@ -101,6 +101,44 @@ _PREDICTOR = (
         1.0 - _C[7] / _C[4], 0.0, 0.0, 0.0, _C[7] / _C[4], 0.0, 0.0
     ], dtype=np.float64),
 )
+
+_DENSE_COEFFS = jnp.array(
+    [
+        [
+            -9257016797708 / 5021505065439,
+            43486358583215 / 12773830924787,
+            -17674230611817 / 10670229744614,
+        ],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [
+            26096422576131 / 11239449250142,
+            -91478233927265 / 11067650958493,
+            65168852399939 / 7868540260826,
+        ],
+        [
+            92396832856987 / 20362823103730,
+            -79368583304911 / 10890268929626,
+            15494834004392 / 5936557850923,
+        ],
+        [
+            30029262896817 / 10175596800299,
+            -12239297817655 / 9152339842473,
+            -99329723586156 / 26959484932159,
+        ],
+        [
+            -26136350496073 / 3983972220547,
+            115839755401235 / 10719374521269,
+            -19024464361622 / 5461577185407,
+        ],
+        [
+            -5289405421727 / 3760307252460,
+            5843115559534 / 2180450260947,
+            -6511271360970 / 6095937251113,
+        ],
+    ],
+    dtype=jnp.float64,
+)
 # fmt: on
 
 _SAFETY = 0.9
@@ -530,9 +568,23 @@ def _solve_impl(
             failed = (
                 failed | jnp.any(~jnp.isfinite(y_new)) | jnp.any(~jnp.isfinite(err_est))
             )
-            return y_new, err_est, failed, ()
+            dense_data = dt, jnp.stack(
+                [stage_fe[i] + stage_fi[i] for i in range(8)]
+            )
+            return y_new, err_est, failed, (), dense_data
 
-        return _step_one, (), lambda extra, candidate, accept: extra
+        def dense_eval(theta, y, y_new, dense_data):
+            del y_new
+            dt_step, stages = dense_data
+            coeffs = theta[:, None] * jax.vmap(
+                lambda row: jnp.polyval(row, theta)
+            )(_DENSE_COEFFS).T
+            out = jnp.broadcast_to(y, (theta.shape[0], y.shape[0]))
+            for i in range(8):
+                out = out + dt_step * coeffs[:, i, None] * stages[i]
+            return out
+
+        return _step_one, (), lambda extra, candidate, accept: extra, dense_eval
 
     return solve_adaptive_ensemble(
         params_arr=params_arr,

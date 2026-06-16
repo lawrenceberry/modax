@@ -65,18 +65,55 @@ _B5 = _A75
 _B6 = _A76
 _B7 = 0.0
 
-_E1 = 0.0017800620525794302
-_E2 = 0.000816434459656747
-_E3 = -0.007880878010261985
-_E4 = 0.14471100717326298
-_E5 = -0.5823571654525553
-_E6 = 0.45808210592918695
+_E1 = 0.0017800110522257773
+_E2 = 0.0008164344596567463
+_E3 = -0.007880878010261994
+_E4 = 0.1447110071732629
+_E5 = -0.5823571654525552
+_E6 = 0.45808210592918686
 _E7 = -1.0 / 66.0
 # fmt: on
 
 _SAFETY = 0.9
 _FACTOR_MIN = 0.2
 _FACTOR_MAX = 10.0
+
+
+def _dense_coeffs(theta):
+    b1 = (
+        -1.0530884977290216
+        * theta
+        * (theta - 1.3299890189751412)
+        * (theta**2 - 1.4364028541716351 * theta + 0.7139816917074209)
+    )
+    b2 = (
+        0.1017 * theta**2 * (theta**2 - 2.1966568338249754 * theta + 1.2949852507374631)
+    )
+    b3 = (
+        2.490627285651252793
+        * theta**2
+        * (theta**2 - 2.38535645472061657 * theta + 1.57803468208092486)
+    )
+    b4 = (
+        -16.54810288924490272
+        * (theta - 1.21712927295533244)
+        * (theta - 0.61620406037800089)
+        * theta**2
+    )
+    b5 = (
+        47.37952196281928122
+        * (theta - 1.203071208372362603)
+        * (theta - 0.658047292653547382)
+        * theta**2
+    )
+    b6 = (
+        -34.87065786149660974
+        * (theta - 1.2)
+        * (theta - 0.666666666666666667)
+        * theta**2
+    )
+    b7 = 2.5 * (theta - 1) * (theta - 0.6) * theta**2
+    return jnp.stack([b1, b2, b3, b4, b5, b6, b7], axis=-1)
 
 
 def solve(
@@ -247,14 +284,24 @@ def _solve_impl(
                 + _E6 * k6
                 + _E7 * k7
             )
-            return y_new, err_est, jnp.bool_(False), k7
+            dense_data = jnp.stack([k1, k2, k3, k4, k5, k6, k7])
+            return y_new, err_est, jnp.bool_(False), k7, (dt, dense_data)
 
         def update_extra(extra, k7, accept):
             # Next first stage: k7 on an accepted step (FSAL), otherwise the
             # current k1 (the retried step starts from the same t, y).
             return jnp.where(accept, k7, extra)
 
-        return _step_one, extra_init, update_extra
+        def dense_eval(theta, y, y_new, dense_data):
+            del y_new
+            dt_step, stages = dense_data
+            coeffs = _dense_coeffs(theta)
+            out = jnp.broadcast_to(y, (theta.shape[0], y.shape[0]))
+            for i in range(7):
+                out = out + dt_step * coeffs[:, i, None] * stages[i]
+            return out
+
+        return _step_one, extra_init, update_extra, dense_eval
 
     return solve_adaptive_ensemble(
         params_arr=params_arr,
