@@ -18,7 +18,6 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-from numba import cuda
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -117,22 +116,6 @@ CASES = (
 )
 
 
-@cuda.jit(device=True)
-def ode_fn_vdp_numba(y, t, p, dy, i):
-    n_osc = int(p[i, 0])
-    scale = p[i, 1]
-    mu = 1.0
-    diffusion = 10.0
-    for k in range(n_osc):
-        kp1 = (k + 1) % n_osc
-        km1 = (k + n_osc - 1) % n_osc
-        xk = y[i, 2 * k]
-        vk = y[i, 2 * k + 1]
-        lap = y[i, 2 * kp1] - 2.0 * xk + y[i, 2 * km1]
-        dy[i, 2 * k] = vk
-        dy[i, 2 * k + 1] = scale * mu * (1.0 - xk * xk) * vk - xk + diffusion * lap
-
-
 def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
     return vdp.make_scenario(
         _N_OSC,
@@ -142,22 +125,13 @@ def make_data(divergence: float) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
-def _numba_params(params: np.ndarray) -> np.ndarray:
-    return np.column_stack(
-        [
-            np.full(params.shape[0], float(_N_OSC), dtype=np.float64),
-            params[:, 0],
-        ]
-    )
-
-
 def solve_with_stats(solver: Case, y0: np.ndarray, params: np.ndarray):
     if solver.key.startswith("modax tsit5 kernel"):
         prepared = tsit5numba_prepare_solve(
-            ode_fn_vdp_numba,
+            _ODE_FN,
             y0=y0,
             t_span=_T_SPAN,
-            params=_numba_params(params),
+            params=params,
             **_SOLVER_KWARGS,
         )
         return tsit5numba_run_prepared(
@@ -197,10 +171,10 @@ def time_solve(
         return result.solve_time_s * 1000, None
     if solver.key.startswith("modax tsit5 kernel"):
         prepared = tsit5numba_prepare_solve(
-            ode_fn_vdp_numba,
+            _ODE_FN,
             y0=y0,
             t_span=_T_SPAN,
-            params=_numba_params(params),
+            params=params,
             **_SOLVER_KWARGS,
         )
         ms, result = time_blocked(
