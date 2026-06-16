@@ -51,6 +51,12 @@ _N_RUNS = 1
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
+_LOCAL_SOLVER_KWARGS = {
+    **_SOLVER_KWARGS,
+    "pcoeff": 0.0,
+    "icoeff": 1.0,
+    "dcoeff": 0.0,
+}
 _SCENARIOS = (
     ("identical", 0.0),
     ("divergent", 1.0),
@@ -90,7 +96,7 @@ CASES: tuple[Case, ...] = (
         ode_fn=lorenz.ode_fn,
         y0=None,
         t_span=_T_SPAN,
-        kwargs=_SOLVER_KWARGS,
+        kwargs=_LOCAL_SOLVER_KWARGS,
     ),
     Case(
         key="modax tsit5 kernel",
@@ -101,7 +107,7 @@ CASES: tuple[Case, ...] = (
         ode_fn=lorenz.ode_fn,
         y0=None,
         t_span=_T_SPAN,
-        kwargs=_SOLVER_KWARGS,
+        kwargs=_LOCAL_SOLVER_KWARGS,
         coerce_numpy=True,
     ),
     Case(
@@ -113,7 +119,7 @@ CASES: tuple[Case, ...] = (
         ode_fn=lorenz.ode_fn,
         y0=lorenz.Y0,
         t_span=_T_SPAN,
-        kwargs=_SOLVER_KWARGS,
+        kwargs=_LOCAL_SOLVER_KWARGS,
     ),
     Case(
         key="julia tsit5 array",

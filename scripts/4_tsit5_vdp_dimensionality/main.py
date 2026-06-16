@@ -65,6 +65,12 @@ _DIMENSIONS = (2, 4, 6, 8, 10, 12, 16, 32, 64, 128)
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CACHE_PATH = _SCRIPT_DIR / "results.json"
 _SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
+_LOCAL_SOLVER_KWARGS = {
+    **_SOLVER_KWARGS,
+    "pcoeff": 0.0,
+    "icoeff": 1.0,
+    "dcoeff": 0.0,
+}
 _SCENARIOS = (
     ("identical", 0.0),
     ("divergent", 1.0),
@@ -93,7 +99,7 @@ CASES: tuple[Case, ...] = (
         solve_fn=tsit5_solve,
         mode="jax",
         t_span=_T_SPAN,
-        kwargs=_SOLVER_KWARGS,
+        kwargs=_LOCAL_SOLVER_KWARGS,
     ),
     Case(
         key="modax tsit5 kernel",
@@ -101,7 +107,7 @@ CASES: tuple[Case, ...] = (
         marker="P",
         mode="custom",
         t_span=_T_SPAN,
-        kwargs=_SOLVER_KWARGS,
+        kwargs=_LOCAL_SOLVER_KWARGS,
     ),
     Case(
         key="diffrax tsit5",
@@ -110,7 +116,7 @@ CASES: tuple[Case, ...] = (
         solve_fn=diffrax_tsit5_solve,
         mode="jax",
         t_span=_T_SPAN,
-        kwargs=_SOLVER_KWARGS,
+        kwargs=_LOCAL_SOLVER_KWARGS,
     ),
     Case(
         key="julia tsit5 array",

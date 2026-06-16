@@ -18,6 +18,9 @@ def solve(
     atol=1e-10,
     first_step=None,
     max_steps=100000,
+    pcoeff=0.0,
+    icoeff=1.0,
+    dcoeff=0.0,
 ):
     """Solve a Tsit5 ensemble with Diffrax.
 
@@ -31,6 +34,9 @@ def solve(
         Strictly increasing array of save times (len >= 2).
     params : array, shape [N, ...]
         Per-trajectory parameters.
+    pcoeff, icoeff, dcoeff : float
+        Proportional/integral/derivative gains passed to Diffrax's
+        ``PIDController``.
 
     Returns
     -------
@@ -54,7 +60,13 @@ def solve(
         # requires the vector field to match y0's array pytree structure.
         term = diffrax.ODETerm(lambda t, y, args: jnp.asarray(ode_fn(y, t, p)))
         solver = diffrax.Tsit5()
-        controller = diffrax.PIDController(rtol=rtol, atol=atol)
+        controller = diffrax.PIDController(
+            rtol=rtol,
+            atol=atol,
+            pcoeff=pcoeff,
+            icoeff=icoeff,
+            dcoeff=dcoeff,
+        )
         sol = diffrax.diffeqsolve(
             term,
             solver,
