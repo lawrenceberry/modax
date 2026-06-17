@@ -1,24 +1,24 @@
 solver_key,solver,dim,solve_time_ms
-modax tsit5 array,modax tsit5 array,2,2.143144025467336
-modax tsit5 array,modax tsit5 array,4,3.315411042422056
-modax tsit5 array,modax tsit5 array,6,3.6363910185173154
-modax tsit5 array,modax tsit5 array,8,5.76408498454839
-modax tsit5 array,modax tsit5 array,10,6.495533045381308
-modax tsit5 array,modax tsit5 array,12,7.462180918082595
-modax tsit5 array,modax tsit5 array,16,11.384950950741768
-modax tsit5 array,modax tsit5 array,32,27.212910004891455
-modax tsit5 array,modax tsit5 array,64,38.66116004064679
-modax tsit5 array,modax tsit5 array,128,68.53475200477988
-modax tsit5 kernel,modax tsit5 kernel,2,0.19363907631486654
-modax tsit5 kernel,modax tsit5 kernel,4,0.2831390593200922
-modax tsit5 kernel,modax tsit5 kernel,6,0.39052905049175024
-modax tsit5 kernel,modax tsit5 kernel,8,0.50913798622787
-modax tsit5 kernel,modax tsit5 kernel,10,0.5841490346938372
-modax tsit5 kernel,modax tsit5 kernel,12,0.6709079025313258
-modax tsit5 kernel,modax tsit5 kernel,16,0.9605779778212309
-modax tsit5 kernel,modax tsit5 kernel,32,5.355395958758891
-modax tsit5 kernel,modax tsit5 kernel,64,11.176150990650058
-modax tsit5 kernel,modax tsit5 kernel,128,22.346441983245313
+modax tsit5 array,modax tsit5 array,2,3.6702350480481982
+modax tsit5 array,modax tsit5 array,4,4.829526995308697
+modax tsit5 array,modax tsit5 array,6,4.773747059516609
+modax tsit5 array,modax tsit5 array,8,5.396738066338003
+modax tsit5 array,modax tsit5 array,10,5.600237986072898
+modax tsit5 array,modax tsit5 array,12,5.793249001726508
+modax tsit5 array,modax tsit5 array,16,6.902270019054413
+modax tsit5 array,modax tsit5 array,32,12.070658034645021
+modax tsit5 array,modax tsit5 array,64,19.682058016769588
+modax tsit5 array,modax tsit5 array,128,34.11649796180427
+modax tsit5 kernel,modax tsit5 kernel,2,0.20891998428851366
+modax tsit5 kernel,modax tsit5 kernel,4,0.33399101812392473
+modax tsit5 kernel,modax tsit5 kernel,6,0.40326989255845547
+modax tsit5 kernel,modax tsit5 kernel,8,0.49005006439983845
+modax tsit5 kernel,modax tsit5 kernel,10,0.5721410270780325
+modax tsit5 kernel,modax tsit5 kernel,12,0.7026909152045846
+modax tsit5 kernel,modax tsit5 kernel,16,0.991082051768899
+modax tsit5 kernel,modax tsit5 kernel,32,5.34296699333936
+modax tsit5 kernel,modax tsit5 kernel,64,10.362983914092183
+modax tsit5 kernel,modax tsit5 kernel,128,20.12067404575646
 diffrax tsit5,diffrax tsit5,2,7.808399037458003
 diffrax tsit5,diffrax tsit5,4,10.20231400616467
 diffrax tsit5,diffrax tsit5,6,11.627550004050136
