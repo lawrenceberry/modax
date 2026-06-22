@@ -196,11 +196,13 @@ def _make_kernel(
     e3 = EXPONENT * dcoeff
     # Precision of the LU factorisation and triangular solves. The state, ODE
     # right-hand side, Jacobian and error estimate are always float64; lu_dtype
-    # governs only the shared LU matrix and RHS. The Rosenbrock--Wanner (W)
-    # order conditions retain full order under an approximate Jacobian, so an
-    # FP32 factorisation does not reduce the method's order. Defaults to fp32,
-    # the historical kernel behaviour; fp64 is available for ill-conditioned
-    # systems where the FP32 factorisation degrades the step-size control.
+    # governs the shared LU matrix, RHS, and stage vectors. A stage is the
+    # result of the lu_dtype triangular solve, so storing it at that same
+    # precision loses no information. Keeping stage precision coupled to the
+    # solve precision also preserves genuinely float64 stages in fp64 mode.
+    # Defaults to fp32, the historical kernel behaviour; fp64 is available for
+    # ill-conditioned systems where the FP32 factorisation degrades the
+    # step-size control.
     lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
     lu_solver = make_lu_solver(
         n_vars, precision=lu_dtype, batches_per_block=batches_per_block
@@ -281,14 +283,17 @@ def _make_kernel(
 
         smem_y = cuda.shared.array(shape=vec_size, dtype=np.float64)
         smem_u = cuda.shared.array(shape=vec_size, dtype=np.float64)
-        smem_k1 = cuda.shared.array(shape=vec_size, dtype=np.float64)
-        smem_k2 = cuda.shared.array(shape=vec_size, dtype=np.float64)
-        smem_k3 = cuda.shared.array(shape=vec_size, dtype=np.float64)
-        smem_k4 = cuda.shared.array(shape=vec_size, dtype=np.float64)
-        smem_k5 = cuda.shared.array(shape=vec_size, dtype=np.float64)
-        smem_k6 = cuda.shared.array(shape=vec_size, dtype=np.float64)
-        smem_k7 = cuda.shared.array(shape=vec_size, dtype=np.float64)
-        smem_k8 = cuda.shared.array(shape=vec_size, dtype=np.float64)
+        # Each stage is produced by smem_rhs after a lu_dtype triangular solve.
+        # Matching its storage precision therefore preserves the result exactly
+        # while avoiding an unnecessary FP64 expansion in fp32-LU mode.
+        smem_k1 = cuda.shared.array(shape=vec_size, dtype=lu_dtype)
+        smem_k2 = cuda.shared.array(shape=vec_size, dtype=lu_dtype)
+        smem_k3 = cuda.shared.array(shape=vec_size, dtype=lu_dtype)
+        smem_k4 = cuda.shared.array(shape=vec_size, dtype=lu_dtype)
+        smem_k5 = cuda.shared.array(shape=vec_size, dtype=lu_dtype)
+        smem_k6 = cuda.shared.array(shape=vec_size, dtype=lu_dtype)
+        smem_k7 = cuda.shared.array(shape=vec_size, dtype=lu_dtype)
+        smem_k8 = cuda.shared.array(shape=vec_size, dtype=lu_dtype)
 
         smem_err = cuda.shared.array(shape=block_threads, dtype=np.float64)
         smem_err_prev = cuda.shared.array(shape=batches_per_block, dtype=np.float64)
@@ -967,12 +972,12 @@ def solve(
     zero stub — correct only for autonomous problems (``df/dt = 0``).
 
     ``lu_precision`` (``"fp32"`` or ``"fp64"``) selects the precision of the
-    per-step LU factorisation and triangular solves. The state, right-hand
-    side, Jacobian and error estimate are always float64; because the
-    Rosenbrock--Wanner order conditions retain full order under an approximate
-    Jacobian, the ``"fp32"`` default does not reduce the method's order while
-    halving the LU shared-memory footprint and exploiting FP32 throughput.
-    ``"fp64"`` is available for ill-conditioned systems where the FP32
+    per-step LU factorisation, triangular solves, and stage-vector storage.
+    The state, right-hand side, Jacobian and error estimate remain float64.
+    Each stage is stored in the solve precision: an FP32 solve already returns
+    an FP32-representable stage, so FP32 stage storage preserves it exactly and
+    halves the stage-buffer shared-memory footprint. FP64 solves retain FP64
+    stages. ``"fp64"`` is available for ill-conditioned systems where the FP32
     factorisation degrades step-size control.
 
     ``error_weights`` is an optional per-component weight array, shape

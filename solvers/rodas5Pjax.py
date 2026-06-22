@@ -187,7 +187,11 @@ def _solve_impl(
         Parameters. A 1-D array is broadcast to all trajectories; a 2-D array
         supplies distinct parameters for each trajectory.
     lu_precision :
-        Precision for LU factorization and LU solve: ``"fp32"`` or ``"fp64"``.
+        Precision for LU factorization, triangular solves, and stage vectors:
+        ``"fp32"`` or ``"fp64"``. State evolution, right-hand-side and
+        Jacobian evaluations, and error control remain FP64. In FP32 mode a
+        stage is retained at the precision at which the triangular solve
+        produced it; widening it to FP64 cannot recover discarded precision.
     batch_size : int or None
         Number of trajectories batched by ``jax.lax.map``. ``None`` (default)
         batches all trajectories together. Internally, ``batch_size`` makes
@@ -246,8 +250,12 @@ def _solve_impl(
                 return ode_eval(u, t_stage, params_one)
 
             def lu_solve(rhs):
-                sol = jax.scipy.linalg.lu_solve(lu, rhs.astype(lu_dtype))
-                return sol.astype(jnp.float64)
+                # Preserve each stage at the triangular-solve precision. In
+                # FP32 mode this avoids widening an already-FP32 result only
+                # to retain it for later stage combinations; FP64 mode remains
+                # fully FP64. Expressions involving y/dt promote stages to
+                # FP64 for state updates and error control.
+                return jax.scipy.linalg.lu_solve(lu, rhs.astype(lu_dtype))
 
             dy = f_eval(y, t)
             k1 = lu_solve(dy + dt * _d1 * dT)
