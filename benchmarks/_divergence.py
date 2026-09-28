@@ -110,6 +110,10 @@ class DivergenceBenchmark:
     extra_fields: dict[str, Any] = field(default_factory=dict)
     """Constant columns written after ``dim`` in every row, e.g. ``n_osc``."""
     legend_loc: str = "best"
+    legend_ncol: int = 1
+    legend_bbox_to_anchor: tuple[float, float] | None = None
+    """Anchor for a legend placed outside the axes, e.g. ``(0.5, -0.12)`` with
+    ``legend_loc="upper center"`` for a legend beneath the plot."""
     n_runs: int = 1
 
     @property
@@ -417,7 +421,11 @@ def plot(
     ax.set_ylabel("Solve time / mean attempted steps (ms)")
     ax.set_yscale("log")
     ax.grid(True, linestyle="--", alpha=0.4)
-    ax.legend(loc=bench.legend_loc)
+    ax.legend(
+        loc=bench.legend_loc,
+        ncol=bench.legend_ncol,
+        bbox_to_anchor=bench.legend_bbox_to_anchor,
+    )
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {output_path}")
