@@ -231,7 +231,10 @@ def _make_body(
         n_steps = 0
         accepted_steps = 0
         rejected_steps = 0
-        has_fsal = False
+        # k1 holds f(t, y) once evaluated. It stays valid across a rejected
+        # step, whose y and t are unchanged, so only the very first step
+        # evaluates it directly; an accepted step inherits k7 (FSAL).
+        k1_valid = False
         err_prev = 1.0
         err_prev2 = 1.0
 
@@ -242,11 +245,9 @@ def _make_body(
             if dt_use < 1e-30:
                 dt_use = 1e-30
 
-            if has_fsal:
-                for j in range(n_system):
-                    k1[j] = k7[j]
-            else:
+            if not k1_valid:
                 ode_write(y, t, prow, k1)
+                k1_valid = True
 
             for j in range(n_system):
                 u[j] = y[j] + dt_use * (A21 * k1[j])
@@ -373,12 +374,11 @@ def _make_body(
                 for j in range(n_system):
                     y[j] = u[j]
                 accepted_steps += 1
-                has_fsal = True
+                # FSAL: k7 was evaluated at (t + h, y_{n+1}), the new (t, y).
+                for j in range(n_system):
+                    k1[j] = k7[j]
             else:
                 rejected_steps += 1
-                for j in range(n_system):
-                    k7[j] = 0.0
-                has_fsal = False
 
             if math.isnan(err_norm) or err_norm > 1e18:
                 safe_err = 1e18
