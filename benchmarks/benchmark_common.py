@@ -36,7 +36,7 @@ T = TypeVar("T")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-CASE_TIMEOUT_SECONDS = 120.0
+CASE_TIMEOUT_SECONDS = 180.0
 """The wall-clock cap on one case at one point of a sweep, compilation included.
 
 A point that has not compiled and solved within it is recorded as a timeout

@@ -568,7 +568,7 @@ touching the code.
   per-GPU CSV and plot. Two drivers: `_sweep.py` for one axis over an
   ensemble of identical trajectories, `_divergence.py` for the
   divergence knob. Every point is measured in a child process
-  (`_worker.py`) capped at `CASE_TIMEOUT_SECONDS` (120 s), compilation
+  (`_worker.py`) capped at `CASE_TIMEOUT_SECONDS` (180 s), compilation
   included, because neither an XLA compile nor a CUDA sync can be
   interrupted from inside the process; an overrun is cached as a timeout and
   left off the plot. The Julia gradient case integrates `vdp_sens`, the ring
