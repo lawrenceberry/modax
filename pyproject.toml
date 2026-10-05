@@ -1,6 +1,6 @@
 [project]
 name = "modax-solvers"
-version = "0.0.3"
+version = "0.0.4"
 description = "GPU-accelerated ODE solvers for massive ensembles of low-dimensional trajectories"
 readme = "README.md"
 requires-python = ">=3.10"

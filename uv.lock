@@ -1863,7 +1863,7 @@ wheels = [
 
 [[package]]
 name = "modax-solvers"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "cvxopt" },
