@@ -21,7 +21,7 @@ import csv
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -39,6 +39,7 @@ from benchmarks.benchmark_common import (
     label_width,
     load_cache,
     output_paths,
+    parse_args,
     print_plot_title,
     run_jobs,
     save_cache,
@@ -315,7 +316,7 @@ def measure(bench: DivergenceBenchmark, job: dict) -> dict:
 
 
 def run_benchmarks(
-    bench: DivergenceBenchmark, gpu_name: str, cache: dict
+    bench: DivergenceBenchmark, gpu_name: str, cache: dict, *, measure: bool = True
 ) -> list[dict]:
     # results.json layout: gpu -> case key -> f"{divergence:.6g}" -> row.
     gpu_cache = cache.setdefault(gpu_name, {})
@@ -378,7 +379,13 @@ def run_benchmarks(
                 case_cache[key] = None
             save_cache(bench.cache_path, cache)
 
-        run_jobs(bench.script_path, jobs, on_started=on_started, on_result=on_result)
+        run_jobs(
+            bench.script_path,
+            jobs,
+            on_started=on_started,
+            on_result=on_result,
+            measure=measure,
+        )
 
         for divergence in bench.divergences:
             row = case_cache.get(f"{divergence:.6g}")
@@ -414,10 +421,10 @@ def plot(
             color=case.color,
             marker=case.marker,
             s=42,
-            label=case.key,
+            label=case.display,
         )
 
-    ax.set_xlabel("Normalized standard deviation of attempted steps")
+    ax.set_xlabel("Normalised standard deviation of attempted steps")
     ax.set_ylabel("Solve time / mean attempted steps (ms)")
     ax.set_yscale("log")
     ax.grid(True, linestyle="--", alpha=0.4)
@@ -431,13 +438,15 @@ def plot(
     print(f"Plot saved to {output_path}")
 
 
-def main(bench: DivergenceBenchmark) -> None:
+def main(bench: DivergenceBenchmark, argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     gpu_name = get_gpu_name()
     print(f"GPU: {gpu_name}")
     print(f"System: {bench.dim}D {bench.system}, {bench.n_traj} trajectories\n")
 
     cache = load_cache(bench.cache_path)
-    rows = run_benchmarks(bench, gpu_name, cache)
+    rows = run_benchmarks(bench, gpu_name, cache, measure=not args.plot_only)
     csv_path, plot_path = output_paths(bench.script_dir, gpu_name)
-    save_csv(bench, rows, csv_path)
-    plot(bench, rows, gpu_name, plot_path)
+    if args.output is None:
+        save_csv(bench, rows, csv_path)
+    plot(bench, rows, gpu_name, args.output or plot_path)

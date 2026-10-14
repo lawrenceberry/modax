@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import queue
@@ -68,13 +69,58 @@ JULIA_COLOR = "#9b59b6"
 DIFFRAX_COLOR = "#1f77b4"
 TORCHDIFFEQ_COLOR = "#d62728"
 
+# How a case key's words are spelled in a legend. The keys stay lower-case and
+# stable, since they name the entries of results.json; the legends use the
+# names the paper does.
+DISPLAY_WORDS = {
+    "julia": "DiffEqGPU.jl",
+    "tsit5": "Tsit5",
+    "rodas5P": "Rodas5P",
+    "kvaerno5": "Kvaerno5",
+    "dopri8": "Dopri8",
+    "fp32": "FP32",
+    "fp64": "FP64",
+}
+
 
 @dataclass(frozen=True, kw_only=True)
 class BenchmarkCase:
     key: str
+    """Names the case in results.json and in the progress output."""
     color: str
     marker: str
     linestyle: str = "-"
+    label: str | None = None
+    """The legend entry; ``None`` spells ``key`` out with :data:`DISPLAY_WORDS`."""
+
+    @property
+    def display(self) -> str:
+        if self.label is not None:
+            return self.label
+        return " ".join(DISPLAY_WORDS.get(word, word) for word in self.key.split(" "))
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """The command line both drivers' ``main`` take.
+
+    ``--plot-only`` serves every point from results.json and refuses to
+    measure, so a plot can be redrawn without a GPU session or the Julia
+    toolchain; ``--output`` writes the plot to the given path instead of the
+    per-GPU one beside the script, and then writes no CSV.
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="redraw the plot from results.json; fail if any point is not cached",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="write the plot here instead of beside the script, and no CSV",
+    )
+    return parser.parse_args(argv)
 
 
 def label_width(cases: Sequence[BenchmarkCase]) -> int:
@@ -259,8 +305,12 @@ def run_jobs(
     on_started: Callable[[dict], None],
     on_result: Callable[[dict, str, Any], None],
     timeout: float = CASE_TIMEOUT_SECONDS,
+    measure: bool = True,
 ) -> None:
     """Measure ``jobs`` with the driver's ``measure`` in a child process.
+
+    With ``measure=False`` nothing is launched: a job means a point the cache
+    lacks, and that is an error.
 
     Each job is a JSON-serialisable dict the driver understands. ``on_started``
     is called when the child begins a job; ``on_result`` with the job, a status
@@ -271,6 +321,11 @@ def run_jobs(
     counted.
     """
     pending = list(jobs)
+    if pending and not measure:
+        raise RuntimeError(
+            f"{script_path}: {len(pending)} points are not cached, and --plot-only "
+            "measures nothing"
+        )
     while pending:
         proc = subprocess.Popen(
             [sys.executable, "-m", "benchmarks._worker", str(script_path)],

@@ -21,7 +21,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Any, Callable, NamedTuple, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -37,6 +37,7 @@ from benchmarks.benchmark_common import (
     label_width,
     load_cache,
     output_paths,
+    parse_args,
     print_plot_title,
     run_jobs,
     save_cache,
@@ -203,7 +204,9 @@ def measure(bench: SweepBenchmark, job: dict) -> float:
             case.cleanup()
 
 
-def run_benchmarks(bench: SweepBenchmark, gpu_name: str, cache: dict) -> list[Row]:
+def run_benchmarks(
+    bench: SweepBenchmark, gpu_name: str, cache: dict, *, measure: bool = True
+) -> list[Row]:
     # results.json layout: gpu -> case key -> str(value) -> ms | timeout | null.
     gpu_cache = cache.setdefault(gpu_name, {})
     width = label_width(bench.cases)
@@ -244,7 +247,13 @@ def run_benchmarks(bench: SweepBenchmark, gpu_name: str, cache: dict) -> list[Ro
                 case_cache[str(job["value"])] = None
             save_cache(bench.cache_path, cache)
 
-        run_jobs(bench.script_path, jobs, on_started=on_started, on_result=on_result)
+        run_jobs(
+            bench.script_path,
+            jobs,
+            on_started=on_started,
+            on_result=on_result,
+            measure=measure,
+        )
 
         for value in bench.values:
             if str(value) in case_cache:
@@ -288,7 +297,7 @@ def plot(bench: SweepBenchmark, rows: list[Row], gpu_name: str, path: Path) -> N
             marker=case.marker,
             color=case.color,
             linestyle=case.linestyle,
-            label=case.key,
+            label=case.display,
         )
     if bench.axis.log_x:
         ax.set_xscale("log")
@@ -305,13 +314,15 @@ def plot(bench: SweepBenchmark, rows: list[Row], gpu_name: str, path: Path) -> N
     print(f"Plot saved to {path}")
 
 
-def main(bench: SweepBenchmark) -> None:
+def main(bench: SweepBenchmark, argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     gpu_name = get_gpu_name()
     print(f"GPU: {gpu_name}\n")
 
     cache = load_cache(bench.cache_path)
-    rows = run_benchmarks(bench, gpu_name, cache)
+    rows = run_benchmarks(bench, gpu_name, cache, measure=not args.plot_only)
     print()
     csv_path, plot_path = output_paths(bench.script_dir, gpu_name)
-    save_csv(bench, rows, csv_path)
-    plot(bench, rows, gpu_name, plot_path)
+    if args.output is None:
+        save_csv(bench, rows, csv_path)
+    plot(bench, rows, gpu_name, args.output or plot_path)
