@@ -22,13 +22,14 @@ solver must resolve the stiff timescale from its first step. Trajectories are
 integrated over $t \in [0, 10^5]$, with output at $t = 10^{-6}, 10^{-2},
 10^2$ and $10^5$, at `rtol = 1e-6`, `atol = 1e-8`.
 
-All benchmarks ran on a single NVIDIA GeForce RTX 4070 SUPER, a consumer
-card with a similar number of CUDA cores to, and the same architecture as, an
-L4-class datacentre GPU. DiffEqGPU.jl runs with `cpu_offload = 0`, so every
-trajectory is solved on the GPU. Each solver's points run in a child process of
-their own, and a point that does not compile and solve within 180 s is recorded
-as a timeout and left off the plot. Reported times exclude compilation: each is
-the mean over repeated solves after one warm-up call. The discussion follows Section 3 of the
+All benchmarks were performed on a single NVIDIA GeForce RTX 4070 SUPER, a
+consumer-grade device with a similar number of CUDA cores to, and the same
+architecture as, an L4-class datacentre GPU. DiffEqGPU.jl runs with
+`cpu_offload = 0`, so that every trajectory is solved on the GPU. Each point is
+measured in a child process of its own, and a point that does not compile and
+solve within 180 s is recorded as a timeout and left off the plot. Reported
+times exclude compilation: each is the mean over repeated solves after one
+warm-up call. The discussion follows Section 3 of the
 [paper](https://arxiv.org/abs/2609.35661).
 
 ## Scaling with ensemble size

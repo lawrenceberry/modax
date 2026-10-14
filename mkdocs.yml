@@ -52,8 +52,9 @@ theme:
 
 nav:
   - Quickstart: index.md
-  - Development: development.md
+  - Motivations: motivations.md
   - Design: design.md
+  - Development: development.md
   - Acknowledgement: acknowledgement.md
   - Usage:
     - Choosing a solver: usage/solvers.md

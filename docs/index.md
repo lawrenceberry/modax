@@ -15,8 +15,8 @@ docs.
 --8<-- "README.md:quickstart"
 
 The ensemble dimension comes from whichever of `y0` and `params` is
-two-dimensional; both may be, and they must then agree. The history is
-`(N, n_save, n_vars)`; see [Running a solver](usage/running.md) for what
+two-dimensional; both may be, and they must then agree. The history has shape
+`(N, n_save, n_vars)`, and [Running a solver](usage/running.md) describes what
 `return_stats` and save hooks add to it.
 
 ## Where to go next
@@ -39,5 +39,14 @@ two-dimensional; both may be, and they must then agree. The history is
 -   :material-chart-line: **[Computing gradients](usage/gradients.md)**
 
     `jax.grad` and friends, through a continuous forward-sensitivity solve.
+
+-   :material-lightbulb-on-outline: **[Motivations](motivations.md)**
+
+    Where massive ensembles arise, and why the existing GPU libraries were
+    not enough.
+
+-   :material-cube-outline: **[Design](design.md)**
+
+    The constraints a GPU imposes and the design choices they led to.
 
 </div>
