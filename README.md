@@ -19,21 +19,14 @@ site does not repeat them.
 
 <!-- --8<-- [start:overview] -->
 
-GPU-accelerated ODE solvers for **massive ensembles** (1-100k) of low-dimensional (<200D) ODE trajectories, built on
-JAX and Numba-CUDA-MLIR. Applications include: Bayesian parameter inference, uncertainty quantification and the integration of physically uncoupled systems.
+`modax` is a library of GPU-accelerated ODE solvers optimised for solving **massive ensembles** (1k-100k) of low-dimensional (<200D) ODE trajectories, built on JAX and Numba-CUDA-MLIR. Applications include: Bayesian parameter estimation, uncertainty quantification and the integration of physically uncoupled systems.
 
-Every solver is a hand-written **CUDA custom kernel** compiled by
-Numba-CUDA-MLIR: one CUDA thread
-per trajectory, hand-written step kernels with in-kernel LU factorisation,
-exposed to JAX as an XLA FFI custom call. That binding makes each solver an
-ordinary JAX primitive — `jit`-traceable, and `vmap` over a single solve lowers
-to one native ensemble launch.
+Every solver is compiled as a **custom CUDA kernel** using Numba-CUDA-MLIR. Each ODE trajectory is solved within its own CUDA thread and results are exposed to JAX as an XLA FFI custom call. Calls to `modax` therefore behave as ordinary JAX primitives. They are `jit`-traceable, auto-differentiable and a `vmap` over a single solve lowers to one native ensemble launch.
 
 <!-- --8<-- [end:overview] -->
 
 The [documentation](https://lawrenceberry.github.io/modax/) covers the solver
-API, writing ODE callbacks, sparse systems, gradients, the kernel design and
-the worked examples.
+API and explains how to use the library. The [paper](https://arxiv.org/abs/2609.35661) details the technical implementation and example applications.
 
 <!-- --8<-- [start:install] -->
 
