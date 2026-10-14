@@ -1,8 +1,27 @@
-# BBN Parameter Estimation Example
+# Parameter estimation: primordial abundances
 
-Bayesian parameter estimation of cosmological parameters from primordial light-element
-abundances, using a 4-species Big Bang Nucleosynthesis (BBN) ODE integrated with the
-Rodas5 implicit solver and fitted via nested sampling.
+Bayesian inference of cosmological parameters from primordial light-element
+abundances. Every likelihood evaluation is a forward integration of a stiff
+big bang nucleosynthesis (BBN) network, and the sampler evaluates its whole
+population of proposals at once, so the inner loop of the inference is an
+ensemble solve.
+
+The forward model is a phenomenological toy network of four species --
+neutrons, protons, deuterium and helium-4 -- used both to generate synthetic
+observations and to fit them. It omits the tritium and helium-3 channels
+through which most helium-4 is actually made, so its abundances are far from
+the observed ones and its posteriors carry no cosmological weight. What it does
+capture is the stiffness of BBN, which comes from the wide separation between
+the fast weak-interaction rates and the slower nuclear burning, and that makes
+it a test of the implicit Rodas5P solver on an inference problem. Precision
+predictions need a full network, as in PArthENoPE, PRIMAT, PRyMordial or LINX;
+LINX in particular is written in JAX and integrates its network with Diffrax,
+which makes it a natural candidate for the batched solvers here.
+
+The posterior is sampled with nested slice sampling (Yallup et al. 2026), a
+vectorised form of nested sampling built for GPUs and shipped in BlackJAX. The
+sampler evaluates its proposals under `jax.vmap`, which the modax solver's
+batching rule turns into one ensemble launch.
 
 Run it with:
 
@@ -10,22 +29,44 @@ Run it with:
 uv run python examples/bbn_estimation/main.py
 ```
 
-The modax solve runs as a Numba-CUDA kernel, so this needs a CUDA GPU.
-The `scipy` backend below is the CPU-only path.
+The modax solve runs as a Numba-CUDA kernel, so this needs a CUDA GPU. The
+nested sampling needs BlackJAX 1.6, which needs Python 3.11 or newer.
+
+## Result
+
+With 128 live points the sampler recovers $\eta_{10} = 6.14 \pm 0.31$ and
+$N_\mathrm{eff} = 3.05 \pm 0.17$, on the values the synthetic observations
+were generated at. The script writes the posterior to `posterior.png`.
 
 ## Solver-backend benchmark
 
-The batched forward solve (the chi-squared grid / sampler-population inner loop)
-can be timed across solver backends on identical right-hand-side code with the
-`--benchmark` flag: modax Rodas5P (GPU), Diffrax Kvaerno5 (GPU), and serial
-`scipy.solve_ivp` LSODA (the no-GPU baseline).
+The batched forward solve -- the parameter grid, or the sampler population --
+can be timed across solver backends on identical right-hand-side code with
+the `--benchmark` flag: modax Rodas5P and Diffrax Kvaerno5 on the GPU (Diffrax
+has no Rosenbrock-Wanner method), and `scipy.integrate.solve_ivp` LSODA on the
+CPU, each trajectory integrated independently and the ensemble spread across
+every core, as established serial codes integrate.
 
 ```bash
-# head-to-head over a 2000-point (eta, N_eff) grid (scipy is the slow one)
+# all three backends over a 2000-point (eta, N_eff) grid, as in the paper
 uv run python examples/bbn_estimation/main.py --benchmark --n 2000
 # GPU backends at a larger grid
 uv run python examples/bbn_estimation/main.py --benchmark --backends modax diffrax --n 50000
 ```
+
+All three run at `rtol = 1e-4`, `atol = 1e-9`, where they agree on $Y_P$ at
+$(\eta_{10}, N_\mathrm{eff}) = (4.11, 3.0)$ to three decimal places (0.079).
+The paper measures the 2000-point grid on an NVIDIA GeForce RTX 4070 SUPER
+against an AMD Ryzen 9 7950X across all 32 hardware threads -- hardware of
+comparable price and power draw:
+
+| Backend | Wall clock | Per solve |
+|---|---|---|
+| SciPy LSODA (CPU, 32 threads) | 8.2 s | 4090 µs |
+| Diffrax Kvaerno5 (GPU) | 1.6 s | 802 µs |
+| **modax Rodas5P (GPU)** | **8 ms** | **4.2 µs** |
+
+That is roughly 970× the parallel CPU baseline and 190× Diffrax.
 
 ## Expansion rate
 
@@ -84,7 +125,11 @@ $$R_{np} = n_b \langle\sigma v\rangle_{np} \left(Y_n Y_p - \frac{Y_d}{K_D}\right
 | Baryon-to-photon ratio (log) | $\log_{10}(\eta_{10})$ | $[0.5,\, 1.0]$ |
 | Effective neutrino species | $N_\mathrm{eff}$ | $[2.0,\, 4.0]$ |
 
-| Observable | Model value* | 1-sigma |
+The observations are synthetic, generated from the toy network itself, with
+uncertainties of about 4 and 7 per cent -- comparable to the relative precision
+of the real measurements.
+
+| Observable | Synthetic value* | 1-sigma |
 | --- | --- | --- |
 | Helium mass fraction Y_P | 0.106 | 0.004 |
 | Deuterium ratio D/H | 4.2e-6 | 0.3e-6 |

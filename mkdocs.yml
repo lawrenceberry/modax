@@ -6,12 +6,13 @@ repo_name: lawrenceberry/modax
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; Lawrence Berry
 
-# README.md's sections and wheels/README.md are pulled into the pages under docs/ with pymdownx.snippets, so there is one
+# README.md's sections, wheels/README.md and the examples' READMEs are pulled into the pages under docs/ with pymdownx.snippets, so there is one
 # copy of each. Those files are outside docs_dir, hence the watch
 # list below and snippets' base_path.
 watch:
   - README.md
   - wheels
+  - examples
   - modax
 
 theme:
@@ -58,6 +59,10 @@ nav:
     - Sparse systems: guide/sparse.md
     - Gradients: guide/gradients.md
     - Kernel design: guide/kernel-design.md
+  - Examples:
+    - Parameter estimation: examples/parameter-estimation.md
+    - Uncertainty quantification: examples/uncertainty-quantification.md
+    - Physically-decoupled systems: examples/physically-decoupled-systems.md
   - API Reference:
     - Solvers: api/solvers.md
     - Internals: api/internals.md

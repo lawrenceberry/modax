@@ -1,13 +1,29 @@
-# Mukhanov-Sasaki Example
+# Physically-decoupled systems: the primordial power spectrum
 
-This example computes the primordial scalar power spectrum from single-field
-quadratic inflation by doing two numerical solves:
+The primordial scalar power spectrum of single-field quadratic inflation,
+computed mode by mode. Each comoving wavenumber $k$ obeys its own linear
+Mukhanov-Sasaki equation, coupled to no other mode, so the whole spectrum is an
+ensemble of independent ODEs -- the same structure as the mode-by-mode
+linearised Einstein-Boltzmann solve in CMB codes such as CAMB and CLASS.
+
+The script does two numerical solves:
 
 1. the homogeneous inflationary background,
-2. the Mukhanov-Sasaki perturbation equation for many independent Fourier modes.
+2. the Mukhanov-Sasaki perturbation equation for many independent Fourier modes,
+   batched into one Tsit5 solve.
 
-It then extracts the scalar amplitude $A_s$ and scalar spectral index $n_s$,
-and compares them to approximate slow-roll estimates.
+Each mode has its own start and stop e-fold, set by horizon crossing, so this is
+also a demonstration of an ensemble with per-trajectory integration intervals in
+a single call. From the result it extracts the scalar amplitude $A_s$ and
+spectral index $n_s$ and compares them with slow-roll estimates.
+
+The power spectrum needs one mode function per wavenumber, but the same
+solutions are the bottleneck in predicting the primordial *bispectrum*, the
+leading probe of primordial non-Gaussianity. Beyond slow roll, or with features
+in the potential, the bispectrum has no closed form, and modal estimators
+sample it on a dense grid of wavenumber triangles -- thousands of distinct
+wavenumbers per shape, repeated across the model's parameter space. That is a
+massive ensemble of independent linear ODEs of exactly this form.
 
 Run it with:
 
@@ -16,27 +32,49 @@ uv run python examples/mukhanov_sasaki/main.py
 ```
 
 The modax solve runs as a Numba-CUDA kernel, so this needs a CUDA GPU.
-The `scipy` backend below is the CPU-only path.
 
-The perturbation equations and slow-roll approximation follow the conventions in Daniel Baumann's TASI lectures on inflation.
+The perturbation equations and slow-roll approximation follow the conventions
+in Daniel Baumann's TASI lectures on inflation.
+
+## Result
+
+The default run resolves 41 wavenumbers spaced geometrically over
+$k \in [10^{-4}, 1]\ \mathrm{Mpc}^{-1}$. The numerical spectrum gives
+$A_s = 2.067 \times 10^{-9}$ and $n_s = 0.9633$, within 0.3 per cent and
+0.0006 of the slow-roll estimates $A_s = 2.061 \times 10^{-9}$ and
+$n_s = 0.9640$.
 
 ## Solver-backend benchmark
 
 The mode solve can be timed across solver backends on identical right-hand-side
-code with the `--benchmark` flag. Because the mode equation is non-stiff and
-oscillatory, the comparison uses explicit solvers: modax Tsit5 (GPU), Diffrax
-Tsit5 (GPU), and `scipy.solve_ivp` RK45 (serial CPU baseline).
+code with the `--benchmark` flag. The mode equation is non-stiff and strongly
+oscillatory, so the comparison uses explicit solvers: modax Tsit5 and Diffrax
+Tsit5 on the GPU, and `scipy.integrate.solve_ivp` RK45 on the CPU, each mode
+integrated independently and the ensemble spread across every core.
 
 ```bash
-# all three backends at 64 modes (scipy is the slow one)
-uv run python examples/mukhanov_sasaki/main.py --benchmark --n 64
-# GPU backends at a saturating ensemble size
-uv run python examples/mukhanov_sasaki/main.py --benchmark --backends modax diffrax --n 4096
+# all three backends at 4096 modes, as in the paper
+uv run python examples/mukhanov_sasaki/main.py --benchmark --n 4096
 ```
+
+All three run at `rtol = 1e-7`, `atol = 1e-9`, and agree on the pivot amplitude
+to five significant figures. The paper measures 4096 modes on an NVIDIA GeForce
+RTX 4070 SUPER against an AMD Ryzen 9 7950X across all 32 hardware threads --
+hardware of comparable price and power draw:
+
+| Backend | Wall clock | Per solve |
+|---|---|---|
+| SciPy RK45 (CPU, 32 threads) | 53 s | 13,000 µs |
+| Diffrax Tsit5 (GPU) | 106 ms | 26 µs |
+| **modax Tsit5 (GPU)** | **9 ms** | **2.3 µs** |
+
+That is roughly 5700× the parallel CPU baseline and 11× Diffrax.
 
 ## Background Inflation
 
-The model is quadratic inflation in reduced Planck units:
+The model is quadratic inflation in reduced Planck units, started at
+$\phi_0 = 17.5$ and integrated over $N \in [0, 80]$ e-folds (2000 save points,
+`rtol = 1e-9`, `atol = 1e-11`):
 
 $$
 V(\phi) = \frac{1}{2}m^2\phi^2.
@@ -286,7 +324,7 @@ $$
 ## Ensemble Solve
 
 Each $k$-mode is an independent ODE system. The script batches all modes into
-one call to `tsit5_solve(...)` from `modax.tsit5`.
+one call to `solve(...)` from `modax.tsit5`.
 
 Each mode has its own start and stop e-folds, so the script maps each trajectory
 to a normalized solver time
