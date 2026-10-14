@@ -53,13 +53,13 @@ theme:
 nav:
   - Quickstart: index.md
   - Development: development.md
+  - Design: design.md
   - Acknowledgement: acknowledgement.md
   - Usage:
     - Choosing a solver: usage/solvers.md
     - Running a solver: usage/running.md
     - Exploiting sparsity: usage/sparse.md
     - Computing gradients: usage/gradients.md
-    - Kernel design: usage/kernel-design.md
   - Examples:
     - Parameter estimation: examples/parameter-estimation.md
     - Uncertainty quantification: examples/uncertainty-quantification.md

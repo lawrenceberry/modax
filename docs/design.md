@@ -1,4 +1,4 @@
-# Kernel design
+# Design
 
 One CUDA thread per trajectory, and per-trajectory adaptive stepping. Lanes in
 a warp diverge as their step sizes do, and a block runs until its slowest
