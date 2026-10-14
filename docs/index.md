@@ -36,7 +36,7 @@ two-dimensional; both may be, and they must then agree. The history is
     One `sparsity` pattern buys both a coloured Jacobian and a compiled sparse
     direct solve.
 
--   :material-chart-line: **[Gradients](usage/gradients.md)**
+-   :material-chart-line: **[Computing gradients](usage/gradients.md)**
 
     `jax.grad` and friends, through a continuous forward-sensitivity solve.
 

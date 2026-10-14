@@ -58,7 +58,7 @@ nav:
     - Choosing a solver: usage/solvers.md
     - Running a solver: usage/running.md
     - Exploiting sparsity: usage/sparse.md
-    - Gradients: usage/gradients.md
+    - Computing gradients: usage/gradients.md
     - Kernel design: usage/kernel-design.md
   - Examples:
     - Parameter estimation: examples/parameter-estimation.md

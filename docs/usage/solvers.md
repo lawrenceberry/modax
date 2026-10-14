@@ -78,7 +78,7 @@ there is still nothing to write beyond the right-hand side.
 - **Slower to compile.** The Enzyme differentiation and the generated linear
   algebra make the first solve of a new system markedly slower to build.
 - **Dearer gradients.** A sensitivity column also needs second derivatives
-  (forward over forward) of `ode_fn`; see [Gradients](gradients.md).
+  (forward over forward) of `ode_fn`; see [Computing gradients](gradients.md).
 
 ## Which to use
 

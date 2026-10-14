@@ -1,4 +1,4 @@
-# Gradients
+# Computing gradients
 
 Both solvers are differentiable with respect to `y0` and `params`:
 
