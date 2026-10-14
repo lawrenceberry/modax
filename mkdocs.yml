@@ -51,7 +51,7 @@ theme:
         name: Switch to system preference
 
 nav:
-  - Quickstart: index.md
+  - Quickstart: quickstart.md
   - Development: development.md
   - Acknowledgement: acknowledgement.md
   - Usage:
