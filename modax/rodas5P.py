@@ -1051,6 +1051,69 @@ def solve(
 ):
     """JAX-callable Rodas5P custom-kernel solve.
 
+    Args:
+        ode_fn: The right-hand side, ``(y, t, p) -> tuple`` of scalars; see
+            Writing ODE callbacks. A plain function is ``cuda.jit``-ed for you.
+        y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``; a 1-D state is
+            shared by every trajectory.
+        t_span: Save times, ``(n_save,)``, shared across the ensemble. Not
+            differentiable.
+        params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
+            from whichever of ``y0`` and ``params`` is batched; if both are,
+            they must agree.
+        rtol: Relative tolerance of the weighted RMS error norm.
+        atol: Absolute tolerance of the weighted RMS error norm.
+        first_step: Initial step size. ``None`` or any non-positive value lets
+            the kernel start from 1e-6 of its own integration window; it is a
+            launch-time scalar because ``t_span`` is traced.
+        max_steps: Per-trajectory step budget.
+        return_stats: Also return a dict of per-trajectory step counters,
+            ``accepted_steps``, ``rejected_steps`` and ``loop_steps``, each
+            ``(N,)``.
+        error_weights: Optional per-component weights, ``(n_vars,)`` or
+            ``(N, n_vars)``, applied in the error norm; a weight of 0 excludes
+            that component from step-size control.
+        pcoeff: Proportional gain of the PID step controller.
+        icoeff: Integral gain; the default ``(0, 1, 0)`` is the classic
+            I-controller.
+        dcoeff: Derivative gain.
+        lu_precision: ``"fp32"`` or ``"fp64"``, the precision of the per-step
+            LU factorisation and triangular solves; see below.
+        trajectories_per_block: Threads per block, one trajectory each;
+            defaults to a warp.
+        sens_error_control: Whether a differentiated solve's sensitivity
+            components take part in step-size control; see below.
+        sens_param_columns: Restrict the parameter sensitivities to these
+            ``params`` columns; ``None`` carries every column.
+        sparsity: The Jacobian's sparsity pattern, as an ``(n_vars, n_vars)``
+            mask, a scipy sparse matrix or an ``(nnz, 2)`` index array; see
+            below.
+        ordering: Fill-reducing permutation for the sparse LU, ``"amd"`` or
+            ``"natural"``.
+        tf_index: A ``params`` column holding each trajectory's own end time.
+        max_registers: Cap on the kernel's per-thread register count.
+        array_rhs: An ``f(y, t, p, out)`` device function equivalent to
+            ``ode_fn``. The primal stage evaluations do not need the tuple
+            form, which exists for Enzyme, so handing this in lets the eight
+            evaluations per step call it directly.
+        save_hook: A device function ``hook(save_idx, y, t, p_row, acc)``
+            called at every save time; see below.
+        hook_size: Width of the hook's per-trajectory output row; must be
+            positive when ``save_hook`` is given.
+        save_history: Keep the full history. ``False`` keeps only the final
+            state, and needs a ``save_hook`` to consume the saves.
+
+    Returns:
+        The history, ``(N, n_save, n_vars)``, or ``(N, 1, n_vars)`` with
+        ``save_history=False``. A hooked solve returns ``(hist, hook_out)``,
+        with ``hook_out`` of shape ``(N, hook_size)``, and ``return_stats=True``
+        appends the stats dict to whichever is returned.
+
+    Raises:
+        ValueError: If ``trajectories_per_block`` is not positive,
+            ``save_hook`` is given without a positive ``hook_size``, or
+            ``save_history=False`` is given without a ``save_hook``.
+
     Only the right-hand side is supplied. The Jacobian ``df/dy``, and the
     partial time derivative ``df/dt`` that a non-autonomous system needs to
     keep fifth-order accuracy, are both differentiated out of ``ode_fn`` with

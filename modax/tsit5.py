@@ -641,6 +641,43 @@ def solve(
 ):
     """JAX-callable Tsit5 custom-kernel solve.
 
+    Args:
+        ode_fn: The right-hand side, ``(y, t, p) -> tuple`` of scalars; see
+            Writing ODE callbacks. A plain function is ``cuda.jit``-ed for you.
+        y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``; a 1-D state is
+            shared by every trajectory.
+        t_span: Save times, ``(n_save,)``, shared across the ensemble. Not
+            differentiable.
+        params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
+            from whichever of ``y0`` and ``params`` is batched; if both are,
+            they must agree.
+        rtol: Relative tolerance of the weighted RMS error norm.
+        atol: Absolute tolerance of the weighted RMS error norm.
+        first_step: Initial step size. ``None`` or any non-positive value lets
+            the kernel start from 1e-6 of its own integration window; it is a
+            launch-time scalar because ``t_span`` is traced.
+        max_steps: Per-trajectory step budget.
+        return_stats: Also return a dict of per-trajectory step counters,
+            ``accepted_steps``, ``rejected_steps`` and ``loop_steps``, each
+            ``(N,)``.
+        error_weights: Optional per-component weights, ``(n_vars,)`` or
+            ``(N, n_vars)``, applied in the error norm; a weight of 0 excludes
+            that component from step-size control.
+        pcoeff: Proportional gain of the PID step controller.
+        icoeff: Integral gain; the default ``(0, 1, 0)`` is the classic
+            I-controller.
+        dcoeff: Derivative gain.
+        backend: ``"auto"``, ``"shared"`` or ``"local"``, where the state and
+            stage vectors live; see below.
+        sens_error_control: Whether a differentiated solve's sensitivity
+            components take part in step-size control; see below.
+        sens_param_columns: Restrict the parameter sensitivities to these
+            ``params`` columns; ``None`` carries every column.
+
+    Returns:
+        The history, ``(N, n_save, n_vars)``, followed by the stats dict when
+        ``return_stats=True``.
+
     ``backend`` chooses where the kernel keeps the state and its stage vectors:
     ``"shared"`` in per-block shared memory, ``"local"`` in the thread's own
     local memory. The two are bit-identical and within noise of each other until the
