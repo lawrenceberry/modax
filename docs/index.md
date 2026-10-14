@@ -33,8 +33,7 @@ two-dimensional; both may be, and they must then agree. The history is
 
 -   :material-code-braces: **[Writing ODE callbacks](usage/callbacks.md)**
 
-    What `numba_cuda_mlir` allows, and how a right-hand side that must also run
-    under JAX is written once.
+    The rules a right-hand side compiled for the GPU has to follow.
 
 -   :material-grid: **[Sparse systems](usage/sparse.md)**
 

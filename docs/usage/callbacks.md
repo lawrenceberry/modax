@@ -36,34 +36,3 @@ A plain Python function is jitted automatically; one already decorated with
   Pack related tables into a single array and bind it to a local before
   indexing it — `make_mode_ode` in `examples/mukhanov_sasaki/main.py` is the
   worked case.
-
-## One body, two backends
-
-Every example here has a Diffrax baseline to compare against, so its right-hand
-side has to run both as device code and under `jax`. It is written **once**:
-`examples/dual_backend.py` takes the body as a factory over the handful of
-names the two backends spell differently (`math.exp`/`jnp.exp`, `max`/
-`jnp.maximum`, …), and `build_rhs` returns it three ways:
-
-| Member | What it is | Used for |
-|--------|------------|----------|
-| `.device` | the tuple form | the modax solve |
-| `.jax` | the array form | the Diffrax baseline |
-| `.host` | the device arithmetic in plain Python | comparing the two without a GPU, as `tests/test_examples.py` does |
-
-What such a body must avoid is an `if` on a value that varies, since a traced
-value cannot be branched on at all. `maximum`/`minimum`, or a branchless
-`a + (b - a) * (x > c)`, serve both backends. A helper the body shares with the
-rest of the module goes through `build_fn`, whose `.device` member is a
-`cuda.jit(device=True)` function — Enzyme inlines straight through it.
-
-## What Rodas5P needs on top
-
-Nothing. There is no `jac_fn`: `df/dy` and the `df/dt` a non-autonomous system
-needs to keep fifth-order accuracy are both differentiated out of `ode_fn` with
-[numba-enzyme](https://github.com/Qruise-ai/numba-enzyme), which runs Enzyme
-over the callback's LLVM IR. The tuple form is exactly what Enzyme reads — a
-callback of the documented shape reaches it as a function of flat scalars
-returning a struct, because numba-cuda-mlir flattens a tuple argument into one
-scalar parameter per element and lowers a tuple return to a struct returned by
-value.
