@@ -4,10 +4,13 @@ Sweeps ODE dimension from 2 to 128 (n_osc = 1 to 64) on a log scale with a
 fixed ensemble of 1000 identical trajectories and records solve time for modax
 Rodas5P with fp32 and fp64 LU precision, modax Rodas5P fp32 handed the
 lattice's Jacobian sparsity pattern (one Enzyme sweep per colour and the
-compiled sparse LU), Diffrax Kvaerno5, and Julia Rodas5P with both DiffEqGPU
-ensemble backends. A point that fails, or does not compile
-and solve within the case timeout, is recorded as such and omitted from the
-plot. Outputs a CSV and a log-log plot named after the GPU.
+compiled sparse LU), Diffrax Kvaerno5, gradsolve Rosenbrock23 (its fused
+NVIDIA Warp kernel, with the dense Jacobian gradsolve derives from its
+translation of the right-hand side, up to the 12 state variables gradsolve
+launches the kernel for) and Julia Rodas5P with both DiffEqGPU ensemble
+backends. A point that fails, or does not compile and solve within the case
+timeout, is recorded as such and omitted from the plot. Outputs a CSV and a
+log-log plot named after the GPU.
 
 Usage:
     uv run python benchmarks/stiff_vdp_dimensionality/main.py
@@ -34,11 +37,14 @@ from benchmarks._sweep import (
 )
 from benchmarks.benchmark_common import (  # noqa: E402
     DIFFRAX_COLOR,
+    GRADSOLVE_COLOR,
     JULIA_COLOR,
     MODAX_COLOR,
 )
 from modax.rodas5P import solve as rodas5P_solve
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
+from reference.solvers.python.gradsolve_engines import ROSENBROCK23_MAX_DIM
+from reference.solvers.python.gradsolve_engines import solve as gradsolve_solve
 from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import vdp
 
@@ -63,6 +69,15 @@ def _problem(dim: int) -> Problem:
     )
 
 
+def _skip(case: SweepCase, dim: int) -> str | None:
+    if case.key == "gradsolve rosenbrock23" and dim > ROSENBROCK23_MAX_DIM:
+        return (
+            "gradsolve launches its Rosenbrock23 kernel only up to "
+            f"{ROSENBROCK23_MAX_DIM} state variables"
+        )
+    return None
+
+
 BENCHMARK = SweepBenchmark(
     script_dir=Path(__file__).resolve().parent,
     title="Rodas5P dimensionality — coupled VDP lattice",
@@ -72,6 +87,10 @@ BENCHMARK = SweepBenchmark(
     make_problem=_problem,
     julia_solve=julia_rodas5P_solve,
     julia_system="vdp",
+    skip=_skip,
+    legend_loc="upper center",
+    legend_ncol=2,
+    legend_bbox_to_anchor=(0.5, -0.2),
     cases=(
         SweepCase(
             key="modax rodas5P fp32 (sparse)",
@@ -103,6 +122,15 @@ BENCHMARK = SweepBenchmark(
             marker="s",
             solve_fn=diffrax_kvaerno5_solve,
             kwargs=_SOLVER_KWARGS,
+        ),
+        SweepCase(
+            key="gradsolve rosenbrock23",
+            color=GRADSOLVE_COLOR,
+            marker="o",
+            linestyle="--",
+            solve_fn=gradsolve_solve,
+            kwargs={**_SOLVER_KWARGS, "engine": "warp_rosenbrock"},
+            jit=False,
         ),
         SweepCase(
             key="julia rodas5P EnsembleGPUArray",

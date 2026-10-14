@@ -2,10 +2,12 @@
 
 Sweeps the size of an ensemble of identical trajectories from 1 to 100k on a
 log scale and records solve time for modax Rodas5P with fp32 and fp64 LU
-precision, Diffrax Kvaerno5, and Julia Rodas5P with both DiffEqGPU ensemble
-backends. A point that does not compile and solve within the case timeout is
-recorded as such and omitted from the plot. Outputs a CSV and a log-log plot
-named after the GPU.
+precision, Diffrax Kvaerno5, gradsolve Rosenbrock23 (its fused NVIDIA Warp
+kernel, a second-order method, with the Jacobian gradsolve derives from its
+translation of the right-hand side into a Warp function) and Julia Rodas5P
+with both DiffEqGPU ensemble backends. A point that does not compile and solve
+within the case timeout is recorded as such and omitted from the plot. Outputs
+a CSV and a log-log plot named after the GPU.
 
 Usage:
     uv run python benchmarks/stiff_robertson_scaling/main.py
@@ -32,11 +34,13 @@ from benchmarks._sweep import (
 )
 from benchmarks.benchmark_common import (  # noqa: E402
     DIFFRAX_COLOR,
+    GRADSOLVE_COLOR,
     JULIA_COLOR,
     MODAX_COLOR,
 )
 from modax.rodas5P import solve as rodas5P_solve
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
+from reference.solvers.python.gradsolve_engines import solve as gradsolve_solve
 from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import robertson
 
@@ -72,7 +76,9 @@ BENCHMARK = SweepBenchmark(
     julia_solve=julia_rodas5P_solve,
     julia_system="robertson",
     skip=_skip,
-    legend_loc="upper left",
+    legend_loc="upper center",
+    legend_ncol=2,
+    legend_bbox_to_anchor=(0.5, -0.2),
     cases=(
         SweepCase(
             key="modax rodas5P fp32",
@@ -95,6 +101,15 @@ BENCHMARK = SweepBenchmark(
             marker="s",
             solve_fn=diffrax_kvaerno5_solve,
             kwargs=_SOLVER_KWARGS,
+        ),
+        SweepCase(
+            key="gradsolve rosenbrock23",
+            color=GRADSOLVE_COLOR,
+            marker="o",
+            linestyle="--",
+            solve_fn=gradsolve_solve,
+            kwargs={**_SOLVER_KWARGS, "engine": "warp_rosenbrock"},
+            jit=False,
         ),
         SweepCase(
             key="julia rodas5P EnsembleGPUArray",

@@ -32,6 +32,18 @@ diffrax kvaerno5,diffrax kvaerno5,32,811.7407070240006
 diffrax kvaerno5,diffrax kvaerno5,64,2495.306584984064
 diffrax kvaerno5,diffrax kvaerno5,96,1931.4318790566176
 diffrax kvaerno5,diffrax kvaerno5,128,3402.432576054707
+gradsolve rosenbrock23,gradsolve rosenbrock23,2,12.793017085641623
+gradsolve rosenbrock23,gradsolve rosenbrock23,4,17.99138286150992
+gradsolve rosenbrock23,gradsolve rosenbrock23,6,26.80792100727558
+gradsolve rosenbrock23,gradsolve rosenbrock23,8,37.429103860631585
+gradsolve rosenbrock23,gradsolve rosenbrock23,10,56.24909489415586
+gradsolve rosenbrock23,gradsolve rosenbrock23,12,75.32146712765098
+gradsolve rosenbrock23 (replay only),gradsolve rosenbrock23 (replay only),2,9.416835848242044
+gradsolve rosenbrock23 (replay only),gradsolve rosenbrock23 (replay only),4,13.125665951520205
+gradsolve rosenbrock23 (replay only),gradsolve rosenbrock23 (replay only),6,16.75153709948063
+gradsolve rosenbrock23 (replay only),gradsolve rosenbrock23 (replay only),8,22.33611303381622
+gradsolve rosenbrock23 (replay only),gradsolve rosenbrock23 (replay only),10,33.1595940515399
+gradsolve rosenbrock23 (replay only),gradsolve rosenbrock23 (replay only),12,41.120973881334066
 julia rodas5P EnsembleGPUArray,julia rodas5P EnsembleGPUArray,2,29.721675
 julia rodas5P EnsembleGPUArray,julia rodas5P EnsembleGPUArray,4,31.966959000000003
 julia rodas5P EnsembleGPUArray,julia rodas5P EnsembleGPUArray,6,45.491334

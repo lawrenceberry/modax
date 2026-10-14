@@ -3,7 +3,13 @@
 Runs the Robertson system with 30,000 trajectories while sweeping the
 ``make_scenario(..., divergence=...)`` knob. For each solver and divergence
 value, the benchmark records solve time and the actual distribution of accepted
-plus rejected Rodas5P steps.
+plus rejected Rodas5P steps. gradsolve Rosenbrock23, its fused NVIDIA Warp
+kernel, steps each trajectory on its own thread, as modax does, but caps every
+trajectory at 50000 attempts and returns NaN for one that needs more, which the
+reference raises on, so its points at large divergence are recorded as
+failures. Like modax it is also run with the ensemble pre-sorted by modax's
+attempted steps; its own step counts differ, being a second-order method, but
+rank the trajectories much the same way.
 
 Usage:
     uv run python benchmarks/stiff_robertson_divergence/main.py
@@ -22,10 +28,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import benchmarks.benchmark_common  # noqa: E402,F401
 from benchmarks._divergence import DivergenceBenchmark, DivergenceCase, main
 from benchmarks.benchmark_common import (  # noqa: E402
+    GRADSOLVE_COLOR,
     JULIA_COLOR,
     MODAX_COLOR,
 )
 from modax.rodas5P import solve as rodas5P_solve
+from reference.solvers.python.gradsolve_engines import solve as gradsolve_solve
 from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import robertson
 
@@ -50,6 +58,9 @@ BENCHMARK = DivergenceBenchmark(
     ),
     julia_solve=julia_rodas5P_solve,
     julia_system="robertson",
+    legend_loc="upper center",
+    legend_ncol=2,
+    legend_bbox_to_anchor=(0.5, -0.12),
     cases=(
         DivergenceCase(key="modax rodas5P fp32", color=MODAX_COLOR, marker="s"),
         DivergenceCase(
@@ -74,6 +85,25 @@ BENCHMARK = DivergenceBenchmark(
         #     mode="julia",
         #     ensemble_backend="EnsembleGPUArray",
         # ),
+        DivergenceCase(
+            key="gradsolve rosenbrock23",
+            color=GRADSOLVE_COLOR,
+            marker="o",
+            mode="timing",
+            solve_fn=gradsolve_solve,
+            kwargs={**_SOLVER_KWARGS, "engine": "warp_rosenbrock"},
+            jit=False,
+        ),
+        DivergenceCase(
+            key="gradsolve rosenbrock23 (sorted)",
+            color=GRADSOLVE_COLOR,
+            marker="P",
+            mode="timing",
+            solve_fn=gradsolve_solve,
+            kwargs={**_SOLVER_KWARGS, "engine": "warp_rosenbrock"},
+            jit=False,
+            sort_by_steps=True,
+        ),
         DivergenceCase(
             key="julia rodas5P EnsembleGPUKernel",
             color=JULIA_COLOR,
