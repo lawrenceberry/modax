@@ -57,7 +57,6 @@ nav:
   - Usage:
     - Choosing a solver: usage/solvers.md
     - Running a solver: usage/running.md
-    - Writing ODE callbacks: usage/callbacks.md
     - Exploiting sparsity: usage/sparse.md
     - Gradients: usage/gradients.md
     - Kernel design: usage/kernel-design.md

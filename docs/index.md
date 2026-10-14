@@ -31,10 +31,6 @@ two-dimensional; both may be, and they must then agree. The history is
 
     `solve(...)`, its arguments, and the rules the callbacks obey.
 
--   :material-code-braces: **[Writing ODE callbacks](usage/callbacks.md)**
-
-    The rules a right-hand side compiled for the GPU has to follow.
-
 -   :material-grid: **[Exploiting sparsity](usage/sparse.md)**
 
     One `sparsity` pattern buys both a coloured Jacobian and a compiled sparse
