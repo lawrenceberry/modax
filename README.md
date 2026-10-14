@@ -13,6 +13,7 @@ site does not repeat them.
 [![Downloads](https://img.shields.io/pypi/dm/modax-solvers)](https://pypi.org/project/modax-solvers/)
 [![Python](https://img.shields.io/pypi/pyversions/modax-solvers)](https://pypi.org/project/modax-solvers/)
 [![JAX](https://img.shields.io/badge/JAX-compatible-3f51b5)](https://docs.jax.dev/)
+[![arXiv](https://img.shields.io/badge/arXiv-2609.35661-b31b1b.svg)](https://arxiv.org/abs/2609.35661)
 
 **[Documentation](https://lawrenceberry.github.io/modax/)**
 
