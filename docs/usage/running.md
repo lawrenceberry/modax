@@ -1,4 +1,4 @@
-# Calling a solver
+# Running a solver
 
 All solvers expose a single `solve(...)` entry point that integrates an
 ensemble in one call:

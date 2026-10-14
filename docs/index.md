@@ -16,7 +16,7 @@ docs.
 
 The ensemble dimension comes from whichever of `y0` and `params` is
 two-dimensional; both may be, and they must then agree. The history is
-`(N, n_save, n_vars)`; see [Calling a solver](usage/api.md) for what
+`(N, n_save, n_vars)`; see [Running a solver](usage/running.md) for what
 `return_stats` and save hooks add to it.
 
 ## Where to go next
@@ -27,7 +27,7 @@ two-dimensional; both may be, and they must then agree. The history is
 
     Tsit5 for non-stiff problems, Rodas5P for stiff ones, and what each costs.
 
--   :material-function-variant: **[Calling a solver](usage/api.md)**
+-   :material-function-variant: **[Running a solver](usage/running.md)**
 
     `solve(...)`, its arguments, and the rules the callbacks obey.
 

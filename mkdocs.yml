@@ -56,7 +56,7 @@ nav:
   - Acknowledgement: acknowledgement.md
   - Usage:
     - Choosing a solver: usage/solvers.md
-    - Calling a solver: usage/api.md
+    - Running a solver: usage/running.md
     - Writing ODE callbacks: usage/callbacks.md
     - Sparse systems: usage/sparse.md
     - Gradients: usage/gradients.md
