@@ -6,14 +6,13 @@ repo_name: lawrenceberry/modax
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; Lawrence Berry
 
-# README.md's overview and install sections and the examples' own READMEs are
-# pulled into the pages under docs/ with pymdownx.snippets, so there is one
+# README.md's overview, install and development sections and wheels/README.md
+# are pulled into the pages under docs/ with pymdownx.snippets, so there is one
 # copy of each. Those files are outside docs_dir, hence the watch
 # list below and snippets' base_path.
 watch:
   - README.md
   - wheels
-  - examples
   - modax
 
 theme:
@@ -61,11 +60,6 @@ nav:
       - Sparse systems: guide/sparse.md
       - Gradients: guide/gradients.md
       - Kernel design: guide/kernel-design.md
-  - Examples:
-      - Overview: examples/index.md
-      - BBN parameter estimation: examples/bbn-estimation.md
-      - 21cm IGM evolution: examples/21cm-igm-evolution.md
-      - Mukhanov-Sasaki modes: examples/mukhanov-sasaki.md
   - API reference:
       - Solvers: api/solvers.md
       - Internals: api/internals.md

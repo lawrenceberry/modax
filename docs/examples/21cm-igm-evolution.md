@@ -1,1 +1,0 @@
---8<-- "examples/21cm_igm_evolution/README.md"
