@@ -100,7 +100,9 @@ For the same reason both methods are of high order. Compared with a lower-order
 method of equivalent accuracy, a higher-order one needs more stage evaluations
 per step but fewer steps. The stages are a fixed cost that every trajectory in
 a warp pays identically, whereas extra steps extend the adaptive loop and raise
-the risk of divergence.
+the risk of divergence. The two methods themselves, and where each keeps its
+working vectors, are described on the [Choosing a solver](usage/solvers.md)
+page.
 
 ### One trajectory per thread, one warp per block, one kernel per solve
 
@@ -178,82 +180,6 @@ accepted step evaluates the method's continuous extension at the output times
 it contains. The controller is then free to choose steps from the error
 estimate alone, and a solve takes the same steps whether one or a thousand
 output times are requested.
-
-### Tsit5
-
-The Tsitouras 5(4) pair is a seven-stage, fifth-order explicit Runge-Kutta
-scheme with an embedded fourth-order error estimate and a fourth-order
-continuous extension that costs no additional evaluations. It is
-first-same-as-last: the seventh stage of an accepted step is the first stage of
-the next, so an accepted step costs six evaluations of $f$. Its fixed
-seven-stage structure, with no inner loop other than the adaptive retry, suits
-SIMT execution particularly well, since the only source of divergence is the
-number of steps each trajectory takes. The kernel body is a direct
-transcription of the tableau, every coefficient a compile-time constant and
-every loop of constant trip count, so each stage compiles to straight-line
-arithmetic.
-
-The nine per-trajectory working vectors, the state, the trial state and the
-seven stage derivatives, live either in on-chip shared memory or in
-thread-local memory, which resides in off-chip DRAM and is cached in L2. The
-shared-memory kernel lays each vector out as a $(D, 32)$ array so that
-consecutive lanes hold consecutive words and a warp's access is coalesced. The
-integrator is one device function over nine one-dimensional vectors, handed
-either the thread's local arrays or its column of each shared array, so the two
-kernels are bit-identical and `backend` chooses between them. Shared memory
-costs $9 \times 32 \times D \times 8$ bytes per block, and reserving it caps the
-blocks an SM can hold. At small ensemble sizes the local arrays are promoted to
-registers and the two kernels time within noise of each other; once the
-ensemble saturates the device the shared kernel loses by up to 14 per cent. The
-`"auto"` default therefore takes shared memory only when $D \le 16$ and
-$N \le 16\,384$, a transition set somewhat below what the shared-memory budget
-would allow in order to keep occupancy high, and thread-local memory
-otherwise. Either way the launch carries no scratch: the kernel once held the
-vectors in transposed global scratch that XLA allocated, and that path went for
-simplicity.
-
-### Rodas5P
-
-For stiff systems an explicit method is forced by stability rather than
-accuracy to take prohibitively small steps, and an implicit method is required.
-A standard implicit Runge-Kutta method solves a non-linear system at every
-stage by Newton iteration, whose iteration count is data dependent and
-therefore a source of thread divergence. A Rosenbrock method avoids the
-iteration altogether by linearising each stage equation about the current
-state, which turns the step into a sequence of *linear* systems that share one
-matrix: one factorisation and a fixed number of triangular solves per step, a
-known and data-independent amount of work. The [Robertson
-benchmark](benchmarks/robertson.md) measures what this is worth against
-Diffrax's fully implicit Kvaerno5.
-
-The method is the fifth-order, eight-stage Rodas5P of Steinebach (2023) in the
-transformed form of Hairer and Wanner. With $J = \partial f/\partial\mathbf{y}$
-and $f_t = \partial f/\partial t$ at $(t_n, \mathbf{y}_n)$, each stage solves
-
-$$
-\left(\frac{1}{h\gamma} I - J\right) \mathbf{k}_i = f\!\left(t_n + \alpha_i h,\ \mathbf{y}_n + \sum_{j<i} a_{ij}\mathbf{k}_j\right) + \frac{1}{h}\sum_{j<i} c_{ij}\mathbf{k}_j + d_i\, h\, f_t,
-$$
-
-and the solution advances by $\mathbf{y}_{n+1} = \mathbf{y}_n + \sum_i m_i
-\mathbf{k}_i$. The eighth stage is constructed so that $\mathbf{k}_8$ is the
-difference between the fifth-order solution and an embedded fourth-order one,
-so the error estimate costs nothing extra, and the last three stages share the
-end point and accumulate into the same argument vector. Each step evaluates
-$-J$ and $f_t$ straight into the thread's matrix buffer, adds $1/(h\gamma)$ to
-the diagonal, factorises in place, runs the eight stages, forms the error norm
-from $\mathbf{k}_8$ and applies the controller.
-
-Rodas5P attains its full fifth order only when $J$ is exact. It is not a full
-W-method, whose order conditions would hold for an arbitrary $J$, but its
-coefficients satisfy the W-method conditions up to second order, so an inexact
-$J$ reduces it to order 2, with order 1 for the embedded estimator. The size of
-the additional error scales with the perturbation to $J$, and the step-size
-controller compensates by taking smaller steps. That robustness is what allows
-the factorisation and triangular solves to run in single precision, where the
-perturbation is at the level of FP32 rounding: `lu_precision="fp32"` is the
-default, and it halves the matrix buffer's footprint and uses the FP32 cores
-that outnumber the FP64 ones. The state, right-hand side, Jacobian and error
-estimate stay in double precision throughout.
 
 ### The Jacobian comes from Enzyme
 

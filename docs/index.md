@@ -21,7 +21,7 @@ two-dimensional; both may be, and they must then agree. The history has shape
 `(N, n_save, n_vars)`, and [Running a solver](usage/running.md) describes what
 `return_stats` and save hooks add to it.
 
-## Where to go next
+## Where to go next?
 
 <div class="grid cards" markdown>
 

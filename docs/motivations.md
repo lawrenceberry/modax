@@ -56,7 +56,7 @@ In each case the individual ODEs are small, with a state dimension
 $D \lesssim 200$, and mutually independent, in that the solution to trajectory
 $i$ does not depend on trajectory $j$.
 
-## Why a GPU
+## Why a GPU?
 
 Small, independent problems are a good fit for modern hardware accelerators.
 A GPU offers a very large number of computational cores best suited to
@@ -73,7 +73,7 @@ particular single-instruction multiple-thread execution, limited fast memory
 and the far higher single-precision throughput, shape what an efficient solver
 has to look like; the [Design](design.md) page goes through them one by one.
 
-## Why not the existing libraries
+## Why not the existing libraries?
 
 The prevailing model of GPU computing has been shaped by machine learning,
 where a single large neural network occupies much of the device memory,

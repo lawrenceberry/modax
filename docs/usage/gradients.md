@@ -209,7 +209,7 @@ the usual cost of needing a non-stiff problem. Its shared-memory backend holds
 at most 16 components, sensitivities included, so `backend="auto"` moves a
 wider joint system to thread-local memory.
 
-## Why continuous forward sensitivities
+## Why continuous forward sensitivities?
 
 modax is built for massive ensembles of low-dimensional systems with few
 parameters, and that regime picks the method. The three candidates scale
