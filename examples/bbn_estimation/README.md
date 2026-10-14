@@ -74,10 +74,15 @@ In radiation domination the Hubble rate is given by the Friedmann equation:
 
 $$H(T) = \sqrt{\frac{4\pi^3 g_*(T)}{45}} \frac{T^2}{M_\mathrm{Pl}}$$
 
-where $g_*(T)$ counts the effective relativistic degrees of freedom (10.75 above the
-$e^+e^-$ annihilation threshold at $T \approx 0.511\,\mathrm{MeV}$, falling to 3.91
-below it), and $M_\mathrm{Pl} = 1.22 \times 10^{22}\,\mathrm{MeV}$ is the unreduced
-Planck mass.
+where $g_*(T)$ counts the effective relativistic degrees of freedom. The
+Standard Model value $g_\mathrm{SM}(T)$ is 10.75 above the $e^+e^-$ annihilation
+threshold at $T \approx 0.511\,\mathrm{MeV}$ and 3.91 below it, and $N_\mathrm{eff}$
+enters through the extra neutrino-like species,
+
+$$g_*(T) = g_\mathrm{SM}(T) + \tfrac{7}{4}\left(N_\mathrm{eff} - 3.044\right),$$
+
+which is the only place it enters the model. $M_\mathrm{Pl} = 1.22 \times
+10^{22}\,\mathrm{MeV}$ is the unreduced Planck mass.
 
 ## Weak interaction rates
 

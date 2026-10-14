@@ -88,5 +88,6 @@ solve at 96 state variables took 171 s that way against 49 s this way.
 Kernel construction is `functools.cache`d on the callback and its options, and
 numba-enzyme keys its derivative cache on the primal's lowered IR. Because the
 five-argument derivative call inlines, the kernel's PTX is byte-identical
-across processes and the CUDA JIT cache hits. `clear_caches()` in each solver
-module drops the host-side caches.
+across processes and the CUDA JIT cache hits. `modax.tsit5.clear_caches()`
+drops Tsit5's compiled kernels and the sensitivity helpers' caches; Rodas5P has
+no equivalent, so its kernels stay cached for the life of the process.

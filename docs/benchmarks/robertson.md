@@ -25,9 +25,10 @@ integrated over $t \in [0, 10^5]$, with output at $t = 10^{-6}, 10^{-2},
 All benchmarks ran on a single NVIDIA GeForce RTX 4070 SUPER, a consumer
 card with a similar number of CUDA cores to, and the same architecture as, an
 L4-class datacentre GPU. DiffEqGPU.jl runs with `cpu_offload = 0`, so every
-trajectory is solved on the GPU. Every point is measured in its own process,
-compilation included, and one that does not compile and solve within 180 s is
-left off the plot. The discussion follows Section 3 of the
+trajectory is solved on the GPU. Each solver's points run in a child process of
+their own, and a point that does not compile and solve within 180 s is recorded
+as a timeout and left off the plot. Reported times exclude compilation: each is
+the mean over repeated solves after one warm-up call. The discussion follows Section 3 of the
 [paper](https://arxiv.org/abs/2609.35661).
 
 ## Scaling with ensemble size
@@ -41,8 +42,9 @@ DiffEqGPU.jl's `EnsembleGPUKernel` and 700× faster than Diffrax. As a fully
 implicit Runge-Kutta method, Kvaerno5 needs an iterative quasi-Newton solve at
 every stage, and the variable iteration counts cause severe thread divergence;
 a Rosenbrock method's fixed-cost linear solves avoid it, which is why they suit
-GPUs. DiffEqGPU.jl's $N = 1$ point is omitted, because it handles a
-one-trajectory ensemble differently from a batch.
+GPUs. DiffEqGPU.jl has no $N = 1$ point: `EnsembleGPUArray` is skipped there,
+since it hands a one-trajectory ensemble to its serial fallback, and
+`EnsembleGPUKernel` failed at that size.
 
 ```bash
 uv run python benchmarks/stiff_robertson_scaling/main.py
@@ -54,10 +56,11 @@ uv run python benchmarks/stiff_robertson_scaling/main.py
 
 Sensitivity to divergence at $N = 3 \times 10^4$. The divergence parameter
 $\delta \in [0, 3]$ draws the initial split of mass between $y_1$ and $y_3$
-uniformly, moves the intermediate fraction $y_2(0)$ log-uniformly from 0.1
-towards $10^{-8}$, and scales each rate constant by an independent factor
+uniformly once $\delta > 0$, moves the intermediate fraction $y_2(0)$
+log-uniformly down from 0.1 (to about $10^{-6}$ at $\delta = 3$), and scales each rate constant by an independent factor
 $10^u$ with $u \sim \mathcal{U}(-\delta, \delta)$, so at $\delta = 3$ the rates
-span six orders of magnitude across the ensemble. As for Lorenz, divergence
+span six orders of magnitude across the ensemble. The DiffEqGPU.jl
+`EnsembleGPUKernel` cases stop at $\delta = 2.5$. As for Lorenz, divergence
 substantially increases solve time, and pre-sorting trajectories by expected
 difficulty, so that a warp holds trajectories needing similar numbers of
 steps, again essentially eliminates modax's sensitivity to it.

@@ -10,8 +10,7 @@
 | **Rodas5P** | Rosenbrock-W (order 5) | Stiff systems     | `rodas5P.py`   |
 
 Rodas5P supports an `lu_precision` (`"fp32"`/`"fp64"`) knob: the FP32
-factorisation halves shared-memory use without lowering method order, since the
-Rosenbrock order conditions hold under an approximate Jacobian.
+factorisation halves the LU's local-memory footprint at the expense of slightly lower method order.
 
 ## Installation
 
@@ -26,8 +25,9 @@ docs.
 --8<-- "README.md:quickstart"
 
 The ensemble dimension comes from whichever of `y0` and `params` is
-two-dimensional; both may be, and they must then agree. The result is always
-`(N, n_save, n_vars)`.
+two-dimensional; both may be, and they must then agree. The history is
+`(N, n_save, n_vars)`; see [Calling a solver](guide/api.md) for what
+`return_stats` and save hooks add to it.
 
 ## Where to go next
 

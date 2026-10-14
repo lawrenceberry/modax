@@ -58,8 +58,8 @@ def make_initial_conditions(
         of y1 fuel to keep the reactions running, extending the hard region of
         the trajectory.
 
-    ``divergence=0`` returns the identical hard baseline. Larger values draw
-    alpha from a broader range and move epsilon log-uniformly from EPS toward
+    ``divergence=0`` returns the identical hard baseline. Any positive value
+    draws alpha uniformly over its whole range, and larger values move epsilon log-uniformly from EPS toward
     much smaller intermediate-species concentrations. This keeps concentrations
     non-negative and mass-conserving while spreading Robertson step counts over
     easy induction-dominated trajectories and hard immediately-stiff ones.

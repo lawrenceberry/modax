@@ -643,10 +643,10 @@ def solve(
 
     ``backend`` chooses where the kernel keeps the state and its stage vectors:
     ``"shared"`` in per-block shared memory, ``"local"`` in the thread's own
-    local memory. The two are bit-identical; shared is faster where the device
-    is under-occupied (small ensembles, low dimension) and local where it is
-    saturated, and ``"auto"`` picks by the ensemble's size and the system's,
-    taking shared whenever the system fits and the ensemble is small enough.
+    local memory. The two are bit-identical and within noise of each other until the
+    device saturates, where local wins by up to 14%; ``"auto"`` takes shared
+    where the system has at most 16 components and the ensemble at most 16384
+    trajectories, and local otherwise.
 
     The solve is an XLA custom call into the numba-cuda kernel, so it carries a
     ``jax.custom_jvp`` rule rather than being differentiated by XLA: asking for

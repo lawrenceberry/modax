@@ -1,4 +1,4 @@
-"""Cooperative packed-batch Rodas5P custom kernel using numba-cuda."""
+"""Rodas5P custom kernel using numba-cuda: one thread per trajectory, everything thread-local."""
 
 from __future__ import annotations
 
@@ -720,7 +720,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         # The stage increments are what came out of the linear solve, so they
         # already carry only lu_precision; storing them wider keeps rounding
         # that is not there and doubles the thread's local-memory footprint,
-        # which is what bounds occupancy once the matrix is off the shared path.
+        # and that footprint is what the local-memory traffic scales with.
         k_stages = cuda.local.array((8, size), lu_local_dtype)
         # The dense-output state a save hook is handed; a single dummy slot
         # when there is no hook, so the default kernel carries no extra local
@@ -1049,7 +1049,7 @@ def solve(
     hook_size: int = 0,
     save_history: bool = True,
 ):
-    """JAX-callable Rodas5 custom-kernel solve.
+    """JAX-callable Rodas5P custom-kernel solve.
 
     Only the right-hand side is supplied. The Jacobian ``df/dy``, and the
     partial time derivative ``df/dt`` that a non-autonomous system needs to
@@ -1061,7 +1061,7 @@ def solve(
     side, Jacobian and error estimate are always float64; because the
     Rosenbrock--Wanner order conditions retain full order under an approximate
     Jacobian, the ``"fp32"`` default does not reduce the method's order while
-    halving the LU shared-memory footprint and exploiting FP32 throughput.
+    halving the LU's local-memory footprint and exploiting FP32 throughput.
     ``"fp64"`` is available for ill-conditioned systems where the FP32
     factorisation degrades step-size control.
 
@@ -1091,8 +1091,7 @@ def solve(
     factorisation serves the state and every sensitivity column and the coupling
     is a forward substitution. What grows with ``n_sens`` is the thread's own
     working set -- ten stage vectors of the augmented state, in local memory --
-    rather than the block's shared budget, which carries only the ``n_vars``
-    matrix. This is still a solver for problems with few parameters relative to
+    while the matrix stays ``n_vars``-sized. This is still a solver for problems with few parameters relative to
     the state dimension.
 
     ``sens_param_columns`` restricts the parameter sensitivities to the columns
@@ -1142,11 +1141,6 @@ def solve(
     ``ordering`` picks the fill-reducing permutation: ``"amd"`` by default,
     SuiteSparse's approximate minimum degree out of ``cvxopt``, or
     ``"natural"`` to skip the ordering. It is ignored without a pattern.
-
-    Forward sensitivities work with either solver: the joint iteration matrix is
-    block lower triangular with the same ``M0`` on every diagonal block, so only
-    the ``n_vars`` block is ever factorised and the coupling between blocks is a
-    forward substitution the kernel does itself.
 
     ``tf_index`` names a column of ``params`` holding each trajectory's own end
     time, for ensembles whose members finish at different times; save times

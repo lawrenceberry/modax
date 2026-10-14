@@ -165,8 +165,9 @@ def fill_pattern(pattern: tuple[tuple[int, ...], ...]) -> np.ndarray:
     buffer is then one slot short in a kernel that has no way to say so. It is
     also cheaper, since it needs neither a plausible matrix nor a device.
 
-    Bit-per-entry over the whole matrix, so the analysis is ``O(n ** 3 / 64)``
-    time and ``O(n ** 2)`` bits. These are solvers for systems of tens to a few
+    A dense boolean elimination over the whole matrix, one numpy row OR per
+    update, so the analysis is ``O(n ** 3)`` time at worst and ``O(n ** 2)``
+    bytes. These are solvers for systems of tens to a few
     hundred variables (a 200-variable pattern analyses in single-digit
     milliseconds), so a sparse symbolic factorisation would buy nothing but code.
     """

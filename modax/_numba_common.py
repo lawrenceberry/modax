@@ -19,7 +19,7 @@ from modax._jax_numba_custom_call import (
 
 # Both kernels open with the same parameters -- the ensemble inputs, the scalar
 # step-control settings, and the history and counter outputs -- and differ only
-# in the scratch arrays that follow, so the leading argument types and ABI kinds
+# in what follows (Rodas5P appends its save-hook output), so the leading argument types and ABI kinds
 # are declared once here.
 _F64_1D = types.float64[::1]
 _F64_2D = types.float64[:, ::1]
@@ -99,8 +99,9 @@ def ensemble_ffi_call(
     """Launch a solver kernel from JAX and return its solution outputs.
 
     ``arrays`` are the array inputs (y0, times, params, error weights) in kernel
-    order and ``scratch_specs`` describes the kernel's scratch arrays, which XLA
-    allocates as extra outputs. Returns ``(hist, accepted, rejected, loop)``.
+    order and ``scratch_specs`` describes any scratch arrays XLA should allocate
+    as extra outputs; both solvers pass ``()``, since every per-trajectory
+    buffer is thread-local. Returns ``(hist, accepted, rejected, loop)``.
 
     ``n_save_hist`` is the history's time extent when it differs from the number
     of save times (a kernel that keeps only the final state passes 1), and

@@ -67,7 +67,7 @@ one stage is a block forward substitution
 $$M_0\,k_y = r_y, \qquad M_0\,k_{S_k} = r_{S_k} + L_k\,k_y$$
 
 against a single factorisation. The LU stays $n_\text{vars}^3$ instead of
-$n_\text{vars}^3(1+n_\text{sens})^3$, and shared memory $n_\text{vars}^2$
+$n_\text{vars}^3(1+n_\text{sens})^3$, and its buffer $n_\text{vars}^2$
 instead of $n_\text{vars}^2(1+n_\text{sens})^2$.
 
 (c) was chosen because it needs exactly the same derivatives as (b) while
@@ -126,7 +126,9 @@ Details:
 
 - Only the blocks you differentiate are integrated. A gradient with respect to
   `params` alone carries `n_params` sensitivity columns; one with respect to
-  `y0` as well carries `n_vars` more.
+  `y0` as well carries `n_vars` more. `sens_param_columns` restricts the
+  parameter block to the columns it names, for a model with parameters nobody
+  differentiates.
 - The sensitivities take part in step-size control by default (~20% extra steps),
   so the gradient's accuracy is tied to `rtol` rather than left to luck. Pass
   `sens_error_control=False` to drop them from the error norm: the joint solve
@@ -187,23 +189,28 @@ A single sensitivity column costs between 1.7× and 2.7× across that range —
 flat enough to plan around, and creeping up rather than down, since the extra
 triangular solves and Enzyme sweeps scale with `n_vars` even though the
 factorisation they reuse does not. In fp64 the ratio is *lower* (2.21× at
-`n_vars = 48`), because the shared LU is twice the work and so a larger share of
-the step.
+`n_vars = 48`), because the one LU every column reuses is twice the work and so
+a larger share of the step.
 
 Two things to watch:
 
 - **Differentiating `y0` adds `n_vars` columns**, not one, so it is only
   practical at low dimension. On 3-species Robertson at `N = 20000`, a gradient
   with respect to the three rate parameters costs ~9× the value; adding `y0`
-  takes it to six columns and ~34×. At `n_vars = 48` it is not an option at all.
-- **Shared memory is the hard limit.** Rodas5P re-fits its LU batch to the
-  augmented footprint automatically, and raises a clear error if even one
-  trajectory per block will not fit. At `n_vars = 48` that leaves room for about
-  one parameter column.
+  takes it to six columns and ~34×. At `n_vars = 48` it multiplies the joint
+  width by at least 49.
+- **Thread-local memory is what grows.** Every per-trajectory buffer is the
+  thread's own local memory, so no on-chip budget caps `n_sens` and there is
+  nothing to re-fit or to fail: the factorisation stays `n_vars`-sized, and what
+  grows with each column is the stage vectors of the augmented state. A wider
+  joint system costs occupancy and local-memory traffic, which is the slow climb
+  in the tables above, rather than a hard limit.
 
 Tsit5 is cheaper per column (it forms no Jacobian and needs no second
-derivatives) and is bounded by memory traffic rather than shared memory, so it
-scales further in `n_sens` — at the usual cost of needing a non-stiff problem.
+derivatives) and carries no matrix at all, so it scales further in `n_sens` — at
+the usual cost of needing a non-stiff problem. Its shared-memory backend holds
+at most 16 components, sensitivities included, so `backend="auto"` moves a wider
+joint system to thread-local memory.
 
 ## Why continuous forward sensitivities
 

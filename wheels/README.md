@@ -8,7 +8,7 @@ publishes on PyPI has no CUDA backend, so the dependency is
 under its own distribution name:
 
 ```toml
-dependencies = ["numba-enzyme-cuda>=0.2.1"]
+dependencies = ["numba-enzyme-cuda>=0.2.2"]
 ```
 
 An ordinary dependency, with no `[tool.uv.sources]` entry behind it. It used to
@@ -31,7 +31,7 @@ wheel under `numba_enzyme/_vendor/` — 237 MB installed, 73.5 MB compressed, an
 PyPI's per-file limit is 100 MB. No system LLVM is involved, and
 `toolchain.py` resolves `_vendor/` ahead of `PATH`. It is tagged
 `py3-none-manylinux_2_38_x86_64`: no CPython tag, because the package has no
-extension modules and so installs on any Python ≥ 3.11, and 2.38 because that
+extension modules and so installs on any Python ≥ 3.10, and 2.38 because that
 is the highest `GLIBC_` symbol version any of the nineteen ELF files under
 `_vendor/` references, which is what auditwheel would derive from the contents.
 A bare `linux_x86_64`, which the release asset carried, PyPI refuses outright.
@@ -178,7 +178,7 @@ The fork carries changes that are not upstream:
   positional arguments, which CPython compiles as a star call that numba's
   inliner rejects, is compiled as a separate function instead of inlined, and
   nvJitLink's LTO recovers the cost: modax's derivative call at `n_vars=48`
-  carries 53 arguments and solves no slower than the earlier raw extern.
+  carried 53 arguments before it took the state as one array, and solved no slower than the earlier raw extern.
 - **LTO IR instead of PTX** — the derivative is emitted as NVVM LTO IR, which
   makes numba-cuda-mlir compile the calling kernel to LTO IR too, so nvJitLink
   inlines the derivative rather than leaving an opaque call carrying a
@@ -206,7 +206,7 @@ The fork carries changes that are not upstream:
   `numba==0.61.2` for its CPU driver; that would force numpy below 2.3 here.
 - **self-contained git installs** — `hatch_build.py` stages the LLVM/Enzyme
   binaries from the released PyPI wheel when `_vendor/` is absent, and tags the
-  wheel `py3-none-linux_x86_64`. See "Installing from the branch instead"
+  wheel `py3-none-manylinux_2_38_x86_64`. See "Installing from the branch instead"
   above. `_vendor/` is gitignored again now that the hook, rather than the
   un-ignore, is what keeps the plugin in the wheel.
 

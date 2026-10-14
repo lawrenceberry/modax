@@ -21,9 +21,10 @@ gives direct control over how much work each trajectory demands.
 All benchmarks ran on a single NVIDIA GeForce RTX 4070 SUPER, a consumer
 card with a similar number of CUDA cores to, and the same architecture as, an
 L4-class datacentre GPU. DiffEqGPU.jl runs with `cpu_offload = 0`, so every
-trajectory is solved on the GPU. Every point is measured in its own process,
-compilation included, and one that does not compile and solve within 180 s is
-left off the plot. The discussion follows Section 3 of the
+trajectory is solved on the GPU. Each solver's points run in a child process of
+their own, and a point that does not compile and solve within 180 s is recorded
+as a timeout and left off the plot. Reported times exclude compilation: each is
+the mean over repeated solves after one warm-up call. The discussion follows Section 3 of the
 [paper](https://arxiv.org/abs/2609.35661).
 
 ## Scaling with ensemble size
@@ -31,7 +32,8 @@ left off the plot. The discussion follows Section 3 of the
 ![Lorenz scaling](plots/nonstiff_lorenz_scaling.png)
 
 Wall-clock solve time against ensemble size $N$, from 3 to $10^5$ identical
-trajectories. At $N = 1000$ modax is 30× faster than Diffrax, consistent with
+trajectories, for modax, Diffrax, torchdiffeq (Dopri8, one adaptive step shared
+by the whole ensemble) and both DiffEqGPU.jl backends. At $N = 1000$ modax is 30× faster than Diffrax, consistent with
 eliminating essentially all kernel launch overhead, and 2.5× faster than
 DiffEqGPU.jl's `EnsembleGPUKernel`, scaling slightly more favourably as $N$
 grows. A plausible reason is the kernel's lower register and cache footprint,
@@ -51,8 +53,8 @@ Sensitivity to trajectory divergence at $N = 10^5$, chosen to saturate the
 GPU. A divergence parameter controls the spread of initial distances from the
 origin. Solve time is divided by the mean number of steps, to remove the
 trivial effect of harder trajectories needing more steps, and plotted against
-the standard deviation of attempted steps across the ensemble, which measures
-how unevenly the work is spread. torchdiffeq uses Dopri8, since it does not
+the normalised standard deviation (standard deviation over mean) of attempted
+steps across the ensemble, which measures how unevenly the work is spread. torchdiffeq uses Dopri8, since it does not
 implement Tsit5.
 
 Solve times rise with divergence, because harder trajectories force the easier

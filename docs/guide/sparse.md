@@ -18,8 +18,9 @@ trajectory per thread, in place of the dense LU. The pattern must be a superset
 of the true nonzeros — colouring a superset only costs sweeps, colouring a
 subset silently corrupts entries — but it need *not* cover the factorisation's
 fill-in, which is worked out from it. With no pattern, every column gets its own
-colour and the matrix is factorised densely: the same mechanism at its
-uninformative end rather than a second code path.
+colour and the matrix is factorised densely: the colouring at its
+uninformative end, and a dense LU of the same shape as the sparse one, so the
+kernel has no branch between them.
 
 On DISCO-EB's 50-variable Einstein-Boltzmann system this is **22% faster** than
 the hand-written Schur block-LU it replaced, and it asks nothing of the caller
@@ -70,8 +71,8 @@ sample matrix and counting cannot be — a coefficient that happens to vanish fo
 those particular numbers, or an exact cancellation, drops an entry another
 right-hand side needs, and the buffer is then one slot short in a kernel with no
 way to say so. It is also cheaper, needing neither a plausible matrix nor a
-device. The implementation is bit-per-entry over the whole matrix, `O(n³/64)`
-time and `O(n²)` bits, which for the tens-to-a-few-hundred variables these
+device. The implementation is a dense boolean elimination over the whole matrix
+(numpy row ORs), `O(n³)` time at worst and `O(n²)` bytes, which for the tens-to-a-few-hundred variables these
 solvers target analyses in milliseconds and buys nothing back from a sparse
 symbolic algorithm.
 
@@ -83,13 +84,13 @@ with the solution so far, and the back substitution is the same over row `i` of
 two of them, and a column-oriented factorisation would still leave the solves
 wanting rows. `L` and `U` share that one image — `L` strictly left of the
 diagonal, `U` from it rightwards — because the factorisation is in place and a
-unit diagonal needs no storage, so the buffer is exactly `nnz(L + U)`, which is
-per-thread local memory and the thing that bounds occupancy.
+unit diagonal needs no storage, so the buffer is exactly `nnz(L + U)` elements of
+per-thread local memory, and that is the solver's whole footprint.
 
 **The Jacobian is written straight into the factorisation's buffer.** Colouring
 and storage are separate questions, and the AD's colour sweeps deposit `−J` at
-the CSR slots the factorisation will read, with the fill-in slots simply cleared
-beforehand. Nothing is staged through global memory and read back, and nothing is
+the CSR slots the factorisation will read, with the buffer cleared beforehand
+whenever it has slots no sweep writes, such as the fill-in. Nothing is staged through global memory and read back, and nothing is
 expanded to a dense matrix in between. It also means the pattern may be declared
 as tightly as it really is: a hand-written solver owning its own buffer had to
 declare its fill-in in the pattern to have somewhere to put it, and paid colours

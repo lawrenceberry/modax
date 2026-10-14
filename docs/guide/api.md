@@ -16,7 +16,7 @@ y = solve(
     atol=1e-10,
     first_step=None,
     max_steps=100_000,
-    return_stats=False,                  # also return per-step accept/reject counts
+    return_stats=False,                  # also return per-trajectory step counters
     error_weights=None,                  # optional per-component weights (0 = ignore)
     pcoeff=0.0, icoeff=1.0, dcoeff=0.0,  # PID step-controller gains
     sens_error_control=True,             # error-control the sensitivities too
@@ -80,7 +80,8 @@ history.
     I-controller.
 
 `return_stats`
-:   Also return accepted/rejected step counts per trajectory.
+:   Also return a dict of per-trajectory step counters, `accepted_steps`,
+    `rejected_steps` and `loop_steps`, each of shape `(N,)`.
 
 `sens_error_control`, `sens_param_columns`
 :   Control how a differentiated solve treats the sensitivity block — see
@@ -125,8 +126,10 @@ history.
     store derived quantities per save. It lets a consumer of the history run
     inside the launch instead of storing the history, and `save_history=False`
     then shrinks the history output to the final state, `(N, 1, n_vars)`. A
-    hooked solve returns `(hist, hook_out)` and is a plain ensemble launch: no
-    `jax.vmap`, no differentiation.
+    hooked solve returns `(hist, hook_out)`, with the stats dict appended when
+    `return_stats=True`, and is a plain ensemble launch: no `jax.vmap`, no
+    differentiation. A `save_hook` needs a positive `hook_size`, and
+    `save_history=False` without a hook raises.
 
 ## Arguments only Tsit5 takes
 
