@@ -53,6 +53,7 @@ theme:
 nav:
   - Quickstart: index.md
   - Development: development.md
+  - Acknowledgement: acknowledgement.md
   - Usage:
     - Calling a solver: guide/api.md
     - Writing ODE callbacks: guide/callbacks.md

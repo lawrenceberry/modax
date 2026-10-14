@@ -52,17 +52,3 @@ two-dimensional; both may be, and they must then agree. The result is always
     `jax.grad` and friends, through a continuous forward-sensitivity solve.
 
 </div>
-
-## Citation
-
---8<-- "README.md:citation"
-
-## License
-
---8<-- "README.md:license"
-
-??? note "Full license text"
-
-    ```text
-    --8<-- "LICENSE"
-    ```
