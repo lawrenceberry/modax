@@ -2,6 +2,8 @@
 
 --8<-- "README.md:install"
 
+--8<-- "README.md:development"
+
 A GPU is needed to *run* a solve: every solver is a CUDA kernel. The CPU
 install is enough for the tests that exercise the typing and lowering pipeline
 without a device (`tests/test_examples.py`), and for building these docs.

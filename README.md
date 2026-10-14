@@ -45,6 +45,33 @@ binaries and provides the `numba_enzyme` import package, so upstream
 `numba-enzyme` must not be installed alongside it. See
 [wheels/README.md](wheels/README.md) for what is in the wheel and why.
 
+<!-- --8<-- [end:install] -->
+
+## Quickstart
+
+A stiff decay chain A → B → C, solved for 1000 rate constants at once, with
+the Jacobian's sparsity pattern declared:
+
+```python
+import jax.numpy as jnp
+import numpy as np
+from modax.rodas5P import solve
+
+
+def ode_fn(y, t, p):  # tuples of scalars in and out
+    return -p[0] * y[0], p[0] * y[0] - p[1] * y[1], p[1] * y[1]
+
+
+sparsity = np.array([[1, 0, 0], [1, 1, 0], [0, 1, 1]], dtype=bool)
+params = jnp.stack([jnp.logspace(0, 4, 1000), jnp.ones(1000)], axis=1)
+y0 = jnp.array([1.0, 0.0, 0.0])
+t_span = jnp.linspace(0.0, 10.0, 11)
+
+y = solve(ode_fn, y0, t_span, params, sparsity=sparsity)  # (1000, 11, 3)
+```
+
+<!-- --8<-- [start:development] -->
+
 ## Development setup
 
 The repository uses [uv](https://docs.astral.sh/uv/):
@@ -68,4 +95,4 @@ UV_PROJECT_ENVIRONMENT=.venv-docs uv sync --only-group docs --no-install-project
 UV_PROJECT_ENVIRONMENT=.venv-docs uv run --no-sync mkdocs serve
 ```
 
-<!-- --8<-- [end:install] -->
+<!-- --8<-- [end:development] -->
