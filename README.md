@@ -27,7 +27,7 @@ Every solver is compiled as a **custom CUDA kernel** using Numba-CUDA-MLIR. Each
 <!-- --8<-- [end:overview] -->
 
 The [documentation](https://lawrenceberry.github.io/modax/) covers the solver
-API and explains how to use the library. The [paper](https://arxiv.org/abs/2609.35661) details the technical implementation and example applications.
+API and explains how to use the library. The [paper](https://arxiv.org/abs/2609.35661) details the technical implementation, example applications and performance benchmarks against other GPU-accelerated ODE libraries in Julia and Python.
 
 <!-- --8<-- [start:install] -->
 
