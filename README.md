@@ -96,3 +96,20 @@ UV_PROJECT_ENVIRONMENT=.venv-docs uv run --no-sync mkdocs serve
 ```
 
 <!-- --8<-- [end:development] -->
+
+## Citation
+
+If you use modax in your research, please cite the
+[arXiv article](https://arxiv.org/abs/2609.35661):
+
+```bibtex
+@misc{berry2026acceleratingmassiveensemblesordinary,
+      title={Accelerating massive ensembles of ordinary differential equations}, 
+      author={Lawrence Berry and Will Handley and Oliver Hahn and Nils Schöneberg},
+      year={2026},
+      eprint={2609.35661},
+      archivePrefix={arXiv},
+      primaryClass={astro-ph.IM},
+      url={https://arxiv.org/abs/2609.35661}, 
+}
+```
