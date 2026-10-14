@@ -20,7 +20,7 @@ y = solve(
     error_weights=None,                  # optional per-component weights (0 = ignore)
     pcoeff=0.0, icoeff=1.0, dcoeff=0.0,  # PID step-controller gains
     sens_error_control=True,             # error-control the sensitivities too
-    sparsity=None,                       # Jacobian pattern; see "Sparse systems"
+    sparsity=None,                       # Jacobian pattern; see "Exploiting sparsity"
     ordering="amd",                      # its fill-reducing permutation
 )
 # y has shape (N, n_save, n_vars)

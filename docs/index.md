@@ -35,7 +35,7 @@ two-dimensional; both may be, and they must then agree. The history is
 
     The rules a right-hand side compiled for the GPU has to follow.
 
--   :material-grid: **[Sparse systems](usage/sparse.md)**
+-   :material-grid: **[Exploiting sparsity](usage/sparse.md)**
 
     One `sparsity` pattern buys both a coloured Jacobian and a compiled sparse
     direct solve.

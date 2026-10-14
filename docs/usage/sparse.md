@@ -1,4 +1,4 @@
-# Sparse systems
+# Exploiting sparsity
 
 Rodas5P takes a `sparsity` pattern, and that one argument is the whole
 interface — there is no linear solver to write or to pass:
