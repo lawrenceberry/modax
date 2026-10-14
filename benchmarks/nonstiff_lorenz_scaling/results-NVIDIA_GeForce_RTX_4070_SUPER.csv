@@ -29,6 +29,16 @@ torchdiffeq dopri8,torchdiffeq dopri8,3000,351.67931695468724
 torchdiffeq dopri8,torchdiffeq dopri8,10000,352.80086495913565
 torchdiffeq dopri8,torchdiffeq dopri8,30000,359.0638580499217
 torchdiffeq dopri8,torchdiffeq dopri8,100000,730.4356229724362
+gradsolve tsit5,gradsolve tsit5,3,3.479473991319537
+gradsolve tsit5,gradsolve tsit5,10,3.4604149404913187
+gradsolve tsit5,gradsolve tsit5,30,3.5005840472877026
+gradsolve tsit5,gradsolve tsit5,100,7.205527974292636
+gradsolve tsit5,gradsolve tsit5,300,13.495619175955653
+gradsolve tsit5,gradsolve tsit5,1000,13.697388814762235
+gradsolve tsit5,gradsolve tsit5,3000,13.655169866979122
+gradsolve tsit5,gradsolve tsit5,10000,13.963358011096716
+gradsolve tsit5,gradsolve tsit5,30000,40.23963212966919
+gradsolve tsit5,gradsolve tsit5,100000,85.45401296578348
 julia tsit5 EnsembleGPUArray,julia tsit5 EnsembleGPUArray,3,68.69877000000001
 julia tsit5 EnsembleGPUArray,julia tsit5 EnsembleGPUArray,10,69.741864
 julia tsit5 EnsembleGPUArray,julia tsit5 EnsembleGPUArray,30,68.85745299999999

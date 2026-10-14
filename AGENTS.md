@@ -552,8 +552,8 @@ touching the code.
   against JAX's forward-mode AD of the same `ode_fn`.
   `_tuple_codegen.py` builds these callbacks for parameterised dimensions from
   one expression string per component, so every index is a literal.
-- `reference/solvers/python/` — Diffrax, scipy, Julia (DiffEqGPU) and
-  torchdiffeq baselines. The torchdiffeq one solves the ensemble as a single
+- `reference/solvers/python/` — Diffrax, scipy, Julia (DiffEqGPU),
+  torchdiffeq and gradsolve baselines. The torchdiffeq one solves the ensemble as a single
   `(n_vars, N)` tensor under one adaptive step, and applies the tuple-form
   callback to that batch directly, which works because the non-stiff systems
   are pure arithmetic. torch comes from PyTorch's CUDA 13 index so it shares
@@ -561,6 +561,19 @@ touching the code.
   pull `nvidia-*-cu12` packages that unpack over the CUDA 13 ones -- and
   `cuda-toolkit[nvvm]` in the dev group keeps NVVM on the toolkit release
   torch pins, since a newer NVVM emits PTX the older nvJitLink refuses.
+  The gradsolve one (`gradsolve_engines.py`) puts gradsolve's two NVIDIA Warp
+  kernels behind the same signature, labelled `gradsolve tsit5` and
+  `gradsolve rosenbrock23` in the plots: Tsit5, refused above 64 state
+  variables on a GPU, and Rosenbrock23, order 2 and refused above 12. Both
+  are timed through gradsolve's public `solve`, which returns the final state
+  to the host, and the stiff one has no JAX bridge at all. They take a
+  callback only through gradsolve's translation of its `jnp` form into a
+  Warp function, which covers plain arithmetic and the elementwise
+  transcendentals but not a `select` or a closed-over table.
+  `make_value_and_grad` times gradsolve's record-and-replay gradient, with
+  and without the record. gradsolve's hand-written CUDA kernel and its
+  pure-JAX engines are deliberately left out. gradsolve needs Python 3.11, so
+  on 3.10 the dev group leaves it out and the gradsolve cases fail to import.
 - `benchmarks/` — scaling, dimensionality and divergence benchmarks behind the
   figures of the "Accelerating massive ensembles of ODEs" paper, plus a
   Jacobian-density sweep (`stiff_vdp_sparsity`) and a `value_and_grad` sweep

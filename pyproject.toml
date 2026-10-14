@@ -123,6 +123,11 @@ dev = [
     # follows.
     "torch==2.9.1",
     "torchdiffeq>=0.2.5",
+    # The gradsolve baseline of the benchmarks (arXiv:2609.02876): its fused
+    # Tsit5 and Rosenbrock23 kernels run on NVIDIA Warp, which ships its own
+    # CUDA runtime. gradsolve needs Python 3.11.
+    "gradsolve>=0.2.1; python_version >= '3.11'",
+    "warp-lang>=1.14; python_version >= '3.11'",
 ]
 
 [tool.pytest.ini_options]

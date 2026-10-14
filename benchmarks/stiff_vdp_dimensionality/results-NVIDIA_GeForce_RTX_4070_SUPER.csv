@@ -43,6 +43,12 @@ diffrax kvaerno5,diffrax kvaerno5,32,182.36633797641844
 diffrax kvaerno5,diffrax kvaerno5,64,492.8777141030878
 diffrax kvaerno5,diffrax kvaerno5,96,473.3352109324187
 diffrax kvaerno5,diffrax kvaerno5,128,759.211077936925
+gradsolve rosenbrock23,gradsolve rosenbrock23,2,2.0810149144381285
+gradsolve rosenbrock23,gradsolve rosenbrock23,4,3.962890012189746
+gradsolve rosenbrock23,gradsolve rosenbrock23,6,7.746370043605566
+gradsolve rosenbrock23,gradsolve rosenbrock23,8,13.543965993449092
+gradsolve rosenbrock23,gradsolve rosenbrock23,10,22.044815123081207
+gradsolve rosenbrock23,gradsolve rosenbrock23,12,33.36354601196945
 julia rodas5P EnsembleGPUArray,julia rodas5P EnsembleGPUArray,2,26.935795
 julia rodas5P EnsembleGPUArray,julia rodas5P EnsembleGPUArray,4,27.594713
 julia rodas5P EnsembleGPUArray,julia rodas5P EnsembleGPUArray,6,28.428071

@@ -3,10 +3,13 @@
 Sweeps ODE dimension from 2 to 128 (n_osc = 1 to 64) on a log scale with a
 fixed ensemble of 1000 identical trajectories and records solve time for modax
 Tsit5, Diffrax Tsit5, torchdiffeq Dopri8 (one adaptive step shared by the
-whole ensemble) and Julia Tsit5 with both DiffEqGPU ensemble backends. A
-point that fails, or does not compile and solve within the case timeout, is
-recorded as such and omitted from the plot. Outputs a CSV and a log-log plot
-named after the GPU.
+whole ensemble), gradsolve Tsit5 (its fused NVIDIA Warp kernel, on
+gradsolve's translation of the lattice's right-hand side into a Warp function,
+up to the 64 state variables gradsolve launches the kernel for) and Julia
+Tsit5 with both DiffEqGPU ensemble backends. A point that
+fails, or does not compile and solve within the case timeout, is recorded as
+such and omitted from the plot. Outputs a CSV and a log-log plot named after
+the GPU.
 
 Uses the non-stiff coupled VDP variant (mu = 1.0) so that explicit Tsit5
 remains an appropriate solver.
@@ -36,6 +39,7 @@ from benchmarks._sweep import (
 )
 from benchmarks.benchmark_common import (  # noqa: E402
     DIFFRAX_COLOR,
+    GRADSOLVE_COLOR,
     JULIA_COLOR,
     MODAX_COLOR,
     TORCHDIFFEQ_COLOR,
@@ -43,6 +47,8 @@ from benchmarks.benchmark_common import (  # noqa: E402
 from modax.tsit5 import clear_caches as tsit5_clear_caches
 from modax.tsit5 import solve as tsit5_solve
 from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
+from reference.solvers.python.gradsolve_engines import TSIT5_MAX_DIM
+from reference.solvers.python.gradsolve_engines import solve as gradsolve_solve
 from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
 from reference.solvers.python.torchdiffeq_dopri8 import (
     solve as torchdiffeq_dopri8_solve,
@@ -79,6 +85,15 @@ def _problem(dim: int) -> Problem:
     )
 
 
+def _skip(case: SweepCase, dim: int) -> str | None:
+    if case.key == "gradsolve tsit5" and dim > TSIT5_MAX_DIM:
+        return (
+            "gradsolve launches its Tsit5 kernel only up to "
+            f"{TSIT5_MAX_DIM} state variables"
+        )
+    return None
+
+
 BENCHMARK = SweepBenchmark(
     script_dir=Path(__file__).resolve().parent,
     title=f"Tsit5 dimensionality — coupled VDP lattice (μ={_MU_NONSTIFF})",
@@ -88,6 +103,10 @@ BENCHMARK = SweepBenchmark(
     make_problem=_problem,
     julia_solve=julia_tsit5_solve,
     julia_system="vdp",
+    skip=_skip,
+    legend_loc="upper center",
+    legend_ncol=2,
+    legend_bbox_to_anchor=(0.5, -0.2),
     cases=(
         SweepCase(
             key="modax tsit5",
@@ -112,6 +131,15 @@ BENCHMARK = SweepBenchmark(
             marker="D",
             solve_fn=torchdiffeq_dopri8_solve,
             kwargs=_SOLVER_KWARGS,
+            jit=False,
+        ),
+        SweepCase(
+            key="gradsolve tsit5",
+            color=GRADSOLVE_COLOR,
+            marker="o",
+            linestyle="--",
+            solve_fn=gradsolve_solve,
+            kwargs={**_SOLVER_KWARGS, "engine": "warp_ode"},
             jit=False,
         ),
         SweepCase(

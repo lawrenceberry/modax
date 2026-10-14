@@ -98,8 +98,9 @@ class SweepCase(BenchmarkCase):
     ``sparsity=``. ``cleanup`` runs after each timing, for a solver that caches
     per-dimension state between points. ``jit=False`` times a ``"jax"`` case
     as a plain call instead of under ``jax.jit``, for a solver outside JAX
-    such as the torchdiffeq reference, which must then block on its device
-    before returning.
+    such as the torchdiffeq and gradsolve references, which must then block on
+    their device before returning. ``make_run`` replaces the construction of
+    the timed call altogether; see below.
     """
 
     mode: str = "jax"
@@ -109,6 +110,13 @@ class SweepCase(BenchmarkCase):
     sparse: bool = False
     cleanup: Callable[[], None] | None = None
     jit: bool = True
+    make_run: Callable[..., Callable[[], Any]] | None = None
+    """``make_run(problem, t_span, **kwargs) -> run`` builds the zero-argument
+    callable a ``"jax"`` or ``"jax_grad"`` case times, in place of the plain
+    ``solve_fn`` call, for a solver whose timed call is not one solve: the
+    gradsolve record-and-replay gradient, which records a mesh once and then
+    differentiates a replay of it (see
+    ``reference.solvers.python.gradsolve_engines.make_value_and_grad``)."""
 
 
 @dataclass(kw_only=True)
@@ -127,6 +135,11 @@ class SweepBenchmark:
     skip: Callable[[SweepCase, int], str | None] | None = None
     """Returns why a case is not run at a value, or ``None`` to run it."""
     legend_loc: str = "best"
+    legend_ncol: int = 1
+    legend_bbox_to_anchor: tuple[float, float] | None = None
+    """Anchor for a legend placed outside the axes, e.g. ``(0.5, -0.2)`` with
+    ``legend_loc="upper center"`` for a legend beneath the plot and its
+    rotated tick labels."""
     n_runs: int = 1
 
     @property
@@ -179,13 +192,15 @@ def measure(bench: SweepBenchmark, job: dict) -> float:
         )
     if case.mode not in ("jax", "jax_grad"):
         raise ValueError(f"unknown sweep case mode: {case.mode!r}")
-    assert case.solve_fn is not None
+    assert case.solve_fn is not None or case.make_run is not None
     kwargs = dict(case.kwargs)
     if case.sparse:
         if problem.sparsity is None:
             raise ValueError(f"{case.key} wants a sparsity pattern the problem lacks")
         kwargs["sparsity"] = problem.sparsity
-    if case.mode == "jax_grad":
+    if case.make_run is not None:
+        run = case.make_run(problem, bench.t_span, **kwargs)
+    elif case.mode == "jax_grad":
         run = jit_value_and_grad(case.solve_fn, problem.ode_fn, bench.t_span, **kwargs)
     elif case.jit:
         run = jit_solve(case.solve_fn, problem.ode_fn, bench.t_span, **kwargs)
@@ -196,7 +211,10 @@ def measure(bench: SweepBenchmark, job: dict) -> float:
             return solve_fn(ode_fn, y0, t_span, params, **kwargs)
 
     try:
-        ms, _ = time_blocked(lambda: run(problem.y0, problem.params), bench.n_runs)
+        if case.make_run is not None:
+            ms, _ = time_blocked(run, bench.n_runs)
+        else:
+            ms, _ = time_blocked(lambda: run(problem.y0, problem.params), bench.n_runs)
         return ms
     finally:
         if case.cleanup is not None:
@@ -299,7 +317,11 @@ def plot(bench: SweepBenchmark, rows: list[Row], gpu_name: str, path: Path) -> N
     if bench.axis.position is None:
         ax.set_xticks(bench.values)
         ax.set_xticklabels([str(v) for v in bench.values], rotation=45, ha="right")
-    ax.legend(loc=bench.legend_loc)
+    ax.legend(
+        loc=bench.legend_loc,
+        ncol=bench.legend_ncol,
+        bbox_to_anchor=bench.legend_bbox_to_anchor,
+    )
     fig.tight_layout()
     fig.savefig(path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {path}")

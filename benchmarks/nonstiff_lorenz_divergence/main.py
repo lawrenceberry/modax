@@ -5,8 +5,11 @@ Runs the Lorenz system with 100,000 trajectories while sweeping the
 value, the benchmark records solve time and the actual distribution of accepted
 plus rejected Tsit5 steps. Diffrax Tsit5 and torchdiffeq's Dopri8 take one
 adaptive step for the whole ensemble, so their time is set by the trajectory
-wanting the smallest step. Julia Tsit5 runs on both DiffEqGPU ensemble
-backends.
+wanting the smallest step. gradsolve Tsit5, its fused NVIDIA Warp kernel,
+steps every trajectory on its own thread, as modax does, and like modax is
+also run with the ensemble pre-sorted by modax's attempted steps, so that
+neighbouring threads do similar work. Julia Tsit5 runs on both DiffEqGPU
+ensemble backends.
 
 Usage:
     uv run python benchmarks/nonstiff_lorenz_divergence/main.py
@@ -26,12 +29,14 @@ import benchmarks.benchmark_common  # noqa: E402,F401
 from benchmarks._divergence import DivergenceBenchmark, DivergenceCase, main
 from benchmarks.benchmark_common import (  # noqa: E402
     DIFFRAX_COLOR,
+    GRADSOLVE_COLOR,
     JULIA_COLOR,
     MODAX_COLOR,
     TORCHDIFFEQ_COLOR,
 )
 from modax.tsit5 import solve as tsit5_solve
 from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
+from reference.solvers.python.gradsolve_engines import solve as gradsolve_solve
 from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
 from reference.solvers.python.torchdiffeq_dopri8 import (
     solve as torchdiffeq_dopri8_solve,
@@ -41,6 +46,7 @@ from reference.systems.python import lorenz
 jax.config.update("jax_enable_x64", True)
 
 _N_TRAJ = 100_000
+_SOLVER_KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
 
 BENCHMARK = DivergenceBenchmark(
     script_dir=Path(__file__).resolve().parent,
@@ -52,7 +58,7 @@ BENCHMARK = DivergenceBenchmark(
     dim=lorenz.N_VARS,
     n_traj=_N_TRAJ,
     divergences=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
-    solver_kwargs={"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8},
+    solver_kwargs=_SOLVER_KWARGS,
     make_data=lambda divergence: lorenz.make_scenario(
         _N_TRAJ, seed=42, divergence=divergence
     ),
@@ -83,6 +89,25 @@ BENCHMARK = DivergenceBenchmark(
             mode="timing",
             solve_fn=torchdiffeq_dopri8_solve,
             jit=False,
+        ),
+        DivergenceCase(
+            key="gradsolve tsit5",
+            color=GRADSOLVE_COLOR,
+            marker="o",
+            mode="timing",
+            solve_fn=gradsolve_solve,
+            kwargs={**_SOLVER_KWARGS, "engine": "warp_ode"},
+            jit=False,
+        ),
+        DivergenceCase(
+            key="gradsolve tsit5 (sorted)",
+            color=GRADSOLVE_COLOR,
+            marker="P",
+            mode="timing",
+            solve_fn=gradsolve_solve,
+            kwargs={**_SOLVER_KWARGS, "engine": "warp_ode"},
+            jit=False,
+            sort_by_steps=True,
         ),
         DivergenceCase(
             key="julia tsit5 EnsembleGPUArray",

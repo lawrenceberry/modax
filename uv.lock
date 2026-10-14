@@ -852,6 +852,19 @@ wheels = [
 ]
 
 [[package]]
+name = "gradsolve"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jax", version = "0.9.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/71/0f30daa8528575509d12d42a70394ced6da56a703a081d3b8e6a35cba33c/gradsolve-0.2.1.tar.gz", hash = "sha256:6beacbd0f58a37b05d6b06c19a6c470a87a4d6002ede5b4e7177a8536d04f9a5", size = 544791, upload-time = "2026-09-03T07:11:58.068Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/23/2d/c3b569a8f3dcc13c707ad4a871801ee906e7f1b97a8ef5a8d240baa8f4e1/gradsolve-0.2.1-py3-none-any.whl", hash = "sha256:fc3187d2bec7a765aed05e18d40002b121bb7cbb28537d0769489aed4698d079", size = 166310, upload-time = "2026-09-03T07:11:56.576Z" },
+]
+
+[[package]]
 name = "griffelib"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1898,6 +1911,7 @@ dev = [
     { name = "cuda-toolkit", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, extra = ["nvvm"], marker = "python_full_version >= '3.11'" },
     { name = "diffrax", version = "0.7.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "diffrax", version = "0.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "gradsolve", marker = "python_full_version >= '3.11'" },
     { name = "matplotlib" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -1908,6 +1922,7 @@ dev = [
     { name = "torch" },
     { name = "torchdiffeq" },
     { name = "ty" },
+    { name = "warp-lang", marker = "python_full_version >= '3.11'" },
 ]
 docs = [
     { name = "mkdocs" },
@@ -1938,6 +1953,7 @@ dev = [
     { name = "blackjax", marker = "python_full_version >= '3.11'", specifier = ">=1.6" },
     { name = "cuda-toolkit", extras = ["nvvm"], marker = "python_full_version >= '3.11'", specifier = ">=13.0.0" },
     { name = "diffrax", specifier = ">=0.7.0" },
+    { name = "gradsolve", marker = "python_full_version >= '3.11'", specifier = ">=0.2.1" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "pre-commit", specifier = ">=4.4.0" },
     { name = "pytest", specifier = ">=9.0.2" },
@@ -1948,6 +1964,7 @@ dev = [
     { name = "torch", specifier = "==2.9.1", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchdiffeq", specifier = ">=0.2.5" },
     { name = "ty", specifier = ">=0.0.83" },
+    { name = "warp-lang", marker = "python_full_version >= '3.11'", specifier = ">=1.14" },
 ]
 docs = [
     { name = "mkdocs", specifier = ">=1.6" },
@@ -3581,6 +3598,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1e/67/cbae4bf7683a64755c2c1778c418fea96d00e34395bb91743f08bd951571/wadler_lindig-0.1.7.tar.gz", hash = "sha256:81d14d3fe77d441acf3ebd7f4aefac20c74128bf460e84b512806dccf7b2cd55", size = 15842, upload-time = "2025-06-18T07:00:42.843Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8d/96/04e7b441807b26b794da5b11e59ed7f83b2cf8af202bd7eba8ad2fa6046e/wadler_lindig-0.1.7-py3-none-any.whl", hash = "sha256:e3ec83835570fd0a9509f969162aeb9c65618f998b1f42918cfc8d45122fe953", size = 20516, upload-time = "2025-06-18T07:00:41.684Z" },
+]
+
+[[package]]
+name = "warp-lang"
+version = "1.18.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/ca/0f88f27e9367b55df2c87fd6dbb96f15871ab7fcca14dd9ec92ec4688a30/warp_lang-1.18.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:3d0a12f411555c08015f84060187a0466800d2c837eb8800977b9604be438c21", size = 27819487, upload-time = "2026-10-05T00:22:32.346Z" },
+    { url = "https://files.pythonhosted.org/packages/13/69/5fc4388c6af4c78cd247776bb6928cabe83d893896444dd2127ccbe8b2ca/warp_lang-1.18.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:090962bfae7dd22ade0d8e0258f41635e0e58980f15bcc9e7a7d312819dfe440", size = 148811186, upload-time = "2026-10-05T00:23:01.197Z" },
+    { url = "https://files.pythonhosted.org/packages/be/41/6e255904a10cd1b3b1a61cc9ac21551812ffc55b1c68324de4c0c24a6660/warp_lang-1.18.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:d76ab8c7d4f4897405fa0a744d38812fc44cfc8162c40e658dc9ca7790b6a645", size = 147348850, upload-time = "2026-10-05T00:23:31.015Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/75/888dfe20326fea1a3b46b68a239ccd5db717bb039d511ab6fca7c77e6fea/warp_lang-1.18.0-py3-none-win_amd64.whl", hash = "sha256:1769e55746739f2e244a2b412123003c462ec3d977dfb5f420f924a8553d30aa", size = 134607061, upload-time = "2026-10-05T00:23:56.792Z" },
 ]
 
 [[package]]

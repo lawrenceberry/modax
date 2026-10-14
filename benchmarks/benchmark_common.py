@@ -67,6 +67,7 @@ MODAX_COLOR = "#f0a202"
 JULIA_COLOR = "#9b59b6"
 DIFFRAX_COLOR = "#1f77b4"
 TORCHDIFFEQ_COLOR = "#d62728"
+GRADSOLVE_COLOR = "#2ca02c"
 
 
 @dataclass(frozen=True, kw_only=True)

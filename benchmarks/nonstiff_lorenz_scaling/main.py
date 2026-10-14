@@ -2,10 +2,14 @@
 
 Sweeps the size of an ensemble of identical trajectories from 3 to 100k on a
 log scale and records solve time for modax Tsit5, Diffrax Tsit5, torchdiffeq
-Dopri8 (one adaptive step shared by the whole ensemble) and Julia Tsit5 with
-both DiffEqGPU ensemble backends. A point that does not compile and
-solve within the case timeout is recorded as such and omitted from the plot.
-Outputs a CSV and a log-log plot named after the GPU.
+Dopri8 (one adaptive step shared by the whole ensemble), gradsolve Tsit5
+(its fused NVIDIA Warp kernel, on gradsolve's translation of the right-hand
+side into a Warp function) and Julia Tsit5 with both DiffEqGPU ensemble
+backends. gradsolve is timed through its public ``solve``, which returns the
+final state to the host (see ``reference/solvers/python/gradsolve_engines.py``).
+A point that does not compile and solve within the case timeout is recorded
+as such and omitted from the plot. Outputs a CSV and a log-log plot named
+after the GPU.
 
 Usage:
     uv run python benchmarks/nonstiff_lorenz_scaling/main.py
@@ -32,12 +36,14 @@ from benchmarks._sweep import (
 )
 from benchmarks.benchmark_common import (  # noqa: E402
     DIFFRAX_COLOR,
+    GRADSOLVE_COLOR,
     JULIA_COLOR,
     MODAX_COLOR,
     TORCHDIFFEQ_COLOR,
 )
 from modax.tsit5 import solve as tsit5_solve
 from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
+from reference.solvers.python.gradsolve_engines import solve as gradsolve_solve
 from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
 from reference.solvers.python.torchdiffeq_dopri8 import (
     solve as torchdiffeq_dopri8_solve,
@@ -86,6 +92,15 @@ BENCHMARK = SweepBenchmark(
             marker="D",
             solve_fn=torchdiffeq_dopri8_solve,
             kwargs=_SOLVER_KWARGS,
+            jit=False,
+        ),
+        SweepCase(
+            key="gradsolve tsit5",
+            color=GRADSOLVE_COLOR,
+            marker="o",
+            linestyle="--",
+            solve_fn=gradsolve_solve,
+            kwargs={**_SOLVER_KWARGS, "engine": "warp_ode"},
             jit=False,
         ),
         SweepCase(
