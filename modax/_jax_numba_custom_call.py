@@ -322,6 +322,11 @@ def make_launch(
     block: int | Sequence[int],
     shared_mem: int = 0,
 ) -> CudaLaunch:
+    """Compile ``kernel`` for ``argtypes`` and bundle it with its launch geometry.
+
+    ``grid`` and ``block`` may be an int or up to three dimensions, padded to
+    three; ``shared_mem`` is the dynamic shared memory per block, in bytes.
+    """
     return CudaLaunch(
         function=compile_kernel(kernel, argtypes),
         grid=_as_3d(grid),

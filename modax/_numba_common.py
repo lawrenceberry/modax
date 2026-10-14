@@ -132,6 +132,11 @@ def ensemble_ffi_call(
 
 
 def solver_stats(accepted, rejected, loop_steps):
+    """The ``return_stats`` dict: per-trajectory ``(N,)`` step counters.
+
+    ``loop_steps`` counts iterations of the stepping loop, which is what
+    ``max_steps`` caps.
+    """
     return {
         "accepted_steps": accepted,
         "rejected_steps": rejected,
@@ -141,6 +146,9 @@ def solver_stats(accepted, rejected, loop_steps):
 
 @functools.cache
 def as_cuda_device(fn):
+    """``fn`` as a CUDA device function: ``cuda.jit(device=True)`` unless it
+    already is one, cached so a callback is compiled once.
+    """
     if isinstance(fn, MLIRDispatcher):
         return fn
     return cuda.jit(device=True)(fn)
