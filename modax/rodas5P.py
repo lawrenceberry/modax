@@ -25,26 +25,28 @@ from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.descriptor import MLIRDispatcher
 
 from modax._codegen import compile_device_source
-from modax._jax_common import make_custom_vmap_solver, normalize_y0_params
+from modax._jax_common import (
+    ensemble_ffi_call,
+    make_custom_vmap_solver,
+    prepare_inputs,
+)
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
 from modax._numba_common import (
     HOOK_OUT_ARGTYPE,
     SOLVER_ARGTYPES,
     OdeFn,
+    PIDGains,
     SolveOutput,
     Solver,
     SolverStats,
+    SolveSettings,
     as_cuda_device,
-    build_error_weights,
-    ensemble_ffi_call,
-    initial_step,
     make_cuda_local_vector_writer,
+    make_step_controller,
     solver_stats,
 )
 from modax._sensitivity import (
     SensitivitySpec,
-    augmented_error_weights,
-    augmented_y0,
     make_augmented_local_writer,
     make_second_tangent,
     make_sensitivity_solver,
@@ -146,12 +148,11 @@ D5 =  2.325825639765069
 # fmt: on
 
 
-SAFETY = 0.9
+# The step controller: the error order the exponents divide by, and how far a
+# step may grow or shrink at once.
+ORDER = 6
 FACTOR_MIN = 0.2
 FACTOR_MAX = 6.0
-# Elementary I-controller exponent (-1/k, k the error order). The PID terms in
-# the kernel are expressed relative to this.
-EXPONENT = -1.0 / 6.0
 
 # One warp per block: the trajectories in a block step adaptively and so diverge,
 # and a warp is the granularity at which that divergence is free.
@@ -185,9 +186,7 @@ class KernelOptions:
     substitutes ``spec`` and nothing else.
     """
 
-    pcoeff: float = 0.0
-    icoeff: float = 1.0
-    dcoeff: float = 0.0
+    gains: PIDGains = PIDGains()
     lu_precision: LUPrecision = "fp32"
     trajectories_per_block: int = _DEFAULT_TRAJECTORIES_PER_BLOCK
     spec: SensitivitySpec | None = None
@@ -387,9 +386,7 @@ def _make_kernel(
         def save_hook(save_idx, y, t, p_row, acc):
             return
 
-    e1 = EXPONENT * (options.icoeff + options.pcoeff + options.dcoeff)
-    e2 = -EXPONENT * (options.pcoeff + 2.0 * options.dcoeff)
-    e3 = EXPONENT * options.dcoeff
+    next_step = make_step_controller(options.gains, ORDER, FACTOR_MIN, FACTOR_MAX)
     # The state, right-hand side, Jacobian and error estimate are always
     # float64; lu_dtype governs only the iteration matrix and its solves.
     # Rodas5P satisfies the Rosenbrock-W order conditions to second order, so
@@ -423,10 +420,6 @@ def _make_kernel(
     lu_size = structure.size
     diag_table = np.asarray(structure.diagonal, dtype=np.int32)
     store_table = structure.store_slots()
-    # Only a layout with slots nothing writes needs clearing first. The dense
-    # grid writes every slot; a sparse layout has one slot per entry of J and
-    # leaves the factorisation's fill-in for nobody to write.
-    needs_clear = store_table is not None and lu_size > int((store_table >= 0).sum())
 
     if spec is not None:
         ode_write = make_augmented_local_writer(ode_fn, spec)
@@ -511,9 +504,9 @@ def _make_kernel(
 
     # The grid writes every slot and a packed layout has one slot per entry,
     # so both come out fully defined by the sweeps. Only a layout with slots
-    # nothing writes -- the dense expansion's structural zeros, or a packed
-    # diagonal the pattern left out -- is cleared first.
-    if needs_clear:
+    # nothing writes -- the factorisation's fill-in, or a packed diagonal the
+    # pattern left out -- is cleared first.
+    if structure.has_unwritten_slots:
 
         @cuda.jit(device=True)
         def clear_matrix(lu):
@@ -963,21 +956,9 @@ def _make_kernel(
             err_norm = math.sqrt(err_local / n_error)
             accept = err_norm <= 1.0 and not math.isnan(err_norm)
 
-            if math.isnan(err_norm) or err_norm > 1e18:
-                safe_err = 1e18
-            elif err_norm == 0.0:
-                safe_err = 1e-18
-            else:
-                safe_err = err_norm
-            factor = SAFETY * safe_err**e1 * err_prev**e2 * err_prev2**e3
-            # Advance the PID error history only on accepted steps.
-            if accept:
-                err_prev2 = err_prev
-                err_prev = safe_err
-            if factor < FACTOR_MIN:
-                factor = FACTOR_MIN
-            elif factor > FACTOR_MAX:
-                factor = FACTOR_MAX
+            factor, err_prev, err_prev2 = next_step(
+                err_norm, err_prev, err_prev2, accept
+            )
             dt = dt_use * factor
 
             if accept:
@@ -1440,9 +1421,7 @@ def solve(
     """
     n_vars = jnp.shape(y0)[-1]
     options = KernelOptions(
-        pcoeff=pcoeff,
-        icoeff=icoeff,
-        dcoeff=dcoeff,
+        gains=PIDGains(pcoeff, icoeff, dcoeff),
         lu_precision=lu_precision,
         trajectories_per_block=trajectories_per_block_or_default(
             trajectories_per_block
@@ -1459,22 +1438,14 @@ def solve(
         hook_size=int(hook_size),
         save_history=bool(save_history),
     )
-    settings: dict[str, Any] = dict(
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        error_weights=error_weights,
-    )
+    settings = SolveSettings(rtol, atol, first_step, max_steps, error_weights)
 
     if save_hook is not None:
         if hook_size <= 0:
             raise ValueError("a save_hook needs a positive hook_size")
         # The hook's accumulator is a second output the vmap and JVP rules do
         # not know, so a hooked solve is the plain ensemble launch.
-        hist, hook_out, stats = _launch(
-            ode_fn, y0, t_span, params, options=options, **settings
-        )
+        hist, hook_out, stats = _launch(ode_fn, y0, t_span, params, options, settings)
         return (hist, hook_out, stats) if return_stats else (hist, hook_out)
     if not save_history:
         raise ValueError("save_history=False needs a save_hook to consume the saves")
@@ -1482,33 +1453,24 @@ def solve(
     # The JVP rule wraps the vmap-aware solvers rather than the other way
     # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
     # what tells the rule which sensitivity blocks it has to integrate.
-    def solver_for(options: KernelOptions) -> Solver:
+    def solver_for(spec: SensitivitySpec | None) -> Solver:
         return make_custom_vmap_solver(
             functools.partial(
                 _solve_impl,
                 ode_fn,
-                options=options,
+                options=replace(options, spec=spec),
+                settings=settings,
                 return_stats=return_stats,
-                **settings,
             ),
             return_stats=return_stats,
         )
 
-    primal_solver = solver_for(options)
-
-    def joint_solver_for(spec: SensitivitySpec) -> Solver:
-        return solver_for(replace(options, spec=spec))
-
     return make_sensitivity_solver(
-        primal_solver,
-        joint_solver_for,
-        jnp.shape(y0)[-1],
+        solver_for,
+        n_vars,
         jnp.shape(params)[-1],
-        return_stats,
-        sens_error_control,
-        None
-        if sens_param_columns is None
-        else tuple(int(c) for c in sens_param_columns),
+        sens_error_control=sens_error_control,
+        sens_param_columns=sens_param_columns,
     )(y0, t_span, params)
 
 
@@ -1519,26 +1481,11 @@ def _solve_impl(
     params: ArrayLike,
     *,
     options: KernelOptions,
+    settings: SolveSettings,
     return_stats: bool,
-    rtol: float,
-    atol: float,
-    first_step: float | None,
-    max_steps: int,
-    error_weights: ArrayLike | None,
 ) -> SolveOutput:
     """An unhooked solve: the history, with the stats when asked."""
-    hist, _, stats = _launch(
-        ode_fn,
-        y0,
-        t_span,
-        params,
-        options=options,
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        error_weights=error_weights,
-    )
+    hist, _, stats = _launch(ode_fn, y0, t_span, params, options, settings)
     return (hist, stats) if return_stats else hist
 
 
@@ -1547,46 +1494,19 @@ def _launch(
     y0: ArrayLike,
     t_span: ArrayLike,
     params: ArrayLike,
-    *,
     options: KernelOptions,
-    rtol: float,
-    atol: float,
-    first_step: float | None,
-    max_steps: int,
-    error_weights: ArrayLike | None,
+    settings: SolveSettings,
 ) -> tuple[jax.Array, jax.Array, SolverStats]:
     """Run the kernel: the history, the hook rows and the step counters."""
-    spec = options.spec
-    y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
-    times = jnp.asarray(t_span, dtype=jnp.float64)
-    n_save = times.shape[0]
-    n_params = params_arr.shape[1]
-    dt0 = initial_step(first_step)
-    weights_host = build_error_weights(error_weights, n, n_vars)
-
-    # With a spec the kernel integrates the joint [y, S] system, so every
-    # per-component extent below is the augmented one.
-    n_system = n_vars if spec is None else spec.n_aug
-    if spec is not None:
-        y0_arr = augmented_y0(y0_arr, spec)
-        weights_host = augmented_error_weights(weights_host, spec)
-    weights_arr = jnp.asarray(weights_host)
-
-    launch = _make_jax_launch(ode_fn, n, n_vars, n_params, options)
+    inputs = prepare_inputs(y0, t_span, params, settings, options.spec)
+    launch = _make_jax_launch(ode_fn, inputs.n, inputs.n_vars, inputs.n_params, options)
     # No global scratch: the kernel keeps the state, the ten stage vectors and
     # df/dt in registers and thread-local memory.
     hist, accepted, rejected, loop_steps, hook_out = ensemble_ffi_call(
         launch,
-        (y0_arr, times, params_arr, weights_arr),
-        (),
-        n=n,
-        n_vars=n_system,
-        n_save=n_save,
-        dt0=dt0,
-        rtol=rtol,
-        atol=atol,
-        max_steps=max_steps,
-        n_save_hist=n_save if options.save_history else 1,
+        inputs,
+        settings,
+        n_save_hist=inputs.n_save if options.save_history else 1,
         hook_size=max(1, options.hook_size),
     )
     return hist, hook_out, solver_stats(accepted, rejected, loop_steps)

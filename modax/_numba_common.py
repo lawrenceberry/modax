@@ -1,12 +1,14 @@
-"""Shared host-side helpers for numba-cuda custom-kernel solvers."""
+"""What the two kernels share: the callback coercion, the solve settings, the
+step controller and the kernel signature."""
 
 from __future__ import annotations
 
 import functools
+import math
+from dataclasses import dataclass
 from typing import Callable, Sequence, TypeAlias, TypedDict
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 import numpy.typing as npt
 from jax.typing import ArrayLike
@@ -14,13 +16,7 @@ from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.descriptor import MLIRDispatcher
 from numba_cuda_mlir.numba_cuda.types import Type
 
-from modax._jax_numba_custom_call import (
-    ABI_ARRAY,
-    ABI_SCALAR_F64,
-    ABI_SCALAR_I32,
-    CudaLaunch,
-    ffi_abi_call,
-)
+from modax._jax_numba_custom_call import ABI_ARRAY, ABI_SCALAR_F64, ABI_SCALAR_I32
 
 OdeFn: TypeAlias = (
     Callable[[Sequence[float], float, Sequence[float]], tuple[float, ...]]
@@ -47,6 +43,104 @@ SolveOutput: TypeAlias = jax.Array | tuple[jax.Array, SolverStats]
 
 Solver: TypeAlias = Callable[[ArrayLike, ArrayLike, ArrayLike], SolveOutput]
 """A ``(y0, t_span, params)`` solve of fixed callback and settings."""
+
+
+@dataclass(frozen=True)
+class SolveSettings:
+    """The per-call settings both solvers take and hand to the kernel as scalars.
+
+    Unlike the kernel options these select no compiled code: they are launch
+    arguments, and the error weights are an array input.
+    """
+
+    rtol: float = 1e-8
+    atol: float = 1e-10
+    first_step: float | None = None
+    max_steps: int = 100_000
+    error_weights: ArrayLike | None = None
+
+    @property
+    def dt0(self) -> np.float64:
+        """The initial step the kernels take, from ``first_step``.
+
+        A launch-time scalar, so it cannot be derived here from the save
+        times: under ``jit`` (and under the ``custom_vmap`` rule, which traces
+        unconditionally) those are tracers. With no first step pinned it is
+        the non-positive sentinel, and each kernel takes 1e-6 of its own
+        integration window off the ``times`` array it already reads.
+        """
+        return np.float64(0.0 if self.first_step is None else self.first_step)
+
+
+@dataclass(frozen=True)
+class PIDGains:
+    """The gains of the proportional-integral-derivative step controller.
+
+    The default ``(0, 1, 0)`` is the elementary integral controller. Non-zero
+    proportional and derivative gains give smoother step-size sequences and
+    fewer rejected steps on stiff and mildly oscillatory problems, which
+    reduces the spread of step counts across an ensemble and with it the
+    divergence between the threads of a warp.
+    """
+
+    pcoeff: float = 0.0
+    icoeff: float = 1.0
+    dcoeff: float = 0.0
+
+    def exponents(self, order: int) -> tuple[float, float, float]:
+        """``(e1, e2, e3)`` of Soderlind's controller for an error of ``order``.
+
+        ``h_next = h * 0.9 * err^e1 * err_prev^e2 * err_prev2^e3``, with
+        ``e1 = -(k_I + k_P + k_D) / q``, ``e2 = (k_P + 2 k_D) / q`` and
+        ``e3 = -k_D / q``. The defaults give ``e1 = -1 / q`` and
+        ``e2 = e3 = 0``, the elementary controller exactly.
+        """
+        q = -1.0 / order
+        return (
+            q * (self.icoeff + self.pcoeff + self.dcoeff),
+            -q * (self.pcoeff + 2.0 * self.dcoeff),
+            q * self.dcoeff,
+        )
+
+
+SAFETY = 0.9
+
+
+def make_step_controller(
+    gains: PIDGains, order: int, factor_min: float, factor_max: float
+) -> MLIRDispatcher:
+    """The device function that rescales the step after every attempt.
+
+    ``next_step(err_norm, err_prev, err_prev2, accept)`` returns the factor to
+    multiply the step by and the error history to carry forward, which
+    advances only on an accepted step. The error is clamped away from zero,
+    infinity and NaN before it is raised to the exponents, so a rejected step
+    with a NaN norm shrinks the step by ``factor_min`` rather than poisoning
+    the history. Both kernels call this once per attempted step; they differ
+    only in the error order and in how far a step may grow or shrink at once.
+    """
+    e1, e2, e3 = gains.exponents(order)
+
+    @cuda.jit(device=True)
+    def next_step(err_norm, err_prev, err_prev2, accept):
+        if math.isnan(err_norm) or err_norm > 1e18:
+            safe_err = 1e18
+        elif err_norm == 0.0:
+            safe_err = 1e-18
+        else:
+            safe_err = err_norm
+        factor = SAFETY * safe_err**e1 * err_prev**e2 * err_prev2**e3
+        if accept:
+            err_prev2 = err_prev
+            err_prev = safe_err
+        if factor < factor_min:
+            factor = factor_min
+        elif factor > factor_max:
+            factor = factor_max
+        return factor, err_prev, err_prev2
+
+    return next_step
+
 
 # Both kernels open with the same parameters -- the ensemble inputs, the scalar
 # step-control settings, and the history and counter outputs -- and differ only
@@ -100,68 +194,6 @@ def build_error_weights(
     if weights.ndim == 1:
         weights = np.broadcast_to(weights, (n, n_vars))
     return np.ascontiguousarray(weights, dtype=np.float64)
-
-
-def initial_step(first_step: float | None) -> np.float64:
-    """The ``dt0`` scalar the kernels take, from a user ``first_step``.
-
-    ``dt0`` is a launch-time scalar, so it cannot be derived here from the save
-    times: under ``jit`` (and under the ``custom_vmap`` rule, which traces
-    unconditionally) those are tracers. A caller that pins no first step passes
-    the non-positive sentinel instead, and each kernel takes 1e-6 of its own
-    integration window off the ``times`` array it already reads.
-    """
-    return np.float64(0.0 if first_step is None else first_step)
-
-
-def ensemble_ffi_call(
-    launch: CudaLaunch,
-    arrays: Sequence[jax.Array],
-    scratch_specs: Sequence[jax.ShapeDtypeStruct],
-    *,
-    n: int,
-    n_vars: int,
-    n_save: int,
-    dt0: float,
-    rtol: float,
-    atol: float,
-    max_steps: int,
-    n_save_hist: int | None = None,
-    hook_size: int | None = None,
-) -> tuple[jax.Array, ...]:
-    """Launch a solver kernel from JAX and return its solution outputs.
-
-    ``arrays`` are the array inputs (y0, times, params, error weights) in kernel
-    order and ``scratch_specs`` describes any scratch arrays XLA should allocate
-    as extra outputs; both solvers pass ``()``, since every per-trajectory
-    buffer is thread-local. Returns ``(hist, accepted, rejected, loop)``.
-
-    ``n_save_hist`` is the history's time extent when it differs from the number
-    of save times (a kernel that keeps only the final state passes 1), and
-    ``hook_size`` the width of the save hook's per-trajectory accumulator rows,
-    which the kernel takes as one more output right after the counters; the
-    call then returns ``(hist, accepted, rejected, loop, hook_out)``.
-    """
-    int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
-    n_hist = n_save if n_save_hist is None else n_save_hist
-    output_specs = (
-        jax.ShapeDtypeStruct((n, n_hist, n_vars), jnp.float64),
-        int_spec,
-        int_spec,
-        int_spec,
-    )
-    if hook_size is not None:
-        output_specs += (jax.ShapeDtypeStruct((n, hook_size), jnp.float64),)
-    output_specs += tuple(scratch_specs)
-    result = ffi_abi_call(
-        launch,
-        arrays,
-        output_specs,
-        input_kinds=SOLVER_INPUT_KINDS,
-        scalar_f64_values=(dt0, rtol, atol),
-        scalar_i32_values=(max_steps,),
-    )
-    return result[:4] if hook_size is None else result[:5]
 
 
 def solver_stats(

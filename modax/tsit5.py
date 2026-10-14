@@ -5,7 +5,8 @@ from __future__ import annotations
 import functools
 import gc
 import math
-from typing import Any, Literal, Sequence, TypeAlias, overload
+from dataclasses import dataclass, replace
+from typing import Literal, Sequence, TypeAlias, overload
 
 import jax
 import jax.numpy as jnp
@@ -13,24 +14,26 @@ from jax.typing import ArrayLike
 from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.descriptor import MLIRDispatcher
 
-from modax._jax_common import make_custom_vmap_solver, normalize_y0_params
+from modax._jax_common import (
+    ensemble_ffi_call,
+    make_custom_vmap_solver,
+    prepare_inputs,
+)
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
 from modax._numba_common import (
     SOLVER_ARGTYPES,
     OdeFn,
+    PIDGains,
     SolveOutput,
     Solver,
     SolverStats,
-    build_error_weights,
-    ensemble_ffi_call,
-    initial_step,
+    SolveSettings,
     make_cuda_local_vector_writer,
+    make_step_controller,
     solver_stats,
 )
 from modax._sensitivity import (
     SensitivitySpec,
-    augmented_error_weights,
-    augmented_y0,
     make_augmented_local_writer,
     make_sensitivity_solver,
 )
@@ -90,12 +93,11 @@ E7 = -1.0 / 66.0
 # fmt: on
 
 
-SAFETY = 0.9
+# The step controller: the embedded estimate is fourth order, so the error
+# order the exponents divide by is 5, and a step may grow tenfold at once.
+ORDER = 5
 FACTOR_MIN = 0.2
 FACTOR_MAX = 10.0
-# Elementary I-controller exponent (-1/k, k the error order). The PID terms in
-# the kernel are expressed relative to this.
-EXPONENT = -1.0 / 5.0
 
 # One thread per trajectory in both kernels; they differ only in where the nine
 # per-trajectory vectors (the state, the trial state and the seven stages) live.
@@ -131,23 +133,38 @@ Backend: TypeAlias = Literal["auto", "shared", "local"]
 """Where the kernel keeps the state and its stage vectors."""
 
 
-def _use_shared_backend(n: int, n_system: int, backend: Backend) -> bool:
-    if backend == "local":
-        return False
-    if backend == "shared":
-        if n_system > _SHARED_MAX_NVARS:
+@dataclass(frozen=True)
+class KernelOptions:
+    """What a solve asks of the kernel besides ``ode_fn`` and the shapes.
+
+    ``backend`` is resolved against the ensemble by
+    [`uses_shared`][modax.tsit5.KernelOptions.uses_shared] before a kernel is
+    built, so the compiled kernels are keyed on the gains, the spec and the
+    resolved storage rather than on this object.
+    """
+
+    gains: PIDGains = PIDGains()
+    backend: Backend = "auto"
+    spec: SensitivitySpec | None = None
+
+    def uses_shared(self, n: int, n_system: int) -> bool:
+        """Whether an ensemble of ``n`` systems of ``n_system`` components runs the shared-memory kernel."""
+        if self.backend == "local":
+            return False
+        if self.backend == "shared":
+            if n_system > _SHARED_MAX_NVARS:
+                raise ValueError(
+                    "shared backend requires a system size <= "
+                    f"{_SHARED_MAX_NVARS}; got {n_system}. A solve carrying forward "
+                    "sensitivities integrates n_vars * (1 + n_sens) components, so "
+                    "it may need backend='local' where the plain solve does not"
+                )
+            return True
+        if self.backend != "auto":
             raise ValueError(
-                "shared backend requires a system size <= "
-                f"{_SHARED_MAX_NVARS}; got {n_system}. A solve carrying forward "
-                "sensitivities integrates n_vars * (1 + n_sens) components, so "
-                "it may need backend='local' where the plain solve does not"
+                f"backend must be 'auto', 'shared', or 'local'; got {self.backend!r}"
             )
-        return True
-    if backend != "auto":
-        raise ValueError(
-            f"backend must be 'auto', 'shared', or 'local'; got {backend!r}"
-        )
-    return n_system <= _SHARED_MAX_NVARS and n <= _SHARED_MAX_ENSEMBLE
+        return n_system <= _SHARED_MAX_NVARS and n <= _SHARED_MAX_ENSEMBLE
 
 
 def clear_caches() -> None:
@@ -166,12 +183,7 @@ def clear_caches() -> None:
 
 @functools.cache
 def _make_body(
-    ode_fn: OdeFn,
-    n_vars: int,
-    pcoeff: float = 0.0,
-    icoeff: float = 1.0,
-    dcoeff: float = 0.0,
-    spec: SensitivitySpec | None = None,
+    ode_fn: OdeFn, n_vars: int, gains: PIDGains, spec: SensitivitySpec | None
 ) -> MLIRDispatcher:
     """Build the per-trajectory Tsit5 integration loop as a CUDA device function.
 
@@ -183,11 +195,7 @@ def _make_body(
     column of a per-block ``cuda.shared`` array, and the body is the same
     either way, which is what keeps the two bit-identical.
     """
-    # PID step-control exponents (Soderlind). Defaults (0, 1, 0) give E1=EXPONENT
-    # and E2=E3=0, recovering the elementary I-controller exactly.
-    e1 = EXPONENT * (icoeff + pcoeff + dcoeff)
-    e2 = -EXPONENT * (pcoeff + 2.0 * dcoeff)
-    e3 = EXPONENT * dcoeff
+    next_step = make_step_controller(gains, ORDER, FACTOR_MIN, FACTOR_MAX)
     # With a sensitivity spec the loop integrates the joint [y, S] system: the
     # writer emits [f, J_y S + J_p] and every stage vector, the error norm and
     # the dense-output write run over n_aug components instead of n_vars. The
@@ -391,21 +399,9 @@ def _make_body(
             else:
                 rejected_steps += 1
 
-            if math.isnan(err_norm) or err_norm > 1e18:
-                safe_err = 1e18
-            elif err_norm == 0.0:
-                safe_err = 1e-18
-            else:
-                safe_err = err_norm
-            factor = SAFETY * safe_err**e1 * err_prev**e2 * err_prev2**e3
-            # Advance the PID error history only on accepted steps.
-            if accept:
-                err_prev2 = err_prev
-                err_prev = safe_err
-            if factor < FACTOR_MIN:
-                factor = FACTOR_MIN
-            elif factor > FACTOR_MAX:
-                factor = FACTOR_MAX
+            factor, err_prev, err_prev2 = next_step(
+                err_norm, err_prev, err_prev2, accept
+            )
             dt = dt_use * factor
             t = t_new
             n_steps += 1
@@ -421,11 +417,9 @@ def _make_body(
 def _make_kernel(
     ode_fn: OdeFn,
     n_vars: int,
-    pcoeff: float = 0.0,
-    icoeff: float = 1.0,
-    dcoeff: float = 0.0,
-    spec: SensitivitySpec | None = None,
-    shared: bool = False,
+    gains: PIDGains,
+    spec: SensitivitySpec | None,
+    shared: bool,
 ) -> MLIRDispatcher:
     """Build a Tsit5 kernel: one thread per trajectory, storage chosen by ``shared``.
 
@@ -438,7 +432,7 @@ def _make_kernel(
     does a local array. Every thread touches only its own column, so nothing
     synchronises and a thread past the ensemble's end simply leaves.
     """
-    body = _make_body(ode_fn, n_vars, pcoeff, icoeff, dcoeff, spec)
+    body = _make_body(ode_fn, n_vars, gains, spec)
     n_system = n_vars if spec is None else spec.n_aug
 
     if not shared:
@@ -618,14 +612,12 @@ def _make_jax_launch(
     ode_fn: OdeFn,
     n: int,
     n_vars: int,
-    pcoeff: float = 0.0,
-    icoeff: float = 1.0,
-    dcoeff: float = 0.0,
-    spec: SensitivitySpec | None = None,
-    shared: bool = False,
+    gains: PIDGains,
+    spec: SensitivitySpec | None,
+    shared: bool,
 ) -> CudaLaunch:
     """Compile, load and size the kernel behind one JAX-side ensemble launch."""
-    kernel = _make_kernel(ode_fn, n_vars, pcoeff, icoeff, dcoeff, spec, shared)
+    kernel = _make_kernel(ode_fn, n_vars, gains, spec, shared)
     threads = _SHARED_BLOCK if shared else _LOCAL_BLOCK
     blocks = (n + threads - 1) // threads
     return make_launch(kernel, SOLVER_ARGTYPES, grid=blocks, block=threads)
@@ -779,47 +771,30 @@ def solve(
     to ``rtol``.
     """
 
-    settings: dict[str, Any] = dict(
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        return_stats=return_stats,
-        error_weights=error_weights,
-        pcoeff=pcoeff,
-        icoeff=icoeff,
-        dcoeff=dcoeff,
-        backend=backend,
-    )
+    options = KernelOptions(PIDGains(pcoeff, icoeff, dcoeff), backend)
+    settings = SolveSettings(rtol, atol, first_step, max_steps, error_weights)
+
     # The JVP rule wraps the vmap-aware solvers rather than the other way
     # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
     # what tells the rule which sensitivity blocks it has to integrate.
-    primal_solver = make_custom_vmap_solver(
-        functools.partial(_solve_impl, ode_fn, **settings),
-        return_stats=return_stats,
-    )
-
-    def joint_solver_for(spec: SensitivitySpec) -> Solver:
+    def solver_for(spec: SensitivitySpec | None) -> Solver:
         return make_custom_vmap_solver(
             functools.partial(
                 _solve_impl,
                 ode_fn,
-                spec=spec,
-                **settings,
+                options=replace(options, spec=spec),
+                settings=settings,
+                return_stats=return_stats,
             ),
             return_stats=return_stats,
         )
 
     return make_sensitivity_solver(
-        primal_solver,
-        joint_solver_for,
+        solver_for,
         jnp.shape(y0)[-1],
         jnp.shape(params)[-1],
-        return_stats,
-        sens_error_control,
-        None
-        if sens_param_columns is None
-        else tuple(int(c) for c in sens_param_columns),
+        sens_error_control=sens_error_control,
+        sens_param_columns=sens_param_columns,
     )(y0, t_span, params)
 
 
@@ -829,50 +804,18 @@ def _solve_impl(
     t_span: ArrayLike,
     params: ArrayLike,
     *,
-    rtol: float,
-    atol: float,
-    first_step: float | None,
-    max_steps: int,
+    options: KernelOptions,
+    settings: SolveSettings,
     return_stats: bool,
-    error_weights: ArrayLike | None,
-    pcoeff: float,
-    icoeff: float,
-    dcoeff: float,
-    backend: Backend,
-    spec: SensitivitySpec | None = None,
 ) -> SolveOutput:
-    y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
-    times = jnp.asarray(t_span, dtype=jnp.float64)
-    n_save = times.shape[0]
-    dt0 = initial_step(first_step)
-    weights_host = build_error_weights(error_weights, n, n_vars)
-
-    # With a spec the kernel integrates the joint [y, S] system, so every
-    # per-component extent below is the augmented one.
-    n_system = n_vars if spec is None else spec.n_aug
-    if spec is not None:
-        y0_arr = augmented_y0(y0_arr, spec)
-        weights_host = augmented_error_weights(weights_host, spec)
-    weights_arr = jnp.asarray(weights_host)
-
-    uses_shared = _use_shared_backend(n, n_system, backend)
+    inputs = prepare_inputs(y0, t_span, params, settings, options.spec)
+    shared = options.uses_shared(inputs.n, inputs.n_system)
     launch = _make_jax_launch(
-        ode_fn, n, n_vars, pcoeff, icoeff, dcoeff, spec, uses_shared
+        ode_fn, inputs.n, inputs.n_vars, options.gains, options.spec, shared
     )
     # No global scratch either way: the kernel keeps the state and the stage
     # vectors on chip or in thread-local memory.
-    hist, accepted, rejected, loop_steps = ensemble_ffi_call(
-        launch,
-        (y0_arr, times, params_arr, weights_arr),
-        (),
-        n=n,
-        n_vars=n_system,
-        n_save=n_save,
-        dt0=dt0,
-        rtol=rtol,
-        atol=atol,
-        max_steps=max_steps,
-    )
+    hist, accepted, rejected, loop_steps = ensemble_ffi_call(launch, inputs, settings)
     if not return_stats:
         return hist
     return hist, solver_stats(accepted, rejected, loop_steps)

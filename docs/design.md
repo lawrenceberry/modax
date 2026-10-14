@@ -293,11 +293,12 @@ argument and the measured costs.
 There is no direct Numba launch path: every solve goes through `solve` and the
 XLA custom call.
 
-1. `solve` normalises the ensemble shapes and builds, or fetches from its
+1. `solve` normalises the ensemble shapes into the arrays the kernel reads
+   (`modax._jax_common.prepare_inputs`) and builds, or fetches from its
    cache, the kernel for this `ode_fn`, dimension and set of options.
 2. `modax._jax_numba_custom_call` compiles a launcher for that kernel,
    registers it as an XLA FFI target and exposes it through `ffi_abi_call`.
-3. `modax._numba_common.ensemble_ffi_call` makes the call. The inputs keep
+3. `modax._jax_common.ensemble_ffi_call` makes the call. The inputs keep
    their natural `(N, ...)` layouts and there is no scratch, since every
    per-trajectory buffer is the thread's own local memory.
 4. `modax._jax_common.make_custom_vmap_solver` wraps the result so that an

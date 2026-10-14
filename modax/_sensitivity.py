@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -341,21 +341,20 @@ def _zero_tangent(x: ArrayLike) -> jax.Array | npt.NDArray[np.void]:
 
 
 def make_sensitivity_solver(
-    primal_solver: Solver,
-    joint_solver_for: Callable[[SensitivitySpec], Solver],
+    solver_for: Callable[[SensitivitySpec | None], Solver],
     n_vars: int,
     n_params: int,
-    return_stats: bool,
+    *,
     sens_error_control: bool,
-    param_columns: tuple[int, ...] | None = None,
+    sens_param_columns: Sequence[int] | None = None,
 ) -> Solver:
     """Attach a forward-sensitivity JVP rule to one solver implementation.
 
-    ``primal_solver(y0, t_span, params)`` runs the plain solve.
-    ``joint_solver_for(spec)`` returns the corresponding solver for the joint
-    ``[y, S]`` system described by ``spec``; its output has the ordinary solver
-    shape, with ``n_aug`` components in place of ``n_vars``.  Both are expected
-    to be already wrapped for ``vmap``: the rule has to sit *outside*
+    ``solver_for(None)`` is the plain solve, ``(y0, t_span, params)``, and
+    ``solver_for(spec)`` the corresponding solver for the joint ``[y, S]``
+    system described by ``spec``; its output has the ordinary solver shape,
+    with ``n_aug`` components in place of ``n_vars``.  Both are expected to be
+    already wrapped for ``vmap``: the rule has to sit *outside*
     ``custom_vmap``, whose JVP path traces to a jaxpr and so instantiates every
     symbolic zero, which would hide exactly the information the rule uses to
     decide which sensitivity blocks to integrate.
@@ -367,6 +366,12 @@ def make_sensitivity_solver(
     transpose it: ``jax.grad`` and ``jax.jacrev`` work off the same rule as
     ``jax.jvp`` and ``jax.jacfwd``, with no adjoint solve.
     """
+    primal_solver = solver_for(None)
+    param_columns = (
+        None
+        if sens_param_columns is None
+        else tuple(int(c) for c in sens_param_columns)
+    )
 
     @jax.custom_jvp
     def solve_fn(y0: ArrayLike, t_span: ArrayLike, params: ArrayLike) -> SolveOutput:
@@ -398,7 +403,7 @@ def make_sensitivity_solver(
         spec = SensitivitySpec(
             n_vars, n_params, wrt_y0, wrt_params, sens_error_control, param_columns
         )
-        out = joint_solver_for(spec)(y0, t_span, params)
+        out = solver_for(spec)(y0, t_span, params)
         hist, stats = out if isinstance(out, tuple) else (out, None)
         state, sens = split_augmented(hist, spec)
 

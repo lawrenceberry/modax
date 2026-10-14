@@ -123,6 +123,19 @@ class CompressedJacobian:
             )
         return slot
 
+    @property
+    def has_unwritten_slots(self) -> bool:
+        """Whether some slot of the buffer is written by no colour sweep.
+
+        The grid writes every slot, and a packed layout has one slot per entry
+        of ``J``; only a packed layout with slots nothing claims -- the
+        factorisation's fill-in, or a diagonal the pattern left out -- has to
+        be cleared before the sweeps run.
+        """
+        if self.packed is None:
+            return False
+        return self.size > sum(1 for slot in self.packed if slot >= 0)
+
     def store_slots(self) -> npt.NDArray[np.int32] | None:
         """Where each ``(row, colour)`` sweep value goes, or ``None`` for a run.
 

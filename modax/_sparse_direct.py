@@ -66,7 +66,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass, replace
-from typing import Literal, TypeAlias
+from typing import ClassVar, Literal, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -399,6 +399,7 @@ def compressed_jacobian(pattern: Pattern, layout: SparseLULayout) -> CompressedJ
     )
 
 
+@dataclass(frozen=True, repr=False)
 class SparseDirectSolver:
     """A Rodas5P linear solver compiled for one sparsity pattern.
 
@@ -412,16 +413,11 @@ class SparseDirectSolver:
     needs it and the two have one shape.
     """
 
-    ipiv_size: int = 1
-
-    def __init__(self, layout: SparseLULayout, compressed: CompressedJacobian) -> None:
-        self.layout: SparseLULayout = layout
-        self.compressed: CompressedJacobian = compressed
-        # Resolved once and handed to both, since it is the expensive part of
-        # the analysis and the factorisation is the only thing that needs it.
-        ops = layout.factorization_ops()
-        self.factorize_local: MLIRDispatcher = _make_factorize(layout, ops)
-        self.solve_local: MLIRDispatcher = _make_solve(layout)
+    layout: SparseLULayout
+    compressed: CompressedJacobian
+    factorize_local: MLIRDispatcher
+    solve_local: MLIRDispatcher
+    ipiv_size: ClassVar[int] = 1
 
     @property
     def nnz(self) -> int:
@@ -447,7 +443,12 @@ def sparse_direct_solver_for(
     gets the same compiled device functions and the kernel's own cache hits.
     """
     layout = analyse(pattern, ordering)
-    return SparseDirectSolver(layout, compressed_jacobian(pattern, layout))
+    return SparseDirectSolver(
+        layout,
+        compressed_jacobian(pattern, layout),
+        _make_factorize(layout, layout.factorization_ops()),
+        _make_solve(layout),
+    )
 
 
 def sparse_direct_solver(

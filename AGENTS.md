@@ -130,19 +130,23 @@ A hooked solve is a plain ensemble launch: no `jax.vmap`, no differentiation.
 
 Shared support modules:
 
-- **`_numba_common.py`** — host-side helpers shared by both kernels: initial
-  step selection, error weights, the shared kernel signature and its JAX launch
-  (`ensemble_ffi_call`), and the `cuda.jit` coercion for user callbacks. There
-  is no direct numba launch path: every solve, the benchmark scripts included,
-  goes through `solve` and the XLA custom call.
+- **`_numba_common.py`** — what both kernels share: the `cuda.jit` coercion
+  for user callbacks, the per-call `SolveSettings`, the `PIDGains` and the
+  step-controller device function (`make_step_controller`, which both kernels
+  call once per attempted step), the error weights and the shared kernel
+  signature.
 - **`_codegen.py`** — `compile_device_source`, the one place generated device
   source is exec'd and registered with `linecache`. Both emitters below use it.
 - **`_jax_numba_custom_call.py`** — the XLA FFI shim. Compiles a launcher,
   registers it as an FFI target, and exposes `ffi_abi_call` so a numba kernel
   becomes a JAX primitive.
-- **`_jax_common.py`** — the JAX-facing glue: ensemble shape normalisation and
-  `make_custom_vmap_solver`, whose `custom_vmap` rule lowers an outer
-  `jax.vmap` over a single solve into one native ensemble launch.
+- **`_jax_common.py`** — the JAX-facing glue: ensemble shape normalisation
+  into the `EnsembleInputs` a launch reads (`prepare_inputs`), the JAX launch
+  itself (`ensemble_ffi_call`), and `make_custom_vmap_solver`, whose
+  `custom_vmap` rule lowers an outer `jax.vmap` over a single solve into one
+  native ensemble launch. There is no direct numba launch path: every solve,
+  the benchmark scripts included, goes through `solve` and the XLA custom
+  call.
 - **`_sparsity.py`** — colours a sparsity pattern's column intersection graph
   and defines `CompressedJacobian`, the layout the Enzyme sweeps write into.
 - **`_sparse_direct.py`** — orders a pattern with AMD, factorises it
