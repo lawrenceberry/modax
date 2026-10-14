@@ -5,14 +5,22 @@ from __future__ import annotations
 import functools
 import gc
 import math
+from typing import Any, Literal, Sequence, TypeAlias, overload
 
+import jax
 import jax.numpy as jnp
+from jax.typing import ArrayLike
 from numba_cuda_mlir import cuda, types
+from numba_cuda_mlir.descriptor import MLIRDispatcher
 
 from modax._jax_common import make_custom_vmap_solver, normalize_y0_params
-from modax._jax_numba_custom_call import make_launch
+from modax._jax_numba_custom_call import CudaLaunch, make_launch
 from modax._numba_common import (
     SOLVER_ARGTYPES,
+    OdeFn,
+    SolveOutput,
+    Solver,
+    SolverStats,
     build_error_weights,
     ensemble_ffi_call,
     initial_step,
@@ -119,8 +127,11 @@ _SHARED_BLOCK = 32
 _SHARED_MAX_NVARS = 16
 _SHARED_MAX_ENSEMBLE = 16384
 
+Backend: TypeAlias = Literal["auto", "shared", "local"]
+"""Where the kernel keeps the state and its stage vectors."""
 
-def _use_shared_backend(n: int, n_system: int, backend: str) -> bool:
+
+def _use_shared_backend(n: int, n_system: int, backend: Backend) -> bool:
     if backend == "local":
         return False
     if backend == "shared":
@@ -155,13 +166,13 @@ def clear_caches() -> None:
 
 @functools.cache
 def _make_body(
-    ode_fn,
+    ode_fn: OdeFn,
     n_vars: int,
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
     spec: SensitivitySpec | None = None,
-):
+) -> MLIRDispatcher:
     """Build the per-trajectory Tsit5 integration loop as a CUDA device function.
 
     ``i`` is the trajectory, indexing the ensemble's global arrays (``y0``,
@@ -408,14 +419,14 @@ def _make_body(
 
 @functools.cache
 def _make_kernel(
-    ode_fn,
+    ode_fn: OdeFn,
     n_vars: int,
     pcoeff: float = 0.0,
     icoeff: float = 1.0,
     dcoeff: float = 0.0,
     spec: SensitivitySpec | None = None,
     shared: bool = False,
-):
+) -> MLIRDispatcher:
     """Build a Tsit5 kernel: one thread per trajectory, storage chosen by ``shared``.
 
     Either way the launch carries no scratch and ``y0``/``weights``/``hist``
@@ -604,7 +615,7 @@ def _make_kernel(
 
 @functools.cache
 def _make_jax_launch(
-    ode_fn,
+    ode_fn: OdeFn,
     n: int,
     n_vars: int,
     pcoeff: float = 0.0,
@@ -612,7 +623,7 @@ def _make_jax_launch(
     dcoeff: float = 0.0,
     spec: SensitivitySpec | None = None,
     shared: bool = False,
-):
+) -> CudaLaunch:
     """Compile, load and size the kernel behind one JAX-side ensemble launch."""
     kernel = _make_kernel(ode_fn, n_vars, pcoeff, icoeff, dcoeff, spec, shared)
     threads = _SHARED_BLOCK if shared else _LOCAL_BLOCK
@@ -620,25 +631,91 @@ def _make_jax_launch(
     return make_launch(kernel, SOLVER_ARGTYPES, grid=blocks, block=threads)
 
 
+@overload
 def solve(
-    ode_fn,
-    y0,
-    t_span,
-    params,
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
     *,
-    rtol=1e-8,
-    atol=1e-10,
-    first_step=None,
-    max_steps=100000,
-    return_stats=False,
-    error_weights=None,
-    pcoeff=0.0,
-    icoeff=1.0,
-    dcoeff=0.0,
-    backend="auto",
-    sens_error_control=True,
-    sens_param_columns=None,
-):
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[False] = False,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    backend: Backend = "auto",
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+) -> jax.Array: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[True],
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    backend: Backend = "auto",
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+) -> tuple[jax.Array, SolverStats]: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: bool,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    backend: Backend = "auto",
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+) -> SolveOutput: ...
+
+
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: bool = False,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    backend: Backend = "auto",
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+) -> SolveOutput:
     """JAX-callable Tsit5 custom-kernel solve.
 
     Args:
@@ -702,7 +779,7 @@ def solve(
     to ``rtol``.
     """
 
-    settings = dict(
+    settings: dict[str, Any] = dict(
         rtol=rtol,
         atol=atol,
         first_step=first_step,
@@ -722,7 +799,7 @@ def solve(
         return_stats=return_stats,
     )
 
-    def joint_solver_for(spec):
+    def joint_solver_for(spec: SensitivitySpec) -> Solver:
         return make_custom_vmap_solver(
             functools.partial(
                 _solve_impl,
@@ -747,23 +824,23 @@ def solve(
 
 
 def _solve_impl(
-    ode_fn,
-    y0,
-    t_span,
-    params,
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
     *,
-    rtol=1e-8,
-    atol=1e-10,
-    first_step=None,
-    max_steps=100000,
-    return_stats=False,
-    error_weights=None,
-    pcoeff=0.0,
-    icoeff=1.0,
-    dcoeff=0.0,
-    backend="auto",
-    spec=None,
-):
+    rtol: float,
+    atol: float,
+    first_step: float | None,
+    max_steps: int,
+    return_stats: bool,
+    error_weights: ArrayLike | None,
+    pcoeff: float,
+    icoeff: float,
+    dcoeff: float,
+    backend: Backend,
+    spec: SensitivitySpec | None = None,
+) -> SolveOutput:
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
     n_save = times.shape[0]

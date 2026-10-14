@@ -66,16 +66,24 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass, replace
+from typing import Literal, TypeAlias
 
 import numpy as np
+import numpy.typing as npt
 from numba_cuda_mlir import cuda
+from numba_cuda_mlir.descriptor import MLIRDispatcher
 
 from modax._codegen import compile_device_source
 from modax._sparsity import (
     CompressedJacobian,
+    Pattern,
+    Sparsity,
     colour_sparsity,
     normalize_sparsity,
 )
+
+IndexTable: TypeAlias = npt.NDArray[np.int32]
+"""A table of slots or offsets, ``int32`` because that is what the device reads."""
 
 # AMD, or nothing at all. CHOLMOD's orderings were reachable here while
 # scikit-sparse was a dependency, and measuring them is what retired it: over
@@ -86,10 +94,13 @@ from modax._sparsity import (
 # the perfect elimination order AMD finds there. Nested dissection wins on
 # meshes far larger than the tens-to-few-hundred variables this solver is for,
 # and it was the only thing a package with no wheels was buying.
-ORDERINGS = ("amd", "natural")
+Ordering: TypeAlias = Literal["amd", "natural"]
+ORDERINGS: tuple[Ordering, ...] = ("amd", "natural")
 
 
-def fill_reducing_order(pattern: tuple[tuple[int, ...], ...], ordering: str = "amd"):
+def fill_reducing_order(
+    pattern: Pattern, ordering: Ordering = "amd"
+) -> tuple[int, ...]:
     """A permutation of the variables that keeps ``L + U`` small.
 
     AMD, on the symmetrised pattern ``S + S.T``.
@@ -153,7 +164,7 @@ def fill_reducing_order(pattern: tuple[tuple[int, ...], ...], ordering: str = "a
     return tuple(int(i) for i in amd.order(matrix))
 
 
-def fill_pattern(pattern: tuple[tuple[int, ...], ...]) -> np.ndarray:
+def fill_pattern(pattern: Pattern) -> npt.NDArray[np.bool_]:
     """The exact ``L + U`` pattern of an unpivoted LU, as a boolean matrix.
 
     Gaussian elimination on the pattern alone: eliminating column ``k`` makes
@@ -212,9 +223,9 @@ class SparseLULayout:
 
     n_vars: int
     order: tuple[int, ...]
-    row_ptr: np.ndarray
-    col_ind: np.ndarray
-    diag_ptr: np.ndarray
+    row_ptr: IndexTable
+    col_ind: IndexTable
+    diag_ptr: IndexTable
 
     @property
     def nnz(self) -> int:
@@ -222,16 +233,16 @@ class SparseLULayout:
         return int(self.row_ptr[-1])
 
     @property
-    def row_origin(self) -> np.ndarray:
+    def row_origin(self) -> IndexTable:
         """Caller's index of each elimination row."""
         return np.asarray(self.order, dtype=np.int32)
 
     @property
-    def col_origin(self) -> np.ndarray:
+    def col_origin(self) -> IndexTable:
         """Caller's index of the column each slot belongs to."""
         return np.asarray(self.order, dtype=np.int32)[self.col_ind]
 
-    def slot_table(self) -> np.ndarray:
+    def slot_table(self) -> npt.NDArray[np.int64]:
         """``(n_vars, n_vars)`` of slots, ``-1`` where the structure has nothing."""
         table = np.full((self.n_vars, self.n_vars), -1, dtype=np.int64)
         origin = np.asarray(self.order, dtype=np.int64)
@@ -240,7 +251,7 @@ class SparseLULayout:
             table[origin[i], origin[self.col_ind[start:stop]]] = np.arange(start, stop)
         return table
 
-    def factorization_ops(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def factorization_ops(self) -> tuple[IndexTable, IndexTable, IndexTable]:
         """The rank-one updates, addressed off the multiplier that drives them.
 
         Up-looking LU visits row ``i`` and, for each entry ``(i, k)`` left of the
@@ -299,16 +310,14 @@ class SparseLULayout:
         return multipliers, updates, multipliers + int(upper.sum())
 
 
-def _lower_mask(layout: SparseLULayout) -> np.ndarray:
+def _lower_mask(layout: SparseLULayout) -> npt.NDArray[np.bool_]:
     """True at the slots strictly left of their row's diagonal."""
     slot = np.arange(layout.nnz)
     row = np.repeat(np.arange(layout.n_vars), np.diff(layout.row_ptr))
     return slot < layout.diag_ptr[row]
 
 
-def analyse(
-    pattern: tuple[tuple[int, ...], ...], ordering: str = "amd"
-) -> SparseLULayout:
+def analyse(pattern: Pattern, ordering: Ordering = "amd") -> SparseLULayout:
     """Order, factorise symbolically, and lay out ``L + U`` in CSR.
 
     ``pattern`` is the normalised form, one tuple of column indices per row, as
@@ -351,9 +360,7 @@ def analyse(
     )
 
 
-def compressed_jacobian(
-    pattern: tuple[tuple[int, ...], ...], layout: SparseLULayout
-) -> CompressedJacobian:
+def compressed_jacobian(pattern: Pattern, layout: SparseLULayout) -> CompressedJacobian:
     """The colour-compressed layout whose slots are ``layout``'s CSR slots.
 
     Colouring and storage are separate questions and this is where they meet.
@@ -405,16 +412,16 @@ class SparseDirectSolver:
     needs it and the two have one shape.
     """
 
-    ipiv_size = 1
+    ipiv_size: int = 1
 
-    def __init__(self, layout: SparseLULayout, compressed: CompressedJacobian):
-        self.layout = layout
-        self.compressed = compressed
+    def __init__(self, layout: SparseLULayout, compressed: CompressedJacobian) -> None:
+        self.layout: SparseLULayout = layout
+        self.compressed: CompressedJacobian = compressed
         # Resolved once and handed to both, since it is the expensive part of
         # the analysis and the factorisation is the only thing that needs it.
         ops = layout.factorization_ops()
-        self.factorize_local = _make_factorize(layout, ops)
-        self.solve_local = _make_solve(layout)
+        self.factorize_local: MLIRDispatcher = _make_factorize(layout, ops)
+        self.solve_local: MLIRDispatcher = _make_solve(layout)
 
     @property
     def nnz(self) -> int:
@@ -431,7 +438,7 @@ class SparseDirectSolver:
 
 @functools.cache
 def sparse_direct_solver_for(
-    pattern: tuple[tuple[int, ...], ...], ordering: str = "amd"
+    pattern: Pattern, ordering: Ordering = "amd"
 ) -> SparseDirectSolver:
     """Compile a direct sparse solver for a *normalised* pattern.
 
@@ -443,7 +450,9 @@ def sparse_direct_solver_for(
     return SparseDirectSolver(layout, compressed_jacobian(pattern, layout))
 
 
-def sparse_direct_solver(sparsity, n_vars: int, *, ordering: str = "amd"):
+def sparse_direct_solver(
+    sparsity: Sparsity, n_vars: int, *, ordering: Ordering = "amd"
+) -> SparseDirectSolver:
     """Compile a direct sparse solver for ``sparsity``.
 
     ``sparsity`` takes the same spellings ``solve`` does: an ``(n_vars, n_vars)``
@@ -471,7 +480,9 @@ MAX_UNROLLED_SUBSTITUTIONS = 2048
 MAX_UNROLLED_UPDATES = 8192
 
 
-def _make_factorize(layout: SparseLULayout, ops):
+def _make_factorize(
+    layout: SparseLULayout, ops: tuple[IndexTable, IndexTable, IndexTable]
+) -> MLIRDispatcher:
     """Up-looking LU of ``M``, in place, no pivoting.
 
     Row ``i`` is finished before row ``i + 1`` begins, so by the time the
@@ -524,7 +535,13 @@ def _make_factorize(layout: SparseLULayout, ops):
     return sparse_direct_factorize
 
 
-def _unrolled_factorize(layout, dst_start, destination, pivot_of, upper_end):
+def _unrolled_factorize(
+    layout: SparseLULayout,
+    dst_start: IndexTable,
+    destination: IndexTable,
+    pivot_of: IndexTable,
+    upper_end: IndexTable,
+) -> MLIRDispatcher:
     """Generate the factorisation with every slot spelled out as a literal.
 
     Each multiplier gets its own name rather than reusing one, so the only
@@ -548,7 +565,7 @@ def _unrolled_factorize(layout, dst_start, destination, pivot_of, upper_end):
     return compile_device_source("sparse_direct_factorize", lines)
 
 
-def _make_solve(layout: SparseLULayout):
+def _make_solve(layout: SparseLULayout) -> MLIRDispatcher:
     """The two triangular solves: ``M x = rhs`` in place, sparse both ways.
 
     Each sweep touches only the nonzeros -- ``nnz(L) + nnz(U)`` multiply-adds
@@ -604,10 +621,16 @@ def _make_solve(layout: SparseLULayout):
     return sparse_direct_solve
 
 
-def _unrolled_solve(n, row_ptr, diag_ptr, origin, col_origin):
+def _unrolled_solve(
+    n: int,
+    row_ptr: IndexTable,
+    diag_ptr: IndexTable,
+    origin: IndexTable,
+    col_origin: IndexTable,
+) -> MLIRDispatcher:
     """Generate the two sweeps with every slot spelled out as a literal."""
 
-    def terms(span):
+    def terms(span: range) -> str:
         return "".join(
             f" - lu[{p}] * rhs[{col_origin[p]}]" for p in range(span.start, span.stop)
         )
@@ -624,7 +647,7 @@ def _unrolled_solve(n, row_ptr, diag_ptr, origin, col_origin):
     return compile_device_source("sparse_direct_solve", lines)
 
 
-def _pack(*arrays):
+def _pack(*arrays: npt.NDArray[np.integer]) -> tuple[IndexTable, tuple[int, ...]]:
     """One int32 array of everything, plus each piece's offset into it.
 
     Every entry must be **non-negative**. A negative int32 read out of a

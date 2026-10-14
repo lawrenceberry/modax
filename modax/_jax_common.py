@@ -7,9 +7,14 @@ from typing import Callable
 import jax
 import jax.numpy as jnp
 from jax.custom_batching import custom_vmap
+from jax.typing import ArrayLike
+
+from modax._numba_common import SolveOutput
 
 
-def normalize_y0_params(y0, params):
+def normalize_y0_params(
+    y0: ArrayLike, params: ArrayLike
+) -> tuple[jax.Array, jax.Array, int, int]:
     """Broadcast ``y0`` / ``params`` to a consistent ``(N, …)`` ensemble layout.
 
     Accepts either 1-D (``(n_vars,)`` / ``(n_params,)``) or 2-D
@@ -46,7 +51,9 @@ def normalize_y0_params(y0, params):
     return y0_arr, params_arr, n, y0_arr.shape[1]
 
 
-def _broadcast_for_vmap(arg, is_batched: bool, axis_size: int, name: str):
+def _broadcast_for_vmap(
+    arg: ArrayLike, is_batched: bool, axis_size: int, name: str
+) -> jax.Array:
     arr = jnp.asarray(arg)
     if is_batched:
         if arr.ndim != 2:
@@ -67,7 +74,11 @@ def _broadcast_for_vmap(arg, is_batched: bool, axis_size: int, name: str):
     return jnp.broadcast_to(arr, (axis_size,) + arr.shape)
 
 
-def make_custom_vmap_solver(solve_impl: Callable, *, return_stats: bool):
+def make_custom_vmap_solver(
+    solve_impl: Callable[[jax.Array, jax.Array, jax.Array], SolveOutput],
+    *,
+    return_stats: bool,
+) -> custom_vmap:
     """Wrap a solver implementation so outer ``jax.vmap`` becomes one ensemble call.
 
     ``solve_impl`` must accept ``(y0, t_span, params)`` and return the normal
@@ -79,11 +90,17 @@ def make_custom_vmap_solver(solve_impl: Callable, *, return_stats: bool):
     """
 
     @custom_vmap
-    def _solve(y0, t_span, params):
-        return solve_impl(y0, t_span, params)
+    def _solve(y0: ArrayLike, t_span: ArrayLike, params: ArrayLike) -> SolveOutput:
+        return solve_impl(jnp.asarray(y0), jnp.asarray(t_span), jnp.asarray(params))
 
     @_solve.def_vmap
-    def _solve_vmap(axis_size, in_batched, y0, t_span, params):
+    def _solve_vmap(
+        axis_size: int,
+        in_batched: tuple[bool, bool, bool],
+        y0: ArrayLike,
+        t_span: ArrayLike,
+        params: ArrayLike,
+    ) -> tuple[SolveOutput, object]:
         y0_batched, t_span_batched, params_batched = in_batched
         if t_span_batched:
             t_span_arr = jnp.asarray(t_span)
@@ -98,9 +115,9 @@ def make_custom_vmap_solver(solve_impl: Callable, *, return_stats: bool):
 
         y0_arr = _broadcast_for_vmap(y0, y0_batched, axis_size, "y0")
         params_arr = _broadcast_for_vmap(params, params_batched, axis_size, "params")
-        result = solve_impl(y0_arr, t_span, params_arr)
+        result = solve_impl(y0_arr, jnp.asarray(t_span), params_arr)
 
-        if not return_stats:
+        if not isinstance(result, tuple):
             return result[:, None, :, :], True
 
         sol, stats = result

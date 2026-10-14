@@ -14,10 +14,13 @@ import sysconfig
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
 import jax
 import numpy as np
+from jax.typing import ArrayLike
+from numba_cuda_mlir.descriptor import MLIRDispatcher
+from numba_cuda_mlir.numba_cuda.types import Type
 
 _CAPSULE_NAME = b"xla._CUSTOM_CALL_TARGET"
 _TARGET_NAME = "modax_numba_cuda_abi_launch"
@@ -280,10 +283,10 @@ def register_target() -> None:
 # Loaded modules are held for the process lifetime: the ``CUfunction`` handed to
 # the FFI target stays valid only while its module is loaded, and these kernels
 # live as long as the JAX primitives that launch them.
-_LOADED_MODULES: list[Any] = []
+_LOADED_MODULES: list[ctypes.c_void_p] = []
 
 
-def compile_kernel(kernel: Any, argtypes: Sequence[Any]) -> int:
+def compile_kernel(kernel: MLIRDispatcher, argtypes: Sequence[Type]) -> int:
     """Compile a ``cuda.jit`` kernel and return its ``CUfunction`` pointer.
 
     numba-cuda-mlir exposes no ``get_cufunc()`` -- its ``MLIRLibrary`` only
@@ -315,8 +318,8 @@ def compile_kernel(kernel: Any, argtypes: Sequence[Any]) -> int:
 
 
 def make_launch(
-    kernel: Any,
-    argtypes: Sequence[Any],
+    kernel: MLIRDispatcher,
+    argtypes: Sequence[Type],
     *,
     grid: int | Sequence[int],
     block: int | Sequence[int],
@@ -337,13 +340,13 @@ def make_launch(
 
 def ffi_abi_call(
     launch: CudaLaunch,
-    inputs: Sequence[Any],
+    inputs: Sequence[ArrayLike],
     output_specs: Sequence[jax.ShapeDtypeStruct],
     *,
     input_kinds: Sequence[int],
     scalar_f64_values: Sequence[float] = (),
     scalar_i32_values: Sequence[int] = (),
-) -> tuple[Any, ...]:
+) -> tuple[jax.Array, ...]:
     """Launch a Numba CUDA kernel using Numba's normal array/scalar ABI.
 
     Outputs are always arrays, so only the input kinds need spelling out.
@@ -371,6 +374,6 @@ def ffi_abi_call(
         has_side_effect=False,
         custom_call_api_version=_CUSTOM_CALL_API_VERSION,
     )(*inputs, **attrs)
-    if not isinstance(result, tuple):
+    if isinstance(result, jax.Array):
         return (result,)
-    return result
+    return tuple(result)

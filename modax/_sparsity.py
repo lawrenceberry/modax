@@ -24,8 +24,19 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
+from typing import Iterable, TypeAlias
 
 import numpy as np
+import numpy.typing as npt
+from jax.typing import ArrayLike
+from scipy.sparse import coo_array, sparray, spmatrix
+
+Pattern: TypeAlias = tuple[tuple[int, ...], ...]
+"""A normalised sparsity pattern: the sorted column indices of each row."""
+
+Sparsity: TypeAlias = ArrayLike | spmatrix | sparray
+"""What ``solve`` accepts as ``sparsity``: an ``(n_vars, n_vars)`` mask, a
+scipy sparse matrix, or an ``(nnz, 2)`` array of ``(row, col)`` pairs."""
 
 # The strategies NetworkX offers that are worth trying. They are cheap -- this
 # runs once per kernel build, on the host -- so the best of them is taken
@@ -112,7 +123,7 @@ class CompressedJacobian:
             )
         return slot
 
-    def store_slots(self) -> np.ndarray | None:
+    def store_slots(self) -> npt.NDArray[np.int32] | None:
         """Where each ``(row, colour)`` sweep value goes, or ``None`` for a run.
 
         On the grid a colour group's values are a contiguous block and the
@@ -123,7 +134,7 @@ class CompressedJacobian:
             return None
         return np.asarray(self.packed, dtype=np.int32)
 
-    def seed_table(self, min_width: int = 0) -> np.ndarray:
+    def seed_table(self, min_width: int = 0) -> npt.NDArray[np.float64]:
         """``(n_colours + 1, max(n_vars, min_width))`` of tangent directions.
 
         Row ``g`` is the indicator of colour group ``g``, so one sweep seeded
@@ -147,14 +158,15 @@ def dense_jacobian(n_vars: int) -> CompressedJacobian:
     )
 
 
-def normalize_sparsity(sparsity, n_vars: int) -> tuple[tuple[int, ...], ...]:
+def normalize_sparsity(sparsity: Sparsity, n_vars: int) -> Pattern:
     """Accept a dense mask, a scipy sparse matrix, or ``(row, col)`` pairs.
 
     Returned as a hashable tuple of row tuples so the colouring can be cached
     on it: a kernel is rebuilt per pattern, not per call.
     """
-    if hasattr(sparsity, "tocoo"):  # scipy sparse
-        coo = sparsity.tocoo()
+    pairs: Iterable[tuple[int, int]]
+    if isinstance(sparsity, (spmatrix, sparray)):
+        coo = coo_array(sparsity)
         pairs = zip(coo.row.tolist(), coo.col.tolist())
     else:
         arr = np.asarray(sparsity)
@@ -180,7 +192,7 @@ def normalize_sparsity(sparsity, n_vars: int) -> tuple[tuple[int, ...], ...]:
 
 
 @functools.cache
-def colour_sparsity(pattern: tuple[tuple[int, ...], ...]) -> CompressedJacobian:
+def colour_sparsity(pattern: Pattern) -> CompressedJacobian:
     """Colour a pattern's column intersection graph, fewest colours wins."""
     import networkx as nx
 
@@ -210,7 +222,7 @@ def colour_sparsity(pattern: tuple[tuple[int, ...], ...]) -> CompressedJacobian:
     return compressed
 
 
-def _check_orthogonal(pattern, compressed: CompressedJacobian) -> None:
+def _check_orthogonal(pattern: Pattern, compressed: CompressedJacobian) -> None:
     """No row may hold two columns of the same colour.
 
     A violation means two entries would share a slot and silently overwrite one

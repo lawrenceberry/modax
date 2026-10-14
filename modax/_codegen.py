@@ -12,13 +12,17 @@ from __future__ import annotations
 
 import itertools
 import linecache
+from typing import Mapping, Sequence
 
 from numba_cuda_mlir import cuda
+from numba_cuda_mlir.descriptor import MLIRDispatcher
 
 _SOURCES = itertools.count(1)
 
 
-def compile_device_source(name: str, lines: list[str], namespace: dict | None = None):
+def compile_device_source(
+    name: str, lines: Sequence[str], namespace: Mapping[str, object] | None = None
+) -> MLIRDispatcher:
     """Exec ``lines`` defining ``name`` and return it as a device function.
 
     The source is registered with ``linecache`` under a filename of its own, so
@@ -30,8 +34,8 @@ def compile_device_source(name: str, lines: list[str], namespace: dict | None = 
     source = "\n".join(lines) + "\n"
     filename = f"<modax generated {name} {next(_SOURCES)}>"
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
-    scope: dict = {}
+    scope: dict[str, object] = {}
     exec(compile(source, filename, "exec"), dict(namespace or {}), scope)  # noqa: S102
     generated = scope[name]
-    generated._generated_source = source
+    generated._generated_source = source  # ty: ignore[unresolved-attribute]
     return cuda.jit(device=True)(generated)

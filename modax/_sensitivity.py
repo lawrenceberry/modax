@@ -50,15 +50,23 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 from jax.custom_derivatives import SymbolicZero
+from jax.typing import ArrayLike
 from numba_cuda_mlir import cuda, types
+from numba_cuda_mlir.descriptor import MLIRDispatcher
+from numba_cuda_mlir.numba_cuda.typing.templates import Signature
 from numba_enzyme import jvp
 
-from modax._numba_common import as_cuda_device
+from modax._numba_common import OdeFn, SolveOutput, Solver, as_cuda_device
+
+Tangent = Callable[..., None]
+"""An Enzyme forward sweep: ``(out, *args, *directions)``, writing ``out``."""
 
 
 @dataclass(frozen=True)
@@ -82,7 +90,7 @@ class SensitivitySpec:
     error_control: bool = True
     param_columns: tuple[int, ...] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not (self.wrt_y0 or self.wrt_params):
             raise ValueError(
                 "a sensitivity spec must carry at least one direction block"
@@ -136,7 +144,7 @@ class SensitivitySpec:
 
 
 @functools.cache
-def _primal_signature(n_vars: int, n_params: int):
+def _primal_signature(n_vars: int, n_params: int) -> Signature:
     """The concrete ``ode_fn`` specialisation every derivative is built for."""
     return types.UniTuple(types.float64, n_vars)(
         types.UniTuple(types.float64, n_vars),
@@ -146,7 +154,7 @@ def _primal_signature(n_vars: int, n_params: int):
 
 
 @functools.cache
-def make_tangent(ode_fn, n_vars: int, n_params: int):
+def make_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     """``D f(y, t, p)[u]`` in one forward sweep, for an arbitrary direction.
 
     The sensitivity right-hand side ``J_y S_k + J_p_k`` *is* a directional
@@ -157,7 +165,7 @@ def make_tangent(ode_fn, n_vars: int, n_params: int):
 
 
 @functools.cache
-def make_second_tangent(ode_fn, n_vars: int, n_params: int):
+def make_second_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     """``D2 f(y, t, p)[u, v] + D f(y, t, p)[w]``, forward over forward.
 
     The joint system's Jacobian is the derivative of a right-hand side that
@@ -180,7 +188,7 @@ def make_second_tangent(ode_fn, n_vars: int, n_params: int):
 
 
 @functools.cache
-def seed_table(spec: SensitivitySpec):
+def seed_table(spec: SensitivitySpec) -> npt.NDArray[np.float64]:
     """Read-only table every unit and zero direction is a window into.
 
     ``2 * L`` zeros with a single ``1.0`` at ``L``, so the window starting at
@@ -196,7 +204,7 @@ def seed_table(spec: SensitivitySpec):
 
 
 @functools.cache
-def make_augmented_local_writer(ode_fn, spec: SensitivitySpec):
+def make_augmented_local_writer(ode_fn: OdeFn, spec: SensitivitySpec) -> MLIRDispatcher:
     """Joint ``[f, J_y S + J_p]`` writer for a kernel's thread-local state.
 
     Both kernels run one trajectory per thread, so the whole augmented vector --
@@ -255,7 +263,7 @@ def clear_caches() -> None:
     make_augmented_local_writer.cache_clear()
 
 
-def augmented_y0(y0_arr, spec: SensitivitySpec):
+def augmented_y0(y0_arr: jax.Array, spec: SensitivitySpec) -> jax.Array:
     """``(n, n_vars)`` initial state -> ``(n, n_aug)`` joint initial state.
 
     ``S(t0)`` is the identity for the initial-state block (``dy0/dy0``) and zero
@@ -271,7 +279,9 @@ def augmented_y0(y0_arr, spec: SensitivitySpec):
     return jnp.concatenate(blocks, axis=1)
 
 
-def augmented_error_weights(weights_arr, spec: SensitivitySpec):
+def augmented_error_weights(
+    weights_arr: npt.NDArray[np.float64], spec: SensitivitySpec
+) -> npt.NDArray[np.float64]:
     """``(n, n_vars)`` error weights -> ``(n, n_aug)``.
 
     A zero weight drops a component from the step-size error norm, so
@@ -292,7 +302,9 @@ def augmented_error_weights(weights_arr, spec: SensitivitySpec):
     )
 
 
-def split_augmented(hist, spec: SensitivitySpec):
+def split_augmented(
+    hist: jax.Array, spec: SensitivitySpec
+) -> tuple[jax.Array, jax.Array]:
     """``(n, n_save, n_aug)`` -> state ``(n, n_save, n_vars)`` and ``S`` ``(n, n_save, n_vars, n_sens)``."""
     n, n_save, _ = hist.shape
     state = hist[:, :, : spec.n_vars]
@@ -300,7 +312,7 @@ def split_augmented(hist, spec: SensitivitySpec):
     return state, jnp.swapaxes(sens, 2, 3)
 
 
-def _match_shape(tangent, axis_size: int, name: str):
+def _match_shape(tangent: ArrayLike, axis_size: int, name: str) -> jax.Array:
     """Broadcast an input tangent the way the primal argument was broadcast.
 
     ``normalize_y0_params`` broadcasts a 1-D argument across the ensemble, so
@@ -317,7 +329,7 @@ def _match_shape(tangent, axis_size: int, name: str):
     return arr
 
 
-def _zero_tangent(x):
+def _zero_tangent(x: ArrayLike) -> jax.Array | npt.NDArray[np.void]:
     """A zero tangent of the type JAX expects for ``x``.
 
     Integer outputs (the step counters) take the empty ``float0`` type rather
@@ -329,14 +341,14 @@ def _zero_tangent(x):
 
 
 def make_sensitivity_solver(
-    primal_solver,
-    joint_solver_for,
+    primal_solver: Solver,
+    joint_solver_for: Callable[[SensitivitySpec], Solver],
     n_vars: int,
     n_params: int,
     return_stats: bool,
     sens_error_control: bool,
     param_columns: tuple[int, ...] | None = None,
-):
+) -> Solver:
     """Attach a forward-sensitivity JVP rule to one solver implementation.
 
     ``primal_solver(y0, t_span, params)`` runs the plain solve.
@@ -357,11 +369,16 @@ def make_sensitivity_solver(
     """
 
     @jax.custom_jvp
-    def solve_fn(y0, t_span, params):
+    def solve_fn(y0: ArrayLike, t_span: ArrayLike, params: ArrayLike) -> SolveOutput:
         return primal_solver(y0, t_span, params)
 
     @functools.partial(solve_fn.defjvp, symbolic_zeros=True)
-    def solve_jvp(primals, tangents):
+    def solve_jvp(
+        primals: tuple[ArrayLike, ArrayLike, ArrayLike],
+        tangents: tuple[
+            ArrayLike | SymbolicZero, ArrayLike | SymbolicZero, ArrayLike | SymbolicZero
+        ],
+    ) -> tuple[SolveOutput, Any]:
         y0, t_span, params = primals
         dy0, dt_span, dparams = tangents
 
@@ -382,7 +399,7 @@ def make_sensitivity_solver(
             n_vars, n_params, wrt_y0, wrt_params, sens_error_control, param_columns
         )
         out = joint_solver_for(spec)(y0, t_span, params)
-        hist, stats = out if return_stats else (out, None)
+        hist, stats = out if isinstance(out, tuple) else (out, None)
         state, sens = split_augmented(hist, spec)
 
         axis_size = state.shape[0]

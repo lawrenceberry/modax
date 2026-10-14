@@ -3,19 +3,50 @@
 from __future__ import annotations
 
 import functools
+from typing import Callable, Sequence, TypeAlias, TypedDict
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
+from jax.typing import ArrayLike
 from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.descriptor import MLIRDispatcher
+from numba_cuda_mlir.numba_cuda.types import Type
 
 from modax._jax_numba_custom_call import (
     ABI_ARRAY,
     ABI_SCALAR_F64,
     ABI_SCALAR_I32,
+    CudaLaunch,
     ffi_abi_call,
 )
+
+OdeFn: TypeAlias = (
+    Callable[[Sequence[float], float, Sequence[float]], tuple[float, ...]]
+    | MLIRDispatcher
+)
+"""The right-hand side, ``(y, t, p) -> tuple`` of scalars.
+
+A plain function is compiled with ``cuda.jit(device=True)`` by
+[`as_cuda_device`][modax._numba_common.as_cuda_device]; one already compiled
+is used as it is.
+"""
+
+
+class SolverStats(TypedDict):
+    """The ``return_stats`` dict: per-trajectory ``(N,)`` step counters."""
+
+    accepted_steps: jax.Array
+    rejected_steps: jax.Array
+    loop_steps: jax.Array
+
+
+SolveOutput: TypeAlias = jax.Array | tuple[jax.Array, SolverStats]
+"""What an unhooked solve returns: the history, with the stats when asked."""
+
+Solver: TypeAlias = Callable[[ArrayLike, ArrayLike, ArrayLike], SolveOutput]
+"""A ``(y0, t_span, params)`` solve of fixed callback and settings."""
 
 # Both kernels open with the same parameters -- the ensemble inputs, the scalar
 # step-control settings, and the history and counter outputs -- and differ only
@@ -24,7 +55,7 @@ from modax._jax_numba_custom_call import (
 _F64_1D = types.float64[::1]
 _F64_2D = types.float64[:, ::1]
 _I32_1D = types.int32[::1]
-SOLVER_ARGTYPES = (
+SOLVER_ARGTYPES: tuple[Type, ...] = (
     _F64_2D,  # y0
     _F64_1D,  # times
     _F64_2D,  # params
@@ -38,9 +69,9 @@ SOLVER_ARGTYPES = (
     _I32_1D,  # rejected steps
     _I32_1D,  # loop steps
 )
-HOOK_OUT_ARGTYPE = _F64_2D
+HOOK_OUT_ARGTYPE: Type = _F64_2D
 """Per-trajectory rows a save hook accumulates into (``(n, hook_size)``)."""
-SOLVER_INPUT_KINDS = (
+SOLVER_INPUT_KINDS: tuple[int, ...] = (
     ABI_ARRAY,
     ABI_ARRAY,
     ABI_ARRAY,
@@ -52,7 +83,9 @@ SOLVER_INPUT_KINDS = (
 )
 
 
-def build_error_weights(error_weights, n: int, n_vars: int) -> np.ndarray:
+def build_error_weights(
+    error_weights: ArrayLike | None, n: int, n_vars: int
+) -> npt.NDArray[np.float64]:
     """Broadcast a user ``error_weights`` argument to a ``(n, n_vars)`` array.
 
     ``None`` yields all-ones (every component weighted equally); a 1-D array of
@@ -69,7 +102,7 @@ def build_error_weights(error_weights, n: int, n_vars: int) -> np.ndarray:
     return np.ascontiguousarray(weights, dtype=np.float64)
 
 
-def initial_step(first_step):
+def initial_step(first_step: float | None) -> np.float64:
     """The ``dt0`` scalar the kernels take, from a user ``first_step``.
 
     ``dt0`` is a launch-time scalar, so it cannot be derived here from the save
@@ -82,20 +115,20 @@ def initial_step(first_step):
 
 
 def ensemble_ffi_call(
-    launch,
-    arrays,
-    scratch_specs,
+    launch: CudaLaunch,
+    arrays: Sequence[jax.Array],
+    scratch_specs: Sequence[jax.ShapeDtypeStruct],
     *,
     n: int,
     n_vars: int,
     n_save: int,
-    dt0,
-    rtol,
-    atol,
-    max_steps,
+    dt0: float,
+    rtol: float,
+    atol: float,
+    max_steps: int,
     n_save_hist: int | None = None,
     hook_size: int | None = None,
-):
+) -> tuple[jax.Array, ...]:
     """Launch a solver kernel from JAX and return its solution outputs.
 
     ``arrays`` are the array inputs (y0, times, params, error weights) in kernel
@@ -131,7 +164,9 @@ def ensemble_ffi_call(
     return result[:4] if hook_size is None else result[:5]
 
 
-def solver_stats(accepted, rejected, loop_steps):
+def solver_stats(
+    accepted: jax.Array, rejected: jax.Array, loop_steps: jax.Array
+) -> SolverStats:
     """The ``return_stats`` dict: per-trajectory ``(N,)`` step counters.
 
     ``loop_steps`` counts iterations of the stepping loop, which is what
@@ -145,7 +180,7 @@ def solver_stats(accepted, rejected, loop_steps):
 
 
 @functools.cache
-def as_cuda_device(fn):
+def as_cuda_device(fn: Callable[..., object] | MLIRDispatcher) -> MLIRDispatcher:
     """``fn`` as a CUDA device function: ``cuda.jit(device=True)`` unless it
     already is one, cached so a callback is compiled once.
     """
@@ -154,7 +189,7 @@ def as_cuda_device(fn):
     return cuda.jit(device=True)(fn)
 
 
-def make_cuda_local_vector_writer(fn, n_vars: int):
+def make_cuda_local_vector_writer(fn: OdeFn, n_vars: int) -> MLIRDispatcher:
     """A vector writer over one trajectory's own thread-local arrays.
 
     Both kernels run one trajectory per thread, so there is no stripe to share:

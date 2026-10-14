@@ -5,18 +5,35 @@ from __future__ import annotations
 import functools
 import math
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import (
+    Any,
+    Callable,
+    Iterator,
+    Literal,
+    MutableSequence,
+    Sequence,
+    TypeAlias,
+    overload,
+)
 
+import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
+from jax.typing import ArrayLike
 from numba_cuda_mlir import cuda, types
+from numba_cuda_mlir.descriptor import MLIRDispatcher
 
 from modax._codegen import compile_device_source
 from modax._jax_common import make_custom_vmap_solver, normalize_y0_params
-from modax._jax_numba_custom_call import make_launch
+from modax._jax_numba_custom_call import CudaLaunch, make_launch
 from modax._numba_common import (
     HOOK_OUT_ARGTYPE,
     SOLVER_ARGTYPES,
+    OdeFn,
+    SolveOutput,
+    Solver,
+    SolverStats,
     as_cuda_device,
     build_error_weights,
     ensemble_ffi_call,
@@ -34,8 +51,32 @@ from modax._sensitivity import (
     make_tangent,
     seed_table,
 )
-from modax._sparse_direct import sparse_direct_solver_for
-from modax._sparsity import dense_jacobian, normalize_sparsity
+from modax._sparse_direct import Ordering, sparse_direct_solver_for
+from modax._sparsity import Pattern, Sparsity, dense_jacobian, normalize_sparsity
+
+LUPrecision: TypeAlias = Literal["fp32", "fp64"]
+"""The precision of the per-step LU factorisation and triangular solves."""
+
+ArrayRhs: TypeAlias = (
+    Callable[[Sequence[float], float, Sequence[float], MutableSequence[float]], None]
+    | MLIRDispatcher
+)
+"""A right-hand side over arrays, ``f(y, t, p, out)``, equivalent to the
+tuple-form ``ode_fn``."""
+
+SaveHook: TypeAlias = (
+    Callable[
+        [int, Sequence[float], float, Sequence[float], MutableSequence[float]], None
+    ]
+    | MLIRDispatcher
+)
+"""A save hook ``hook(save_idx, y, t, p_row, acc)``, called at every save time."""
+
+HookedOutput: TypeAlias = (
+    tuple[jax.Array, jax.Array] | tuple[jax.Array, jax.Array, SolverStats]
+)
+"""What a hooked solve returns: the history and the hook rows, with the stats
+when asked."""
 
 # fmt: off
 # Rodas5P W-transformed coefficients (Steinebach 2023, BIT 63:27).
@@ -117,7 +158,7 @@ EXPONENT = -1.0 / 6.0
 _DEFAULT_TRAJECTORIES_PER_BLOCK = 32
 
 
-def trajectories_per_block_or_default(requested=None) -> int:
+def trajectories_per_block_or_default(requested: int | None = None) -> int:
     """How many trajectories a block carries, one per thread.
 
     Nothing on chip bounds this any more: every per-trajectory buffer, the
@@ -147,25 +188,25 @@ class KernelOptions:
     pcoeff: float = 0.0
     icoeff: float = 1.0
     dcoeff: float = 0.0
-    lu_precision: str = "fp32"
+    lu_precision: LUPrecision = "fp32"
     trajectories_per_block: int = _DEFAULT_TRAJECTORIES_PER_BLOCK
     spec: SensitivitySpec | None = None
-    sparsity: tuple[tuple[int, ...], ...] | None = None
-    ordering: str = "amd"
+    sparsity: Pattern | None = None
+    ordering: Ordering = "amd"
     tf_index: int = -1
     max_registers: int | None = None
-    array_rhs: object = None
+    array_rhs: ArrayRhs | None = None
     # A save hook ``hook(save_idx, y, t, p_row, acc)`` the kernel calls at every
     # save time with the dense-output state, accumulating into the trajectory's
     # ``hook_size``-wide output row; ``save_history=False`` then keeps only the
     # final state instead of the whole history.
-    save_hook: object = None
+    save_hook: SaveHook | None = None
     hook_size: int = 0
     save_history: bool = True
 
 
 @functools.cache
-def dense_lu_solver(n_vars: int):
+def dense_lu_solver(n_vars: int) -> tuple[MLIRDispatcher, MLIRDispatcher]:
     """Dense LU with partial pivoting, one system per thread.
 
     This is what the kernel uses when it is given no sparsity pattern:
@@ -248,7 +289,14 @@ def dense_lu_solver(n_vars: int):
 SEED_BATCH = 8
 
 
-def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, namespace):
+def _make_literal_seed_jacobian(
+    *,
+    n_vars: int,
+    n_params: int,
+    n_colours: int,
+    store_table: npt.NDArray[np.int32] | None,
+    namespace: dict[str, object],
+) -> MLIRDispatcher:
     """Generate the Jacobian writer with every colour's seed row spelled out.
 
     ``store_table`` is the layout's destination table, ``(row, colour) ->
@@ -258,7 +306,7 @@ def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, nam
     zero_row = n_colours
     batch = SEED_BATCH
 
-    def slots_for(g):
+    def slots_for(g: int) -> Iterator[tuple[int, int]]:
         for row in range(n_vars):
             if store_table is None:
                 yield row, row * n_colours + g
@@ -304,7 +352,9 @@ def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, nam
 
 
 @functools.cache
-def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
+def _make_kernel(
+    ode_fn: OdeFn, n_vars: int, n_params: int, options: KernelOptions
+) -> tuple[MLIRDispatcher, int]:
     """Rodas5P, one trajectory per CUDA thread.
 
     A thread owns its trajectory outright: the state, the ten stage vectors,
@@ -590,8 +640,9 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
     # the same instruction mix as the hand-unrolled form did. The split on
     # ``d`` keeps the three stages without a df/dt term from emitting an
     # ``x * 0.0`` the compiler may not drop.
+    # Row ``s`` of the tableau's C holds ``s`` entries; stage 0 has none and
+    # the rows are indexed by ``s - 1`` below.
     c_rows = (
-        (),
         (C21,),
         (C31, C32),
         (C41, C42, C43),
@@ -609,8 +660,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         (A61, A62, A63, A64, A65),
     )
 
-    def make_stage(s):
-        c_row = c_rows[s]
+    def make_stage(s: int) -> MLIRDispatcher:
         d = d_row[s]
 
         if s == 0:
@@ -622,6 +672,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
                 stage_solve(lu, ipiv, rhs, k_stages, s, work, y, p_row, t)
 
         elif d != 0.0:
+            c_row = c_rows[s - 1]
 
             @cuda.jit(device=True)
             def stage(lu, ipiv, rhs, k_stages, work, dT, y, p_row, t, dt_use, inv_dt):
@@ -635,6 +686,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
                 stage_solve(lu, ipiv, rhs, k_stages, s, work, y, p_row, t)
 
         else:
+            c_row = c_rows[s - 1]
 
             @cuda.jit(device=True)
             def stage(lu, ipiv, rhs, k_stages, work, dT, y, p_row, t, dt_use, inv_dt):
@@ -647,7 +699,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
 
         return stage
 
-    def make_advance(s):
+    def make_advance(s: int) -> MLIRDispatcher:
         a_row = a_rows[s]
         n_prev = s + 1
 
@@ -1010,8 +1062,8 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
 
 @functools.cache
 def _make_jax_launch(
-    ode_fn, n: int, n_vars: int, n_params: int, options: KernelOptions
-):
+    ode_fn: OdeFn, n: int, n_vars: int, n_params: int, options: KernelOptions
+) -> CudaLaunch:
     kernel, trajectories_per_block = _make_kernel(ode_fn, n_vars, n_params, options)
     blocks = (n + trajectories_per_block - 1) // trajectories_per_block
     return make_launch(
@@ -1022,34 +1074,189 @@ def _make_jax_launch(
     )
 
 
+@overload
 def solve(
-    ode_fn,
-    y0,
-    t_span,
-    params,
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
     *,
-    rtol=1e-8,
-    atol=1e-10,
-    first_step=None,
-    max_steps=100000,
-    return_stats=False,
-    error_weights=None,
-    pcoeff=0.0,
-    icoeff=1.0,
-    dcoeff=0.0,
-    lu_precision: str = "fp32",
-    trajectories_per_block=None,
-    sens_error_control=True,
-    sens_param_columns=None,
-    sparsity=None,
-    ordering="amd",
-    tf_index=None,
-    max_registers=None,
-    array_rhs=None,
-    save_hook=None,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[False] = False,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: None = None,
     hook_size: int = 0,
     save_history: bool = True,
-):
+) -> jax.Array: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[True],
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: None = None,
+    hook_size: int = 0,
+    save_history: bool = True,
+) -> tuple[jax.Array, SolverStats]: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[False] = False,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: SaveHook,
+    hook_size: int = 0,
+    save_history: bool = True,
+) -> tuple[jax.Array, jax.Array]: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[True],
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: SaveHook,
+    hook_size: int = 0,
+    save_history: bool = True,
+) -> tuple[jax.Array, jax.Array, SolverStats]: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: bool,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: SaveHook | None = None,
+    hook_size: int = 0,
+    save_history: bool = True,
+) -> SolveOutput | HookedOutput: ...
+
+
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: bool = False,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: SaveHook | None = None,
+    hook_size: int = 0,
+    save_history: bool = True,
+) -> SolveOutput | HookedOutput:
     """JAX-callable Rodas5P custom-kernel solve.
 
     Args:
@@ -1232,10 +1439,6 @@ def solve(
     ``jax.vmap`` nor differentiation.
     """
     n_vars = jnp.shape(y0)[-1]
-    # Normalised here, not in the kernel builder, because that is cached on its
-    # arguments and a pattern has to arrive as the same hashable value twice.
-    if sparsity is not None:
-        sparsity = normalize_sparsity(sparsity, n_vars)
     options = KernelOptions(
         pcoeff=pcoeff,
         icoeff=icoeff,
@@ -1244,7 +1447,10 @@ def solve(
         trajectories_per_block=trajectories_per_block_or_default(
             trajectories_per_block
         ),
-        sparsity=sparsity,
+        # Normalised here, not in the kernel builder, because that is cached
+        # on its arguments and a pattern has to arrive as the same hashable
+        # value twice.
+        sparsity=None if sparsity is None else normalize_sparsity(sparsity, n_vars),
         ordering=ordering,
         tf_index=-1 if tf_index is None else int(tf_index),
         max_registers=max_registers,
@@ -1253,12 +1459,11 @@ def solve(
         hook_size=int(hook_size),
         save_history=bool(save_history),
     )
-    settings = dict(
+    settings: dict[str, Any] = dict(
         rtol=rtol,
         atol=atol,
         first_step=first_step,
         max_steps=max_steps,
-        return_stats=return_stats,
         error_weights=error_weights,
     )
 
@@ -1267,22 +1472,31 @@ def solve(
             raise ValueError("a save_hook needs a positive hook_size")
         # The hook's accumulator is a second output the vmap and JVP rules do
         # not know, so a hooked solve is the plain ensemble launch.
-        return _solve_impl(ode_fn, y0, t_span, params, options=options, **settings)
+        hist, hook_out, stats = _launch(
+            ode_fn, y0, t_span, params, options=options, **settings
+        )
+        return (hist, hook_out, stats) if return_stats else (hist, hook_out)
     if not save_history:
         raise ValueError("save_history=False needs a save_hook to consume the saves")
 
     # The JVP rule wraps the vmap-aware solvers rather than the other way
     # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
     # what tells the rule which sensitivity blocks it has to integrate.
-    def solver_for(options):
+    def solver_for(options: KernelOptions) -> Solver:
         return make_custom_vmap_solver(
-            functools.partial(_solve_impl, ode_fn, options=options, **settings),
+            functools.partial(
+                _solve_impl,
+                ode_fn,
+                options=options,
+                return_stats=return_stats,
+                **settings,
+            ),
             return_stats=return_stats,
         )
 
     primal_solver = solver_for(options)
 
-    def joint_solver_for(spec):
+    def joint_solver_for(spec: SensitivitySpec) -> Solver:
         return solver_for(replace(options, spec=spec))
 
     return make_sensitivity_solver(
@@ -1299,19 +1513,49 @@ def solve(
 
 
 def _solve_impl(
-    ode_fn,
-    y0,
-    t_span,
-    params,
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
     *,
     options: KernelOptions,
-    rtol=1e-8,
-    atol=1e-10,
-    first_step=None,
-    max_steps=100000,
-    return_stats=False,
-    error_weights=None,
-):
+    return_stats: bool,
+    rtol: float,
+    atol: float,
+    first_step: float | None,
+    max_steps: int,
+    error_weights: ArrayLike | None,
+) -> SolveOutput:
+    """An unhooked solve: the history, with the stats when asked."""
+    hist, _, stats = _launch(
+        ode_fn,
+        y0,
+        t_span,
+        params,
+        options=options,
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
+        error_weights=error_weights,
+    )
+    return (hist, stats) if return_stats else hist
+
+
+def _launch(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    options: KernelOptions,
+    rtol: float,
+    atol: float,
+    first_step: float | None,
+    max_steps: int,
+    error_weights: ArrayLike | None,
+) -> tuple[jax.Array, jax.Array, SolverStats]:
+    """Run the kernel: the history, the hook rows and the step counters."""
     spec = options.spec
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
@@ -1345,7 +1589,4 @@ def _solve_impl(
         n_save_hist=n_save if options.save_history else 1,
         hook_size=max(1, options.hook_size),
     )
-    result = (hist,) if options.save_hook is None else (hist, hook_out)
-    if return_stats:
-        result += (solver_stats(accepted, rejected, loop_steps),)
-    return result[0] if len(result) == 1 else result
+    return hist, hook_out, solver_stats(accepted, rejected, loop_steps)
