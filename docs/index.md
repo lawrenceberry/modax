@@ -16,32 +16,32 @@ docs.
 
 The ensemble dimension comes from whichever of `y0` and `params` is
 two-dimensional; both may be, and they must then agree. The history is
-`(N, n_save, n_vars)`; see [Calling a solver](guide/api.md) for what
+`(N, n_save, n_vars)`; see [Calling a solver](usage/api.md) for what
 `return_stats` and save hooks add to it.
 
 ## Where to go next
 
 <div class="grid cards" markdown>
 
--   :material-scale-balance: **[Choosing a solver](guide/solvers.md)**
+-   :material-scale-balance: **[Choosing a solver](usage/solvers.md)**
 
     Tsit5 for non-stiff problems, Rodas5P for stiff ones, and what each costs.
 
--   :material-function-variant: **[Calling a solver](guide/api.md)**
+-   :material-function-variant: **[Calling a solver](usage/api.md)**
 
     `solve(...)`, its arguments, and the rules the callbacks obey.
 
--   :material-code-braces: **[Writing ODE callbacks](guide/callbacks.md)**
+-   :material-code-braces: **[Writing ODE callbacks](usage/callbacks.md)**
 
     What `numba_cuda_mlir` allows, and how a right-hand side that must also run
     under JAX is written once.
 
--   :material-grid: **[Sparse systems](guide/sparse.md)**
+-   :material-grid: **[Sparse systems](usage/sparse.md)**
 
     One `sparsity` pattern buys both a coloured Jacobian and a compiled sparse
     direct solve.
 
--   :material-chart-line: **[Gradients](guide/gradients.md)**
+-   :material-chart-line: **[Gradients](usage/gradients.md)**
 
     `jax.grad` and friends, through a continuous forward-sensitivity solve.
 

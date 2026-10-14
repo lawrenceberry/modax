@@ -55,12 +55,12 @@ nav:
   - Development: development.md
   - Acknowledgement: acknowledgement.md
   - Usage:
-    - Choosing a solver: guide/solvers.md
-    - Calling a solver: guide/api.md
-    - Writing ODE callbacks: guide/callbacks.md
-    - Sparse systems: guide/sparse.md
-    - Gradients: guide/gradients.md
-    - Kernel design: guide/kernel-design.md
+    - Choosing a solver: usage/solvers.md
+    - Calling a solver: usage/api.md
+    - Writing ODE callbacks: usage/callbacks.md
+    - Sparse systems: usage/sparse.md
+    - Gradients: usage/gradients.md
+    - Kernel design: usage/kernel-design.md
   - Examples:
     - Parameter estimation: examples/parameter-estimation.md
     - Uncertainty quantification: examples/uncertainty-quantification.md

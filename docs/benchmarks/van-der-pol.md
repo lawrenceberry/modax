@@ -104,7 +104,7 @@ uv run python benchmarks/stiff_vdp_sparsity/main.py
 
 The cost of the final state together with its gradient with respect to each
 trajectory's damping scale (a parameter multiplying $\mu$), which is one sensitivity column integrated alongside the
-state (see [Gradients](../guide/gradients.md)). modax is differentiated by
+state (see [Gradients](../usage/gradients.md)). modax is differentiated by
 wrapping the solve in `jax.value_and_grad`, which lowers to one kernel launch
 integrating the joint system. Diffrax is differentiated the same way, but in
 reverse mode through its default recursive checkpointing adjoint. DiffEqGPU.jl

@@ -282,7 +282,7 @@ elimination order — zero fill, `nnz(L + U) == nnz(J) == 238`, one slot per
 entry — and the order it finds is the hand-written Schur solver's: peel each
 free-streaming hierarchy from its truncated end inwards, where every variable has
 degree two, then eliminate the dense core last. It replaced that solver and is
-22% faster than it. `docs/guide/sparse.md` carries the full
+22% faster than it. `docs/usage/sparse.md` carries the full
 design argument — why AMD and not COLAMD, why no pivoting, why symbolic, why
 CSR, why unrolled — and is what to read before touching any of it.
 
@@ -468,7 +468,7 @@ d/dt [y, S] = [f(t, y, p), J_y S + J_p]
 
 as one system of `n_aug = n_vars * (1 + n_sens)` components, so `value_and_grad`
 is one solve rather than two. `t_span` is not differentiable and raises. The
-docs' `guide/gradients.md` carries the design argument and the proof that a
+docs' `usage/gradients.md` carries the design argument and the proof that a
 stiff ODE has an equally stiff sensitivity system; this is what to know before
 touching the code.
 
