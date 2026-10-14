@@ -93,9 +93,11 @@ Coverage counts `modax/` only and `[tool.coverage.report]` excludes
 as unreached would measure the compiler rather than the tests.
 
 The site is `docs/` plus `mkdocs.yml`, and `.github/workflows/docs.yml`
-publishes it to GitHub Pages on every push to `main`. The long-form prose is
-*not* duplicated there: the pages pull sections out of `README.md`, the
-examples' READMEs and `wheels/README.md` with `pymdownx.snippets`, so
+publishes it to GitHub Pages on every push to `main`. The long-form prose
+lives in `docs/`; `README.md` is kept to an overview, installation and
+development setup. What the two share is not duplicated: the pages pull the
+README's `overview` and `install` sections, the examples' READMEs and
+`wheels/README.md` in with `pymdownx.snippets`, so
 `<!-- --8<-- [start:name] -->` / `[end:name]` markers in those files are
 load-bearing. Docstrings are rendered by mkdocstrings, so a cross-reference in
 one is written ``[`modax._sparsity`][]`` rather than as a Sphinx role.
@@ -280,7 +282,7 @@ elimination order — zero fill, `nnz(L + U) == nnz(J) == 238`, one slot per
 entry — and the order it finds is the hand-written Schur solver's: peel each
 free-streaming hierarchy from its truncated end inwards, where every variable has
 degree two, then eliminate the dense core last. It replaced that solver and is
-22% faster than it. The README's "Sparse systems" section carries the full
+22% faster than it. `docs/guide/sparse.md` carries the full
 design argument — why AMD and not COLAMD, why no pivoting, why symbolic, why
 CSR, why unrolled — and is what to read before touching any of it.
 
@@ -466,7 +468,7 @@ d/dt [y, S] = [f(t, y, p), J_y S + J_p]
 
 as one system of `n_aug = n_vars * (1 + n_sens)` components, so `value_and_grad`
 is one solve rather than two. `t_span` is not differentiable and raises. The
-README's "Gradients" section carries the design argument and the proof that a
+docs' `guide/gradients.md` carries the design argument and the proof that a
 stiff ODE has an equally stiff sensitivity system; this is what to know before
 touching the code.
 

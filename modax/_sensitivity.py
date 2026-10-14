@@ -2,8 +2,8 @@
 
 The solvers reach JAX through an XLA FFI custom call, so the solve itself is
 opaque to autodiff: there is no traced graph for JAX to differentiate and no
-practical way to run Enzyme over the kernel (see "Why forward sensitivities" in
-the README). Derivatives are therefore supplied by a ``jax.custom_jvp`` rule
+practical way to run Enzyme over the kernel (see "Why continuous forward
+sensitivities" in docs/guide/gradients.md). Derivatives are therefore supplied by a ``jax.custom_jvp`` rule
 that integrates the sensitivity system alongside the state.
 
 Writing ``S(t) = dy(t)/dtheta`` for a direction block ``theta``, differentiating

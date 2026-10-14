@@ -6,9 +6,9 @@ repo_name: lawrenceberry/modax
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; Lawrence Berry
 
-# The long-form prose lives in README.md and the examples' own READMEs, which
-# the pages under docs/ pull in section by section with pymdownx.snippets, so
-# there is one copy of it. Those files are outside docs_dir, hence the watch
+# README.md's overview and install sections and the examples' own READMEs are
+# pulled into the pages under docs/ with pymdownx.snippets, so there is one
+# copy of each. Those files are outside docs_dir, hence the watch
 # list below and snippets' base_path.
 watch:
   - README.md

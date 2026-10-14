@@ -23,4 +23,13 @@
 
 </div>
 
---8<-- "README.md:solvers"
+## Solvers (`modax/`)
+
+| Method      | Type                   | Use for           | File           |
+|-------------|------------------------|-------------------|----------------|
+| **Tsit5**   | Explicit RK (order 5)  | Non-stiff systems | `tsit5.py`     |
+| **Rodas5P** | Rosenbrock-W (order 5) | Stiff systems     | `rodas5P.py`   |
+
+Rodas5P supports an `lu_precision` (`"fp32"`/`"fp64"`) knob: the FP32
+factorisation halves shared-memory use without lowering method order, since the
+Rosenbrock order conditions hold under an approximate Jacobian.
