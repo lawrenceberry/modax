@@ -37,8 +37,8 @@ trajectories, for modax, Diffrax, torchdiffeq (Dopri8, one adaptive step shared
 by the whole ensemble) and both DiffEqGPU.jl backends. At $N = 1000$ modax is 30× faster than Diffrax, consistent with
 eliminating essentially all kernel launch overhead, and 2.5× faster than
 DiffEqGPU.jl's `EnsembleGPUKernel`, scaling slightly more favourably as $N$
-grows. A plausible reason is the kernel's lower register and cache footprint,
-which allows higher warp occupancy: more trajectories execute concurrently and
+grows. We speculate that this is because the kernel has a lower register and
+cache footprint, which allows higher warp occupancy: more trajectories execute concurrently and
 hide memory latency before the scheduler has to serialise them into successive
 waves.
 

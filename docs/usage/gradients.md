@@ -15,310 +15,82 @@ value, grad = jax.value_and_grad(loss)(params)   # one joint solve
 
 `jax.jvp`, `jax.jacfwd`, `jax.grad`, `jax.jacrev` and `jax.value_and_grad` all
 work, inside `jit` and `vmap` as usual. Derivatives are computed only when a
-differentiation transform asks for them, so a plain `solve(...)` runs the same
-kernel it always did and pays nothing.
+differentiation transform requests them, so an undifferentiated `solve(...)`
+runs the same kernel as before at no additional cost.
 
-Asking for a derivative integrates the continuous forward-sensitivity system
+Sensitivity analysis is implemented in [`modax._sensitivity`][].
+
+## Forward sensitivity analysis
+
+Requesting a derivative integrates the continuous forward-sensitivity system
 alongside the state. Writing $S = \partial y/\partial\theta$ and
 differentiating $y' = f(t, y, p)$ with respect to $\theta$ gives the
 variational equation
 
-$$\frac{dS}{dt} = J_y(t)\,S(t) + J_p(t), \qquad J_y = \frac{\partial f}{\partial y},\quad J_p = \frac{\partial f}{\partial \theta}$$
+$$\frac{dS}{dt} = J_y(t)\,S(t) + J_p(t), \qquad J_y = \frac{\partial f}{\partial y},\quad J_p = \frac{\partial f}{\partial \theta},$$
 
 which the solver integrates jointly with the state as one larger ODE,
 
-$$\frac{\partial}{\partial t}\begin{bmatrix} y \\ S \end{bmatrix} = \begin{bmatrix} f(t, y, p) \\ J_y(t)\,S + J_p(t) \end{bmatrix}$$
+$$\frac{\partial}{\partial t}\begin{bmatrix} y \\ S \end{bmatrix} = \begin{bmatrix} f(t, y, p) \\ J_y(t)\,S + J_p(t) \end{bmatrix}.$$
 
-so that `jax.value_and_grad` costs one solve rather than one for the value and
+Because the value and the sensitivity are produced by the same integration,
+`jax.value_and_grad` costs one solve rather than one for the value and
 another for the derivative.
 
-## How the joint system is solved
+For implicit methods, `modax` integrates the joint state $[y, S]$ with one Rosenbrock step at a time.
+Since $f$ does not depend on $S$, the joint Jacobian is block lower
+triangular,
 
-There are three ways to arrange this, and they are not equally good.
+$$A = \begin{bmatrix} J_y & 0 \\ L & J_y\end{bmatrix}, \qquad L = \frac{\partial}{\partial y}\left(J_y S + J_p\right),$$
 
-The first is two separate solves: integrate $y$ to completion, then integrate
-$S$ against it. The sensitivity solve needs $y(t)$ at its own step and stage
-points, which the state solve never produces, so this means storing the whole
-trajectory. At $10^5$ trajectories and $\sim\!10^3$ adaptive steps that is
-hundreds of gigabytes, on a device with tens. It also runs two independent
-adaptive loops per trajectory, doubling the warp-divergence penalty that
-dominates this kernel's cost.
+and the iteration matrix $M = I/(h\gamma) - A$ inherits this structure with
+the same block $M_0 = I/(h\gamma) - J_y$ on every diagonal. A joint step
+therefore does not factorise an $n_\text{aug} \times n_\text{aug}$ matrix.
+Each stage is a block forward substitution against a single factorisation of
+$M_0$,
 
-The second is staggered: advance $y$ over a step, then advance $S$ over the
-same step using $y$'s stage values. This stores no trajectory, and the
-sensitivity subsystem's Jacobian with respect to its own unknown is exactly
-$J_y$. But for a linearly implicit method it avoids nothing. Treating $y(t)$
-as a known function of $t$ moves the state dependence into explicit time
-dependence, and the Rosenbrock $\partial F/\partial t$ term picks it straight
-back up by the chain rule, so it costs a second pass through the tableau with
-the state's stage values kept alive, for the same derivatives.
+$$M_0\,k_y = r_y, \qquad M_0\,k_{S_k} = r_{S_k} + L_k\,k_y,$$
 
-The third, which modax does, is a joint solve: one Rosenbrock step on
-$[y, S]$, exploiting the fact that the joint Jacobian is exactly block lower
-triangular because $f$ does not depend on $S$,
+in which the state row is solved first and each sensitivity row is then solved
+against the same factors with its right-hand side corrected by the coupling
+term. The factorisation remains $O(n_\text{vars}^3)$ rather than
+$O(n_\text{vars}^3(1+n_\text{sens})^3)$ and its buffer $n_\text{vars}^2$
+rather than $n_\text{vars}^2(1+n_\text{sens})^2$. The state and the
+sensitivities advance under one step-size controller with one accept-or-reject
+decision, and because of the triangular structure solving the state before the
+sensitivities is the exact solution of the joint linear system rather than an
+approximation to it. Nothing is stored between steps: the sensitivity needs
+$y$ at the step's own stage points, and the joint step has them in hand.
 
-$$A = \begin{bmatrix} J_y & 0 \\ L & J_y\end{bmatrix}, \qquad L = \frac{\partial}{\partial y}\left(J_y S + J_p\right).$$
+## Computing second derivatives
 
-Joint does not mean factorising an $n_\text{aug} \times n_\text{aug}$ matrix.
-The iteration matrix $M = I/(h\gamma) - A$ inherits the structure, and every
-diagonal block is the same $M_0 = I/(h\gamma) - J_y$, so one stage is a block
-forward substitution
-
-$$M_0\,k_y = r_y, \qquad M_0\,k_{S_k} = r_{S_k} + L_k\,k_y$$
-
-against a single factorisation. The LU stays $O(n_\text{vars}^3)$ instead of
-$O(n_\text{vars}^3(1+n_\text{sens})^3)$, and its buffer $n_\text{vars}^2$
-instead of $n_\text{vars}^2(1+n_\text{sens})^2$. The joint solve needs exactly
-the derivatives the staggered one does, but sequences them in one pass under
-one step-size controller with one rejection decision, and the triangular
-structure means that solving the state before the sensitivities is not an
-approximation but the shape of the exact solve. Within a stage it is
-staggered; it simply does not pretend the coupling is absent.
-
-## Second derivatives, and why they are unavoidable
-
-The coupling block $L$ is a second derivative of the original right-hand side,
-with respect to (state, state) and (state, parameter):
+The coupling block $L$ is a second derivative of the right-hand side, with
+respect to (state, state) and (state, parameter):
 
 $$L_k = \frac{\partial^2 f}{\partial y\,\partial y}\!\left[\cdot,\,S_k\right] + \frac{\partial^2 f}{\partial y\,\partial p_k}.$$
 
-It appears because $S' = J_y(y)S + J_p(y)$ is a linear ODE whose coefficients
+It arises because $S' = J_y(y)S + J_p(y)$ is a linear ODE whose coefficients
 depend on $y$, and an implicit method has to differentiate those coefficients.
-No arrangement escapes this. A Newton-iterated method such as BDF or an SDIRK
-scheme could treat $J_y$ as a mere preconditioner and converge regardless, but
-Rodas5P is linearly implicit: its Jacobian is inside the formula, so an
-approximate one lands in the answer.
+A Newton-iterated method such as BDF or an SDIRK scheme could treat $J_y$ as a
+preconditioner and converge regardless of the omission, but Rodas5P is
+linearly implicit: its Jacobian is part of the formula, so an approximation to
+it enters the answer.
 
-modax gets the second derivatives from
+The second derivatives are computed with
 [numba-enzyme](https://github.com/Qruise-ai/numba-enzyme), whose `jvp`
 composes with itself. `jvp(jvp(f))` is a forward-over-forward directional
-derivative, $D^2 f(x)[u,v]$, and seeding $u = (S_k, 0, e_k)$ and
-$v = (k_y, 0, 0)$ returns $L_k k_y$ directly without the matrix $L_k$ ever
-being formed. Seeding $v = (0,1,0)$ instead returns the sensitivity rows'
-$\partial F/\partial t$, the other second derivative a Rosenbrock method
-needs. The same mechanism supplies the first-order right-hand side, since
-$J_y S_k + J_p$ is itself a directional derivative and so costs one sweep per
-column rather than a whole Jacobian.
+derivative, $D^2 f(x)[u,v]$. Seeding $u = (S_k, 0, e_k)$ and $v = (k_y, 0, 0)$
+returns $L_k k_y$ directly, without the matrix $L_k$ being formed, and seeding
+$v = (0,1,0)$ instead returns the $\partial F/\partial t$ of the sensitivity
+rows, the other second derivative a Rosenbrock method requires. The same
+mechanism supplies the first-order right-hand side, since $J_y S_k + J_p$ is
+itself a directional derivative and so costs one sweep per column rather than
+a full Jacobian.
 
-Composition here is not the trivial thing it is in JAX. `jax.jvp` maps a jaxpr
-to a jaxpr, so it is closed under itself; numba-enzyme's maps a Python callable
-to a compiled device symbol, and differentiating that again would hand Enzyme
-an external declaration with no body. The fork therefore records the chain
-instead of applying it, and emits every level as a definition in one module,
-where a single Enzyme pass resolves the nested markers.
-
-The coupling block is cheap to drop and expensive to have dropped. Using the
-block diagonal $\mathrm{diag}(J_y, \ldots, J_y)$ instead leaves the method
-convergent, since the W conditions hold to second order, but the error
-constant does not survive, and the step-size controller pays for it. On a two-species right-hand side bilinear in
-state and parameters:
-
-| joint Jacobian | additive `f` ($L = 0$) | bilinear `f` ($L \neq 0$) |
-|---|---|---|
-| block diagonal (W approximation) | 1.0× the plain solve's steps | **201×** |
-| exact, via `jvp(jvp(f))` | 1.0× | **1.2×** |
-
-On a forced non-autonomous problem with a closed-form sensitivity the gradient
-error at `rtol=1e-6` improves from $4.6\times10^{-3}$ to $4.6\times10^{-8}$,
-converging at the method's proper order.
-
-A few details follow from this arrangement.
-
-- Only the blocks you differentiate are integrated. A gradient with respect to
-  `params` alone carries `n_params` sensitivity columns; one with respect to
-  `y0` as well carries `n_vars` more. `sens_param_columns` restricts the
-  parameter block to the columns it names, for a model with parameters nobody
-  differentiates.
-- The sensitivities take part in step-size control by default, at about 20 per
-  cent extra steps, so the gradient's accuracy is tied to `rtol` rather than
-  left to luck. `sens_error_control=False` drops them from the error norm; the
-  joint solve then takes exactly the steps the plain solve takes and returns
-  the same value.
-- `t_span` is not differentiable, and differentiating through it raises.
-
-## What gradients cost
-
-The joint system is `n_vars * (1 + n_sens)` wide, where `n_sens` is the number
-of directions actually differentiated: `n_params`, plus `n_vars` more if `y0`
-is differentiated as well.
-
-The cost is linear in `n_sens`, because the sensitivities are never factorised.
-The joint iteration matrix has the same $M_0 = I/(h\gamma) - J_y$ on every
-diagonal block, so a step factorises $M_0$ once, at $O(n_\text{vars}^3)$, and
-every sensitivity column then reuses that factorisation. What an extra column
-adds is a forward and back substitution against factors that already exist,
-$O(n_\text{vars}^2)$, plus two Enzyme sweeps per stage and its share of the
-occupancy. Per step,
-
-```
-cost  ~  O(n_vars^3)                  one LU, however many columns
-       + (1 + n_sens) * O(n_vars^2)   one substitution per column per stage
-       + (1 + n_sens) * O(n_vars)     right-hand sides and Enzyme sweeps
-```
-
-and there is no second cubic term, which is why the measured overhead below
-tracks `1 + n_sens` rather than something steeper.
-
-Against parameter count, at `n_vars = 8`, 1000 trajectories, fp32:
-
-| `n_params` | joint width | solve | `value_and_grad` | overhead |
-|---|---|---|---|---|
-| 1 | 16 | 6.30 ms | 10.44 ms | **1.66×** |
-| 2 | 24 | 6.42 ms | 14.32 ms | **2.23×** |
-| 4 | 40 | 6.56 ms | 20.51 ms | **3.13×** |
-| 8 | 72 | 6.98 ms | 48.52 ms | **6.95×** |
-
-So the cost is roughly linear in `1 + n_params` with a coefficient a little
-under one, about `0.7 * (1 + n_params)` here, the discount being the
-factorisation that all the columns share. Ten parameters is an order of
-magnitude, but it is an order of magnitude and not the `n_params`-fold
-repetition of the cubic that differentiating the factorisation itself would
-cost.
-
-Against state dimension, with one parameter, on the van der Pol lattice at 1000
-trajectories, fp32:
-
-| `n_vars` | joint width | solve | `value_and_grad` | overhead |
-|---|---|---|---|---|
-| 8 | 16 | 3.52 ms | 5.85 ms | **1.66×** |
-| 16 | 32 | 8.61 ms | 19.84 ms | **2.31×** |
-| 32 | 64 | 20.39 ms | 49.45 ms | **2.43×** |
-| 48 | 96 | 31.93 ms | 84.85 ms | **2.66×** |
-
-A single sensitivity column costs between 1.7× and 2.7× across that range,
-flat enough to plan around and creeping up rather than down, since the extra
-triangular solves and Enzyme sweeps scale with `n_vars` even though the
-factorisation they reuse does not. In fp64 the ratio is lower (2.21× at
-`n_vars = 48`), because the one LU every column reuses is twice the work and so
-a larger share of the step.
-
-Two things to watch. Differentiating `y0` adds `n_vars` columns rather than
-one, so it is only practical at low dimension: on three-species Robertson at
-`N = 20000`, a gradient with respect to the three rate parameters costs about
-9× the value, and adding `y0` takes it to six columns and about 34×. And what
-grows is thread-local memory. Every per-trajectory buffer is the thread's own,
-so no on-chip budget caps `n_sens` and there is nothing to re-fit or to fail;
-the factorisation stays `n_vars`-sized, and what grows with each column is the
-stage vectors of the augmented state. A wider joint system costs occupancy and
-local-memory traffic, which is the slow climb in the tables above, rather than
-a hard limit.
-
-Tsit5 is cheaper per column, since it forms no Jacobian and needs no second
-derivatives, and carries no matrix at all, so it scales further in `n_sens` at
-the usual cost of needing a non-stiff problem. Its shared-memory backend holds
-at most 16 components, sensitivities included, so `backend="auto"` moves a
-wider joint system to thread-local memory.
-
-## Why continuous forward sensitivities?
-
-modax is built for massive ensembles of low-dimensional systems with few
-parameters, and that regime picks the method. The three candidates scale
-differently in the state dimension `n_vars` and the parameter count
-`n_params`:
-
-| approach | work per step | extra memory | grows with |
-|---|---|---|---|
-| **Continuous forward sensitivity** (modax) | $O(n_\text{vars}^3 + n_\text{params}\,n_\text{vars}^2)$ | $O(n_\text{vars}\,(1 + n_\text{params}))$ | `n_params` |
-| **Continuous adjoint** (backward) | $O(n_\text{vars}^3)$ backward, plus the forward solve and its checkpoint re-solves | $O(n_\text{vars} + n_\text{params})$ plus checkpoints | number of output cotangents, not `n_params` |
-| **Direct auto-diff through the solver** | $O(n_\text{params}\,n_\text{vars}^3)$ | $O(n_\text{vars}\,(1 + n_\text{params}))$ forward; a full tape in reverse | `n_params`, on the cubic term |
-
-The decisive row is the last one. A step's cost is dominated by factorising the
-iteration matrix, at $O(n_\text{vars}^3)$. Forward sensitivity pays that once,
-and each parameter column then costs a substitution against factors that
-already exist, so the cubic term never multiplies:
-
-$$O(n_\text{vars}^3 + n_\text{params}\,n_\text{vars}^2) \quad\text{against}\quad O(n_\text{params}\,n_\text{vars}^3).$$
-
-Direct auto-diff has no way to know that. Handed the kernel's hand-written LU
-as ordinary scalar code, Enzyme differentiates the factorisation itself,
-propagating a tangent through every one of its $O(n_\text{vars}^3)$
-operations once per direction. That is a factor of `n_params` on the dominant
-term, and it is structure no differentiator can recover on its own: what modax
-does by hand is apply the differentiation rule for a linear solve,
-$M\,dk = dr - dM\,k$, which reuses $M$'s factors. An auto-diff system that
-treats the solve as a primitive with that rule attached would recover the same
-scaling; one differentiating the scalar code beneath it would not.
-
-Against the adjoint the trade is the usual one. Its cost is independent of
-`n_params` and proportional instead to the number of outputs differentiated,
-so it wins once parameters outnumber state dimensions. modax targets the
-opposite corner, where the BBN example fits two parameters to a four-species
-network, and the adjoint would additionally need either a backwards solve,
-which is unstable for the stiff, dissipative systems Rodas5P exists to handle,
-or a checkpointed reverse pass whose gradients are no longer consistent with
-the discrete solve the forward pass actually performed.
-
-Differentiating `y0` as well adds `n_vars` columns rather than one, so it
-enters the table wherever `n_params` appears, and is only practical at low
-dimension.
-
-Forward sensitivities also fit the execution model. The variational equation
-is per-trajectory and couples nothing across the ensemble, so the joint system
-is still one CUDA thread per trajectory with no cross-trajectory
-communication.
-
-The asymptotics are not the only obstacle to differentiating the solver kernel
-itself with Enzyme, the way `ode_fn` is differentiated. The kernels are not
-ordinary functions: they are hand-written CUDA with per-trajectory adaptive
-stepping and hand-written linear algebra over thread-local buffers. Reverse
-mode through that, and through the step controller's data-dependent control
-flow, is exactly where Enzyme on the GPU stops working, and a reverse pass
-would in any case need a tape of every stage of every step, which at $10^5$
-trajectories and $\sim\!10^3$ adaptive steps is hundreds of gigabytes on a
-device with tens. Integrating the sensitivity equation instead keeps the whole
-derivative inside the same kernel structure, at the same memory footprint,
-with the same per-thread independence.
-
-## Why a stiff ODE has a stiff sensitivity ODE
-
-This is why the sensitivity system goes through the stiff solver rather than
-being handed to an explicit one: it inherits the state's stiffness exactly.
-
-**Claim.** The joint system $z' = F(z)$ has the same Jacobian spectrum as the
-state equation, so every spectral measure of stiffness is identical.
-
-**Proof.** With $z = (y, S_1, \ldots, S_m)$ and
-$F_{S_k} = J_y(y)S_k + J_{p,k}(y)$, the joint Jacobian is
-
-$$A = \frac{\partial F}{\partial z} = \begin{bmatrix} J_y & 0 & \cdots & 0 \\ L_1 & J_y & & \\ \vdots & & \ddots & \\ L_m & & & J_y \end{bmatrix}$$
-
-since $\partial F_y/\partial S_k = 0$ (the state equation does not involve $S$)
-and $\partial F_{S_k}/\partial S_j = J_y\,\delta_{kj}$. $A$ is block lower
-triangular, and the determinant of a block triangular matrix is the product of
-the determinants of its diagonal blocks, so
-
-$$\det(A - \lambda I) = \prod_{i=0}^{m} \det(J_y - \lambda I) = \big[\det(J_y - \lambda I)\big]^{m+1}.$$
-
-Hence $\mathrm{spec}(A) = \mathrm{spec}(J_y)$, each eigenvalue with its algebraic
-multiplicity multiplied by $m+1$. No new eigenvalues appear, and none are lost.
-$\blacksquare$
-
-**Consequence.** The stiffness ratio $\max_i|\mathrm{Re}\,\lambda_i| \,/\,
-\min_i|\mathrm{Re}\,\lambda_i|$, the linear stability constraint
-$h\lambda \in \mathcal{S}$, and any other spectral criterion take the same value
-for the joint system as for the original. If the state equation is stiff, the
-joint system is stiff to exactly the same degree.
-
-The same fact can be seen without matrices. The sensitivity equation is linear
-in $S$ with homogeneous part $S' = J_y(t)S$, which is the variational equation
-of the original problem. By variation of constants,
-
-$$S(t) = \Phi(t, t_0)\,S(t_0) + \int_{t_0}^{t} \Phi(t, s)\,J_p(s)\,\mathrm{d}s,$$
-
-where $\Phi$ is the state-transition matrix of that variational equation,
-$\Phi' = J_y\Phi$, $\Phi(t_0,t_0) = I$. Sensitivities are propagated by
-precisely the operator that governs how perturbations of the state evolve. The
-violently contracting directions that make the state stiff are the same
-directions in which $\Phi$ contracts, and an explicit method integrating $S$
-would face exactly the step-size restriction it faces on $y$.
-
-One caveat: equal spectra do not mean equal transient behaviour. $A$ is block
-triangular and generally not normal, so when $L \neq 0$ the joint system can
-show larger transient growth than the state alone even though its eigenvalues
-are unchanged. Stiffness in the spectral sense is identical; conditioning need
-not be.
-
-## Where the pieces live
-
-The rule itself is [`modax._sensitivity`][], documented under
-[API reference / Internals](../api/internals.md).
+Composing derivatives is less straightforward here than in JAX, where
+`jax.jvp` maps a jaxpr to a jaxpr and is therefore closed under itself. The
+`jvp` of numba-enzyme maps a Python callable to a compiled device symbol, and
+differentiating that symbol again would present Enzyme with an external
+declaration that has no body. The fork instead records the chain of
+differentiations and emits every level as a definition in one module, where a
+single Enzyme pass resolves the nested markers.

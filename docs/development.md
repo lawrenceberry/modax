@@ -1,6 +1,8 @@
 # Development
 
-## Development setup
+If you wish to contribute to modax, please follow these instructions.
+
+## Setup
 
 --8<-- "README.md:development"
 

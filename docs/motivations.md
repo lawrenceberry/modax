@@ -17,12 +17,12 @@ differential equations.
 
 A particularly demanding class of problems requires solving not one but
 $N \gg 1$ such systems simultaneously, differing only in their initial
-conditions $\mathbf{y}_0^{(i)}$ or parameters $\mathbf{p}^{(i)}$. modax exists
-for this class of problem, and this page sets out why it needed a library of its
-own. The [paper](https://arxiv.org/abs/2609.35661) makes the same argument at
+conditions $\mathbf{y}_0^{(i)}$ or parameters $\mathbf{p}^{(i)}$. modax is
+written for this class of problem, and this page sets out why it needed a
+library of its own. The [paper](https://arxiv.org/abs/2609.35661) makes the same argument at
 greater length, with benchmarks.
 
-## Where massive ensembles arise
+## Where do massive ensembles arise?
 
 Problems of this type arise naturally across many scientific domains.
 
@@ -49,14 +49,14 @@ Problems of this type arise naturally across many scientific domains.
   Einstein-Boltzmann equations are the canonical example: codes like CAMB and
   CLASS compute the CMB power spectrum by solving hundreds to thousands of
   independent ODEs at a time. The [physically-decoupled systems
-  example](examples/physically-decoupled-systems.md) computes the primordial
+  example](examples/physically-uncoupled-systems.md) computes the primordial
   power spectrum mode by mode.
 
 In each case the individual ODEs are small, with a state dimension
 $D \lesssim 200$, and mutually independent, in that the solution to trajectory
 $i$ does not depend on trajectory $j$.
 
-## Why a GPU?
+## Why use a GPU to solve low-dimensional ODEs?
 
 Small, independent problems are a good fit for modern hardware accelerators.
 A GPU offers a very large number of computational cores best suited to
@@ -68,12 +68,13 @@ comparably priced CPU. For an ensemble of ODEs that parallelises across
 thousands of independent compute streams, this is a potential
 order-of-magnitude improvement in both time-to-solution and cost per solve.
 
-Realising it is not automatic. The architectural constraints of a GPU, in
-particular single-instruction multiple-thread execution, limited fast memory
-and the far higher single-precision throughput, shape what an efficient solver
-has to look like; the [Design](design.md) page goes through them one by one.
+Realising this improvement requires care. The architectural constraints of a
+GPU, in particular single-instruction multiple-thread execution, limited fast
+memory and the far higher single-precision throughput, determine what an
+efficient solver has to look like; the [Design](design.md) page goes through
+them one by one.
 
-## Why not the existing libraries?
+## Why not use existing GPU-accelerated ODE libraries?
 
 The prevailing model of GPU computing has been shaped by machine learning,
 where a single large neural network occupies much of the device memory,
@@ -100,8 +101,8 @@ former suits large ensembles of highly divergent trajectories better: the
 joint time steps of the latter bottleneck on the slowest trajectory in each
 batch, and the array operations incur separate kernel launches whose overhead
 can dominate the cost of a solve for low-dimensional problems. Its one
-drawback for our purposes is that it lives in Julia, outside the Python and
-JAX ecosystem in which many scientific programs, such as the nested sampler of
+drawback for our purposes is that it is written in Julia, outside the Python
+and JAX ecosystem in which many scientific programs, such as the nested sampler of
 the parameter estimation example, run.
 
 ### Diffrax
@@ -140,7 +141,7 @@ While the paper was in preparation two concurrent papers presented GRADSOLVE,
 a JAX library for GPU ODE ensembles with reverse-mode gradients through the
 exact discrete adjoint, which we acknowledge as an independent contribution.
 
-## What modax does differently
+## What does modax do differently?
 
 modax takes DiffEqGPU.jl's ensemble-kernel approach and brings it to JAX.
 Each solver is a hand-written CUDA kernel in which one thread integrates one

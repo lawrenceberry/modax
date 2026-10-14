@@ -60,8 +60,8 @@ binaries and provides the `numba_enzyme` import package, so upstream
 
 <!-- --8<-- [start:quickstart] -->
 
-A stiff decay chain A → B → C, solved for 1000 rate constants at once, with
-the Jacobian's sparsity pattern (i.e. which inputs affect which outputs) declared:
+This example demonstrates a stiff decay chain A → B → C, solved for 1000 rate constants at once, with
+a declared sparsity pattern (i.e. which inputs affect which outputs):
 
 ```python
 import jax.numpy as jnp

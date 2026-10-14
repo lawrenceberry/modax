@@ -64,7 +64,7 @@ nav:
   - Examples:
     - Parameter estimation: examples/parameter-estimation.md
     - Uncertainty quantification: examples/uncertainty-quantification.md
-    - Physically-decoupled systems: examples/physically-decoupled-systems.md
+    - Physically uncoupled systems: examples/physically-uncoupled-systems.md
   - Benchmarks:
     - Lorenz: benchmarks/lorenz.md
     - Robertson: benchmarks/robertson.md

@@ -12,14 +12,13 @@ of the test suite, which is small: most tests need a device, and
 `cuda.compile_ptx`, which initialises the CUDA driver and so skips without
 one.
 
-## A first solve
+## Your first solve
 
 --8<-- "README.md:quickstart"
 
 The ensemble dimension comes from whichever of `y0` and `params` is
-two-dimensional; both may be, and they must then agree. The history has shape
-`(N, n_save, n_vars)`, and [Running a solver](usage/running.md) describes what
-`return_stats` and save hooks add to it.
+two-dimensional; if both are 2D, they must then agree. The returned integration history has shape
+`(N, n_save, n_vars)`.
 
 ## Where to go next?
 
@@ -31,7 +30,7 @@ two-dimensional; both may be, and they must then agree. The history has shape
 
 -   :material-function-variant: **[Running a solver](usage/running.md)**
 
-    `solve(...)`, its arguments, and the rules the callbacks obey.
+    `solve(...)`, its arguments, and the rules callbacks must obey.
 
 -   :material-grid: **[Exploiting sparsity](usage/sparse.md)**
 
@@ -42,13 +41,5 @@ two-dimensional; both may be, and they must then agree. The history has shape
 
     `jax.grad` and friends, through a continuous forward-sensitivity solve.
 
--   :material-lightbulb-on-outline: **[Motivations](motivations.md)**
-
-    Where massive ensembles arise, and why the existing GPU libraries were
-    not enough.
-
--   :material-cube-outline: **[Design](design.md)**
-
-    The constraints a GPU imposes and the design choices they led to.
 
 </div>

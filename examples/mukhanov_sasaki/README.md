@@ -1,4 +1,4 @@
-# Physically-decoupled systems: the primordial power spectrum
+# Physically-uncoupled systems: the primordial power spectrum
 
 The primordial scalar power spectrum of single-field quadratic inflation,
 computed mode by mode. Each comoving wavenumber $k$ obeys its own linear

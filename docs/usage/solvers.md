@@ -11,7 +11,13 @@ point, so switching between them is a change of import:
 Both run one CUDA thread per trajectory with per-trajectory adaptive stepping,
 take the same callback, trace under `jax.jit`, lower an outer `jax.vmap` to one
 ensemble launch, and are differentiable through
-[forward sensitivities](gradients.md). What separates them is stiffness.
+[forward sensitivities](gradients.md). What separates them is stiffness. If the solution varies slowly but the
+system has fast decaying modes, as in chemical kinetics, reaction networks and
+strongly damped oscillators, use Rodas5P, and give it a sparsity pattern if the
+Jacobian has one. If every timescale in the system is one you need to resolve
+anyway, use Tsit5. When in doubt, run both on a few trajectories with
+`return_stats=True`; if Tsit5 needs far more steps than Rodas5P, the problem
+is stiff.
 
 ## Tsit5: explicit, for non-stiff problems
 
@@ -56,9 +62,9 @@ simplicity.
 
 **Cons**
 
-- *Stiffness makes it crawl.* An explicit method's step is bounded by
-  stability rather than accuracy, so on a stiff problem it takes vast numbers
-  of tiny steps, or exhausts `max_steps`, however smooth the solution is.
+- *Stiff problems.* An explicit method's step is bounded by stability rather
+  than accuracy, so on a stiff problem it takes a very large number of small
+  steps, or exhausts `max_steps`, however smooth the solution is.
 - *Fewer options.* There is no sparsity pattern, save hook, per-trajectory end
   time (`tf_index`) or `array_rhs`; those belong to Rodas5P.
 
@@ -130,14 +136,5 @@ precision throughout.
   behind quickly above a few tens of variables.
 - *Slower to compile.* The Enzyme differentiation and the generated linear
   algebra make the first solve of a new system markedly slower to build.
-- *Dearer gradients.* A sensitivity column also needs second derivatives
+- *More expensive gradients.* A sensitivity column also needs second derivatives
   (forward over forward) of `ode_fn`; see [Computing gradients](gradients.md).
-
-## Which to use?
-
-Start from the problem's stiffness. If the solution varies slowly but the
-system has fast decaying modes, as in chemical kinetics, reaction networks and
-strongly damped oscillators, use Rodas5P, and give it a sparsity pattern if the
-Jacobian has one. If every timescale in the system is one you need to resolve
-anyway, use Tsit5. When in doubt, run both on a few trajectories with
-`return_stats=True`: a Tsit5 solve whose step counts dwarf Rodas5P's is stiff.
