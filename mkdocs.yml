@@ -6,8 +6,7 @@ repo_name: lawrenceberry/modax
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; Lawrence Berry
 
-# README.md's overview, install and development sections and wheels/README.md
-# are pulled into the pages under docs/ with pymdownx.snippets, so there is one
+# README.md's sections and wheels/README.md are pulled into the pages under docs/ with pymdownx.snippets, so there is one
 # copy of each. Those files are outside docs_dir, hence the watch
 # list below and snippets' base_path.
 watch:
@@ -51,18 +50,17 @@ theme:
         name: Switch to system preference
 
 nav:
-  - Home: index.md
-  - Getting started: getting-started.md
-  - The numba-enzyme-cuda wheel: wheels/README.md
-  - Guide:
-      - Calling a solver: guide/api.md
-      - Writing ODE callbacks: guide/callbacks.md
-      - Sparse systems: guide/sparse.md
-      - Gradients: guide/gradients.md
-      - Kernel design: guide/kernel-design.md
-  - API reference:
-      - Solvers: api/solvers.md
-      - Internals: api/internals.md
+  - Quickstart: index.md
+  - Development: development.md
+  - Usage:
+    - Calling a solver: guide/api.md
+    - Writing ODE callbacks: guide/callbacks.md
+    - Sparse systems: guide/sparse.md
+    - Gradients: guide/gradients.md
+    - Kernel design: guide/kernel-design.md
+  - API Reference:
+    - Solvers: api/solvers.md
+    - Internals: api/internals.md
 
 plugins:
   - search

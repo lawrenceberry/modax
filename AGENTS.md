@@ -96,8 +96,8 @@ The site is `docs/` plus `mkdocs.yml`, and `.github/workflows/docs.yml`
 publishes it to GitHub Pages on every push to `main`. The long-form prose
 lives in `docs/`; `README.md` is kept to an overview, installation and
 development setup. What the two share is not duplicated: the pages pull the
-README's `overview`, `install` and `development` sections and
-`wheels/README.md` in with `pymdownx.snippets`, so
+README's `overview`, `install`, `quickstart`, `development`, `citation`
+and `license` sections, `LICENSE` and `wheels/README.md` in with `pymdownx.snippets`, so
 `<!-- --8<-- [start:name] -->` / `[end:name]` markers in those files are
 load-bearing. Docstrings are rendered by mkdocstrings, so a cross-reference in
 one is written ``[`modax._sparsity`][]`` rather than as a Sphinx role.

@@ -37,9 +37,9 @@ Every solver is compiled as a **custom CUDA kernel** using Numba-CUDA-MLIR. Each
 The [documentation](https://lawrenceberry.github.io/modax/) covers the solver
 API and explains how to use the library. The [paper](https://arxiv.org/abs/2609.35661) details the technical implementation, example applications and performance benchmarks against other GPU-accelerated ODE libraries in Julia and Python.
 
-<!-- --8<-- [start:install] -->
-
 ## Installation
+
+<!-- --8<-- [start:install] -->
 
 ```bash
 pip install "modax-solvers[cuda13]"   # or [cuda12]; Python 3.10 needs cuda12
@@ -52,11 +52,13 @@ Jacobians come from
 CUDA-enabled fork of numba-enzyme, which carries its own LLVM 15 and Enzyme
 binaries and provides the `numba_enzyme` import package, so upstream
 `numba-enzyme` must not be installed alongside it. See
-[wheels/README.md](wheels/README.md) for what is in the wheel and why.
+[wheels/README.md](https://github.com/lawrenceberry/modax/blob/main/wheels/README.md) for what is in the wheel and why.
 
 <!-- --8<-- [end:install] -->
 
 ## Quickstart
+
+<!-- --8<-- [start:quickstart] -->
 
 A stiff decay chain A → B → C, solved for 1000 rate constants at once, with
 the Jacobian's sparsity pattern (i.e. which inputs affect which outputs) declared:
@@ -79,9 +81,11 @@ t_span = jnp.linspace(0.0, 10.0, 11)
 y = solve(ode_fn, y0, t_span, params, sparsity=sparsity)  # (1000, 11, 3)
 ```
 
-<!-- --8<-- [start:development] -->
+<!-- --8<-- [end:quickstart] -->
 
 ## Development setup
+
+<!-- --8<-- [start:development] -->
 
 The repository uses [uv](https://docs.astral.sh/uv/):
 
@@ -108,6 +112,8 @@ UV_PROJECT_ENVIRONMENT=.venv-docs uv run --no-sync mkdocs serve
 
 ## Citation
 
+<!-- --8<-- [start:citation] -->
+
 If you use modax in your research, please cite the
 [arXiv article](https://arxiv.org/abs/2609.35661):
 
@@ -123,6 +129,13 @@ If you use modax in your research, please cite the
 }
 ```
 
+<!-- --8<-- [end:citation] -->
+
 ## License
 
-modax is released under the [MIT License](LICENSE).
+<!-- --8<-- [start:license] -->
+
+modax is released under the
+[MIT License](https://github.com/lawrenceberry/modax/blob/main/LICENSE).
+
+<!-- --8<-- [end:license] -->

@@ -1,5 +1,7 @@
 # The numba-enzyme-cuda wheel
 
+<!-- --8<-- [start:wheel] -->
+
 `rodas5P` derives its Jacobian with [numba-enzyme][ne]. The release upstream
 publishes on PyPI has no CUDA backend, so the dependency is
 [**numba-enzyme-cuda**][cuda], the [`cuda` branch of a fork][fork] published
@@ -207,3 +209,5 @@ The fork carries changes that are not upstream:
   wheel `py3-none-linux_x86_64`. See "Installing from the branch instead"
   above. `_vendor/` is gitignored again now that the hook, rather than the
   un-ignore, is what keeps the plugin in the wheel.
+
+<!-- --8<-- [end:wheel] -->
