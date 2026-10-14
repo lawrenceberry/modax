@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="modax logo" src="docs/assets/modax.svg" width="480">
+</p>
+
 <h1 align="center">modax</h1>
 
 <!--
