@@ -71,8 +71,7 @@ there is still nothing to write beyond the right-hand side.
 
 **Cons**
 
-- **More work per step.** Eight right-hand-side evaluations, $n_\text{colours}
-  + 1$ Enzyme sweeps for the Jacobian and $\partial f/\partial t$, an LU
+- **More work per step.** Eight right-hand-side evaluations, $n_\text{colours} + 1$ Enzyme sweeps for the Jacobian and $\partial f/\partial t$, an LU
   factorisation and a triangular solve per stage. Dense, the factorisation is
   $O(n_\text{vars}^3)$ work and $O(n_\text{vars}^2)$ memory per trajectory, so
   without a pattern it falls behind quickly above a few tens of variables.
