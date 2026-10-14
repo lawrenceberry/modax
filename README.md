@@ -1,4 +1,4 @@
-# modax
+<h1 align="center">modax</h1>
 
 <!--
 The coverage badge reads a gist that the `tests` workflow rewrites on every
@@ -6,17 +6,25 @@ push to main; the id below is the repository variable COVERAGE_GIST_ID.
 These badges sit above the `overview` snippet marker, so the documentation
 site does not repeat them.
 -->
-[![tests](https://github.com/lawrenceberry/modax/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/lawrenceberry/modax/actions/workflows/tests.yml)
-[![coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Flawrenceberry%2Fb451e14a9620fabb0d49c345f13b5414%2Fraw%2Fmodax-coverage.json)](https://github.com/lawrenceberry/modax/actions/workflows/tests.yml)
-[![lint](https://github.com/lawrenceberry/modax/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/lawrenceberry/modax/actions/workflows/lint.yml)
-[![PyPI](https://img.shields.io/pypi/v/modax-solvers)](https://pypi.org/project/modax-solvers/)
-[![Downloads](https://img.shields.io/pypi/dm/modax-solvers)](https://pypi.org/project/modax-solvers/)
-[![Python](https://img.shields.io/pypi/pyversions/modax-solvers)](https://pypi.org/project/modax-solvers/)
-[![JAX](https://img.shields.io/badge/JAX-compatible-3f51b5)](https://docs.jax.dev/)
-[![arXiv](https://img.shields.io/badge/arXiv-2609.35661-b31b1b.svg)](https://arxiv.org/abs/2609.35661)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/lawrenceberry/modax/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/lawrenceberry/modax/actions/workflows/tests.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/lawrenceberry/modax/actions/workflows/tests.yml"><img alt="coverage" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Flawrenceberry%2Fb451e14a9620fabb0d49c345f13b5414%2Fraw%2Fmodax-coverage.json"></a>
+  <a href="https://github.com/lawrenceberry/modax/actions/workflows/lint.yml"><img alt="lint" src="https://github.com/lawrenceberry/modax/actions/workflows/lint.yml/badge.svg?branch=main"></a>
+  <a href="https://pypi.org/project/modax-solvers/"><img alt="PyPI" src="https://img.shields.io/pypi/v/modax-solvers"></a>
+  <a href="https://pypi.org/project/modax-solvers/"><img alt="Downloads" src="https://img.shields.io/pypi/dm/modax-solvers"></a>
+  <a href="https://pypi.org/project/modax-solvers/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/modax-solvers"></a>
+  <a href="https://docs.jax.dev/"><img alt="JAX" src="https://img.shields.io/badge/JAX-compatible-3f51b5"></a>
+  <a href="https://arxiv.org/abs/2609.35661"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2609.35661-b31b1b.svg"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
+</p>
 
-**[Documentation](https://lawrenceberry.github.io/modax/)**
+<p align="center">
+  <a href="#installation">Installation</a> •
+  <a href="#quickstart">Quickstart</a> •
+  <a href="https://lawrenceberry.github.io/modax/">Documentation</a> •
+  <a href="https://arxiv.org/abs/2609.35661">Paper</a> •
+  <a href="#citation">Citation</a>
+</p>
 
 <!-- --8<-- [start:overview] -->
 
@@ -51,7 +59,7 @@ binaries and provides the `numba_enzyme` import package, so upstream
 ## Quickstart
 
 A stiff decay chain A → B → C, solved for 1000 rate constants at once, with
-the Jacobian's sparsity pattern declared:
+the Jacobian's sparsity pattern (i.e. which inputs affect which outputs) declared:
 
 ```python
 import jax.numpy as jnp
