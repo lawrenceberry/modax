@@ -108,9 +108,9 @@ instead of applying it, and emits every level as a definition in one module,
 where a single Enzyme pass resolves the nested markers.
 
 The coupling block is cheap to drop and expensive to have dropped. Using the
-block diagonal $\mathrm{diag}(J_y, \ldots, J_y)$ instead is legitimate for a W
-method, since order 5 survives, but the error constant does not, and the
-step-size controller pays for it. On a two-species right-hand side bilinear in
+block diagonal $\mathrm{diag}(J_y, \ldots, J_y)$ instead leaves the method
+convergent, since the W conditions hold to second order, but the error
+constant does not survive, and the step-size controller pays for it. On a two-species right-hand side bilinear in
 state and parameters:
 
 | joint Jacobian | additive `f` ($L = 0$) | bilinear `f` ($L \neq 0$) |

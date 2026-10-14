@@ -266,9 +266,11 @@ Schur solver. `tests/test_sparse_direct.py` runs the two emissions against each
 other and requires them bit-identical.
 
 No pivoting is sound here for the same reason the Jacobian may be approximate:
-Rodas5P is a Rosenbrock-**W** method, so order 5 survives, and a pivot that
-reaches zero leaves an infinity, the error norm goes to NaN, the step is
-rejected, and the smaller step puts a larger `1/(h*gamma)` on that very diagonal.
+Rodas5P satisfies the Rosenbrock-**W** order conditions to second order, so an
+inexact factorisation costs order (2, with 1 for the embedded estimator) and
+step-size control rather than convergence, and a pivot that reaches zero
+leaves an infinity, the error norm goes to NaN, the step is rejected, and the
+smaller step puts a larger `1/(h*gamma)` on that very diagonal.
 
 It also decouples colouring from storage, which a hand-written solver could not.
 Such a solver owned its buffer, so it had to declare its own fill-in in the
@@ -451,9 +453,11 @@ which lists every local change made to numba-enzyme and how a new one is cut.
 [ne]: https://github.com/Qruise-ai/numba-enzyme
 
 `lu_precision` (`"fp32"`/`"fp64"`) selects the LU precision for implicit
-solvers. The `"fp32"` default does not lower the method's order — the
-Rosenbrock order conditions hold under an approximate Jacobian — while
-halving the LU buffer's footprint.
+solvers. Rodas5P is not a full W-method: with an inexact iteration matrix it
+drops to order 2 (order 1 for the embedded estimator), with an additional error
+that scales with the perturbation and that the step controller absorbs by
+taking smaller steps. At the level of FP32 rounding that costs little, and the
+`"fp32"` default halves the LU buffer's footprint.
 
 ### Forward sensitivities
 
@@ -501,9 +505,10 @@ touching the code.
   diagonal block, so `block_solve` is a forward substitution against one
   factorisation: state row first, then each sensitivity row with its right-hand
   side corrected by `L_k k_y`. The LU is `n_vars`-sized, not `n_aug`-sized.
-  Do not be tempted back to the block-diagonal approximation: it is legitimate
-  under the W property and order 5 survives, but the error constant does not —
-  201x the steps on a bilinear right-hand side, measured, and
+  Do not be tempted back to the block-diagonal approximation: the method stays
+  convergent under it, since the W conditions hold to second order, but the
+  error constant does not survive — 201x the steps on a bilinear right-hand
+  side, measured, and
   `test_joint_solve_costs_about_what_the_plain_solve_costs` is the guard.
 - **The batch no longer has to be re-sized for a joint solve.** The stage
   vectors that hold the augmented state are thread-local, so only the

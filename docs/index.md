@@ -6,9 +6,11 @@
 
 --8<-- "README.md:install"
 
-The CPU install is enough for the tests that exercise the typing and lowering
-pipeline without a device (`tests/test_examples.py`), and for building these
-docs.
+The CPU install is enough to build these docs and to run the host-side part
+of the test suite, which is small: most tests need a device, and
+`tests/test_examples.py` compiles the examples' callbacks with
+`cuda.compile_ptx`, which initialises the CUDA driver and so skips without
+one.
 
 ## A first solve
 

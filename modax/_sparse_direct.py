@@ -52,9 +52,10 @@ solver it replaced.
 every thread, so rows cannot be swapped on the numbers. Two things make that
 sound here. The permutation is *symmetric*, so ``M``'s diagonal stays on the
 diagonal and ``I/(h*gamma)`` guarantees every pivot is structurally there and
-grows without bound as the step shrinks. And Rodas5P is a Rosenbrock-*W* method:
-order 5 survives an approximate factorisation, so a badly conditioned pivot costs
-step-size control rather than correctness -- and the controller is what notices.
+grows without bound as the step shrinks. And Rodas5P satisfies the
+Rosenbrock-*W* order conditions to second order, so an approximate factorisation
+costs order and step-size control rather than convergence -- and the controller
+is what notices.
 A pivot that reaches exactly zero leaves an infinity in the factors, the error
 norm goes to NaN, the step is rejected and the next attempt has a larger
 ``1/(h*gamma)`` on that diagonal. This is the same stance ``dense_lu_solver``

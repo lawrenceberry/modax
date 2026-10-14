@@ -44,7 +44,7 @@ history.
 ## Writing ODE callbacks
 
 The right-hand side is compiled with
-[`numba_cuda_mlir`](https://github.com/NVIDIA/numba-cuda) and runs as device
+[`numba_cuda_mlir`](https://github.com/NVIDIA/numba-cuda-mlir) and runs as device
 code inside the solver kernel, which constrains how it is written.
 
 ```python

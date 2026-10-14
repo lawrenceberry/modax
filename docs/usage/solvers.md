@@ -56,12 +56,15 @@ there is still nothing to write beyond the right-hand side.
   the lanes of a warp stay in step. This is why it is two to three orders of
   magnitude faster than Diffrax's Kvaerno5 on the
   [Robertson benchmark](../benchmarks/robertson.md).
-- *Tolerant of an approximate Jacobian.* As a W-method it stays convergent
-  with an inexact $J$, at worst losing a little order and taking some extra
-  steps. That is what lets the sparse solver do without pivoting and the
-  factorisation run in FP32: `lu_precision="fp32"`, the default, halves the
-  LU's local-memory footprint at the expense of slightly lower method order,
-  and `"fp64"` is there for ill-conditioned systems.
+- *Tolerant of an approximate Jacobian.* Rodas5P attains its full fifth order
+  only with the exact $J$, but its coefficients satisfy the W-method conditions
+  to second order, so an inexact $J$ reduces it to order 2 with an error that
+  scales with the perturbation, and the step controller compensates with
+  smaller steps. That is what lets the sparse solver do without pivoting and
+  the factorisation run in FP32, where the perturbation is at the level of
+  single-precision rounding: `lu_precision="fp32"`, the default, halves the
+  LU's local-memory footprint, and `"fp64"` is there for ill-conditioned
+  systems.
 - *Scales with sparsity.* A [`sparsity` pattern](sparse.md) cuts the Jacobian
   to one Enzyme sweep per colour and replaces the dense LU with a sparse direct
   solve compiled for that structure.

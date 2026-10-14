@@ -341,9 +341,10 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
     e2 = -EXPONENT * (options.pcoeff + 2.0 * options.dcoeff)
     e3 = EXPONENT * options.dcoeff
     # The state, right-hand side, Jacobian and error estimate are always
-    # float64; lu_dtype governs only the iteration matrix and its solves. The
-    # Rosenbrock--Wanner order conditions hold under an approximate Jacobian, so
-    # an FP32 factorisation does not reduce the method's order.
+    # float64; lu_dtype governs only the iteration matrix and its solves.
+    # Rodas5P satisfies the Rosenbrock-W order conditions to second order, so
+    # the FP32 rounding in the factorisation costs an error that scales with
+    # that rounding, absorbed by the step controller, rather than convergence.
     lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
     # cuda.local.array wants the numba type rather than the numpy dtype.
     lu_local_dtype = types.float32 if lu_precision == "fp32" else types.float64
@@ -1121,12 +1122,15 @@ def solve(
 
     ``lu_precision`` (``"fp32"`` or ``"fp64"``) selects the precision of the
     per-step LU factorisation and triangular solves. The state, right-hand
-    side, Jacobian and error estimate are always float64; because the
-    Rosenbrock--Wanner order conditions retain full order under an approximate
-    Jacobian, the ``"fp32"`` default does not reduce the method's order while
-    halving the LU's local-memory footprint and exploiting FP32 throughput.
-    ``"fp64"`` is available for ill-conditioned systems where the FP32
-    factorisation degrades step-size control.
+    side, Jacobian and error estimate are always float64. Rodas5P attains its
+    full fifth order only with the exact Jacobian; it satisfies the
+    Rosenbrock--Wanner order conditions to second order, so an inexact
+    iteration matrix reduces it to order 2 with an additional error that
+    scales with the perturbation and that the step controller compensates for
+    with smaller steps. At the level of FP32 rounding that costs little, and
+    the ``"fp32"`` default halves the LU's local-memory footprint and exploits
+    FP32 throughput. ``"fp64"`` is available for ill-conditioned systems where
+    the FP32 factorisation degrades step-size control.
 
     ``first_step`` pins the initial step size; the default ``None`` (like any
     non-positive value) lets the kernel start from 1e-6 of the integration
@@ -1177,9 +1181,9 @@ def solve(
     The joint Jacobian's lower-left block ``d(J_y S + J_p)/dy`` is a second
     derivative of ``ode_fn``, and it is formed rather than dropped: Enzyme's
     forward-over-forward sweep applies it to the state increment without ever
-    materialising the matrix. Dropping it would be legitimate under the W
-    property -- order 5 survives an approximate Jacobian -- but not cheap: the
-    error constant it costs was measured at 200x the steps on a right-hand side
+    materialising the matrix. Dropping it would leave the method convergent,
+    since the W conditions hold to second order, but not cheap: the error
+    constant it costs was measured at 200x the steps on a right-hand side
     bilinear in state and parameters, which is most reaction networks.
 
     ``sparsity`` is where a structured problem pays off, and it is the only

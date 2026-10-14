@@ -58,8 +58,8 @@ reintroduce the warp divergence that one trajectory per thread exists to avoid.
 Two things make that sound. The permutation is symmetric, so $M$'s diagonal
 stays on the diagonal and $I/(h\gamma)$ guarantees that every pivot is
 structurally present and grows without bound as the step shrinks. And Rodas5P
-is a Rosenbrock-W method: order 5 survives an approximate factorisation, so a
-badly conditioned pivot costs step-size control rather than correctness, and
+satisfies the Rosenbrock-W order conditions to second order, so an approximate
+factorisation costs order and step-size control rather than convergence, and
 the controller is what notices. A pivot that reaches exactly zero leaves an
 infinity, the error norm goes to NaN, the step is rejected, and the smaller
 step puts a larger $1/(h\gamma)$ on that very diagonal.
