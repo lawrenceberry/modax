@@ -26,7 +26,7 @@ two-dimensional; if both are 2D, they must then agree. The returned integration 
 
 -   :material-scale-balance: **[Choosing a solver](usage/solvers.md)**
 
-    Tsit5 for non-stiff problems, Rodas5P for stiff ones, and what each costs.
+    Tsit5 for non-stiff problems, Rodas5P for stiff ones.
 
 -   :material-function-variant: **[Running a solver](usage/running.md)**
 
@@ -34,12 +34,11 @@ two-dimensional; if both are 2D, they must then agree. The returned integration 
 
 -   :material-grid: **[Exploiting sparsity](usage/sparse.md)**
 
-    One `sparsity` pattern buys both a coloured Jacobian and a compiled sparse
-    direct solve.
+    Speeding up solves using knowledge of which inputs affect which outputs.
 
 -   :material-chart-line: **[Computing gradients](usage/gradients.md)**
 
-    `jax.grad` and friends, through a continuous forward-sensitivity solve.
+    `jax.grad` using continuous forward-sensitivity solves.
 
 
 </div>
