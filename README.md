@@ -87,7 +87,7 @@ y = solve(ode_fn, y0, t_span, params, sparsity=sparsity)  # (1000, 11, 3)
 
 <!-- --8<-- [end:quickstart] -->
 
-## Development setup
+## Development
 
 <!-- --8<-- [start:development] -->
 
