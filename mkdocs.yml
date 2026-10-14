@@ -63,6 +63,10 @@ nav:
     - Parameter estimation: examples/parameter-estimation.md
     - Uncertainty quantification: examples/uncertainty-quantification.md
     - Physically-decoupled systems: examples/physically-decoupled-systems.md
+  - Benchmarks:
+    - Lorenz: benchmarks/lorenz.md
+    - Robertson: benchmarks/robertson.md
+    - Van der Pol: benchmarks/van-der-pol.md
   - API Reference:
     - Solvers: api/solvers.md
     - Internals: api/internals.md
