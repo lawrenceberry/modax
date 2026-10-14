@@ -2,16 +2,6 @@
 
 --8<-- "README.md:overview"
 
-## Solvers (`modax/`)
-
-| Method      | Type                   | Use for           | File           |
-|-------------|------------------------|-------------------|----------------|
-| **Tsit5**   | Explicit RK (order 5)  | Non-stiff systems | `tsit5.py`     |
-| **Rodas5P** | Rosenbrock-W (order 5) | Stiff systems     | `rodas5P.py`   |
-
-Rodas5P supports an `lu_precision` (`"fp32"`/`"fp64"`) knob: the FP32
-factorisation halves the LU's local-memory footprint at the expense of slightly lower method order.
-
 ## Installation
 
 --8<-- "README.md:install"
@@ -32,6 +22,10 @@ two-dimensional; both may be, and they must then agree. The history is
 ## Where to go next
 
 <div class="grid cards" markdown>
+
+-   :material-scale-balance: **[Choosing a solver](guide/solvers.md)**
+
+    Tsit5 for non-stiff problems, Rodas5P for stiff ones, and what each costs.
 
 -   :material-function-variant: **[Calling a solver](guide/api.md)**
 

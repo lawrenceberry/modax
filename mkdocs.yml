@@ -55,6 +55,7 @@ nav:
   - Development: development.md
   - Acknowledgement: acknowledgement.md
   - Usage:
+    - Choosing a solver: guide/solvers.md
     - Calling a solver: guide/api.md
     - Writing ODE callbacks: guide/callbacks.md
     - Sparse systems: guide/sparse.md
