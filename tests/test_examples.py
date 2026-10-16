@@ -128,9 +128,10 @@ def _bbn_samples(bbn, n=120):
     rng = np.random.default_rng(0)
     out = []
     while len(out) < n:
-        x = float(np.exp(rng.uniform(np.log(0.14), np.log(129.0))))
-        # g_star steps at T = m_e, where df/dx genuinely does not exist.
-        if abs(x - 1.293 / 0.511) < 0.05:
+        x = float(np.exp(rng.uniform(np.log(0.14), np.log(258.0))))
+        # The rate fits are held constant above T9 = 1.5, 4 and 10, where
+        # df/dx genuinely does not exist; stay off those kinks.
+        if any(abs(x - 1.293 / (t9 * bbn.T9_MEV)) < 0.01 for t9 in (1.5, 4.0, 10.0)):
             continue
         y = np.array(
             [
