@@ -65,8 +65,8 @@ class DivergenceCase(BenchmarkCase):
     ``mode`` is ``"stats"`` for the benchmark's own modax solver, timed with
     ``return_stats=True`` so the step distribution comes from the timed run
     itself; ``"julia"`` for a DiffEqGPU ``ensemble_backend``; or ``"timing"``
-    for another JAX solver passed as ``solve_fn`` (``kwargs`` overrides the
-    benchmark's solver settings for it). The latter two report no step counts,
+    for another JAX solver passed as ``solve_fn``. For the latter two,
+    ``kwargs`` overrides the benchmark's solver settings. They report no step counts,
     so the modax solver supplies them, from its cached row for the same
     divergence when it has one and otherwise from a fresh solve.
 
@@ -210,6 +210,7 @@ def _time_solve(
     bench: DivergenceBenchmark, case: DivergenceCase, y0: np.ndarray, params: np.ndarray
 ) -> tuple[float, dict | None]:
     """Solve time in ms and, when the case reports them, the per-trajectory stats."""
+    kwargs = bench.solver_kwargs if case.kwargs is None else case.kwargs
     if case.mode == "julia":
         # An identical ensemble is sent as one initial state.
         if y0.ndim == 2 and np.all(y0 == y0[0]):
@@ -222,12 +223,11 @@ def _time_solve(
             params,
             system_config=bench.julia_system_config,
             ensemble_backend=case.ensemble_backend,
-            **bench.solver_kwargs,
+            **kwargs,
         )
         return ms, None
     if case.mode == "timing":
         assert case.solve_fn is not None
-        kwargs = bench.solver_kwargs if case.kwargs is None else case.kwargs
         if not case.jit:
             solve_fn = case.solve_fn
             ms, _ = time_blocked(

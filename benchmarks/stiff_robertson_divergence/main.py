@@ -3,7 +3,9 @@
 Runs the Robertson system with 30,000 trajectories while sweeping the
 ``make_scenario(..., divergence=...)`` knob. For each solver and divergence
 value, the benchmark records solve time and the actual distribution of accepted
-plus rejected Rodas5P steps.
+plus rejected Rodas5P steps. DiffEqGPU's EnsembleGPUArray Rodas5P starts from
+a first step of 1e-10 rather than the shared 1e-4, since it cannot recover from
+a rejected first step on a divergent ensemble.
 
 Usage:
     uv run python benchmarks/stiff_robertson_divergence/main.py
@@ -50,6 +52,9 @@ BENCHMARK = DivergenceBenchmark(
     ),
     julia_solve=julia_rodas5P_solve,
     julia_system="robertson",
+    legend_loc="upper center",
+    legend_ncol=2,
+    legend_bbox_to_anchor=(0.5, -0.12),
     cases=(
         DivergenceCase(key="modax rodas5P fp32", color=MODAX_COLOR, marker="s"),
         DivergenceCase(
@@ -67,13 +72,21 @@ BENCHMARK = DivergenceBenchmark(
         #     kwargs={**_SOLVER_KWARGS, "max_steps": 1_000_000},
         #     max_divergence=1.5,
         # ),
-        # DivergenceCase(
-        #     key="julia rodas5P EnsembleGPUArray",
-        #     color=JULIA_COLOR,
-        #     marker="D",
-        #     mode="julia",
-        #     ensemble_backend="EnsembleGPUArray",
-        # ),
+        DivergenceCase(
+            key="julia rodas5P EnsembleGPUArray",
+            color=JULIA_COLOR,
+            marker="^",
+            mode="julia",
+            ensemble_backend="EnsembleGPUArray",
+            # EnsembleGPUArray steps the whole ensemble with one step size,
+            # and once its Rodas5P rejects the first step of a divergent
+            # ensemble it rejects every retry until dt underflows and the
+            # solve returns Unstable, even as dt falls below a first step
+            # that would have succeeded. Its own first-step estimate and 1e-6
+            # fail this way from divergence 1.25 up and 1e-8 at divergence 3;
+            # 1e-10 is accepted at every divergence.
+            kwargs={**_SOLVER_KWARGS, "first_step": 1e-10},
+        ),
         DivergenceCase(
             key="julia rodas5P EnsembleGPUKernel",
             color=JULIA_COLOR,
