@@ -136,3 +136,41 @@ def test_enzyme_jacobian_recovers_a_time_derivative():
     np.testing.assert_allclose(
         time_jacobian, np.stack([params[:, 1], y[:, 0]], axis=1), rtol=1e-14
     )
+
+
+def test_enzyme_jacobian_of_a_looped_right_hand_side():
+    """A hierarchy written as loops differentiates like its unrolled form.
+
+    numba lowers every runtime index into the tuple and into a thread-local
+    array with a bounds check Enzyme cannot differentiate; numba-enzyme's
+    pre-Enzyme ``O3`` pipeline unrolls the loops and folds the checks, so the
+    callback need not be hand-unrolled.
+    """
+    from numba_cuda_mlir import types
+
+    n = 4
+
+    def unrolled(y, t, p):
+        k, inv_tau = p[0], p[1]
+        return (
+            -k * y[1],
+            k * (1 * y[0] - 2 * y[2]) * (1.0 / 3.0),
+            k * (2 * y[1] - 3 * y[3]) * (1.0 / 5.0),
+            k * y[2] - 4 * y[3] * inv_tau,
+        )
+
+    def looped(y, t, p):
+        k, inv_tau = p[0], p[1]
+        dx = cuda.local.array(n, types.float64)
+        dx[0] = -k * y[1]
+        for l in range(1, n - 1):
+            dx[l] = k * (l * y[l - 1] - (l + 1) * y[l + 1]) * (1.0 / (2 * l + 1))
+        dx[n - 1] = k * y[n - 2] - n * y[n - 1] * inv_tau
+        return (dx[0], dx[1], dx[2], dx[3])
+
+    y = np.array([[0.3, -1.2, 0.7, 2.1], [1.0, 2.0, 3.0, 4.0]])
+    params = np.array([[0.8, 0.25], [0.1, 2.0]])
+    expected, expected_t = evaluate_derivatives(unrolled, y, 1.0, params)
+    jacobian, time_jacobian = evaluate_derivatives(looped, y, 1.0, params)
+    np.testing.assert_allclose(jacobian, expected, rtol=1e-14, atol=1e-14)
+    np.testing.assert_array_equal(time_jacobian, expected_t)

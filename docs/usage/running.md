@@ -66,14 +66,13 @@ with `cuda.jit(device=True)` is used as it is. It has to follow these rules.
 - *No calls to plain Python helpers.* Device code cannot call an undecorated
   Python function. Either inline the shared work or decorate the helper with
   `@cuda.jit(device=True)`.
-- *Constant indices into the tuple.* A runtime index makes numba emit a
-  bounds-check `cmpxchg`, and Enzyme refuses the atomic ("cannot handle
-  unknown instruction") when it differentiates the callback for Rodas5P.
-  Wrapping the loop around a thread-local array instead passes typing but
-  yields IR that NVVM will not verify. For this reason the reference systems
-  under `reference/systems/python/` are generated from one expression string
-  per component, and DISCO-EB's unrolled right-hand side is generated from
-  its looped one.
+- *Loops are allowed.* The body may loop over the tuple with a runtime index
+  or over a `cuda.local.array`, as a hierarchy of multipoles naturally is.
+  numba-enzyme optimises the callback with LLVM's `O3` pipeline before Enzyme
+  differentiates it for Rodas5P, which unrolls the loops and folds away the
+  bounds checks whose failure path (a `cmpxchg`) Enzyme would otherwise refuse.
+  Loops therefore need a trip count LLVM can see: a `range` over bounds fixed
+  when the kernel is built.
 - *Closed-over arrays.* These are placed in CUDA constant memory, of which
   there is 64 KiB per module, and numba emits one copy per reference site.
   Pack related tables into a single array and bind it to a local variable

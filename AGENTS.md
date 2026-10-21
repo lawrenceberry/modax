@@ -318,12 +318,18 @@ Things to know when touching this:
 - **`ode_fn` is always the tuple form.** There is no `jac_fn` any more; the
   Jacobian and `df/dt` both come from Enzyme, and the tuple form is what Enzyme
   reads.
-- **A runtime index into the tuple is fatal.** numba emits a bounds-check
-  `cmpxchg` for it and Enzyme refuses the atomic ("cannot handle unknown
-  instruction"). Wrapping the loops around a thread-local array instead gets
-  past typing but yields IR NVVM will not verify. Callbacks must therefore index
-  only with constants — which is why the reference systems are AST-generated,
-  and why DISCO-EB generates its unrolled right-hand side from the looped one.
+- **Loops over the state are fine since numba-enzyme runs `O3` before Enzyme.**
+  As lowered by numba, a runtime index into the tuple (or into a thread-local
+  array) carries a bounds check whose failure path is a `cmpxchg` Enzyme
+  refuses ("cannot handle unknown instruction"), and numba's `range` loops have
+  a data-dependent step SCEV cannot unroll. numba-enzyme's pre-Enzyme pipeline
+  (`NUMBA_ENZYME_CUDA_PREPASSES`, default `default<O3>,function(sroa,instcombine)`)
+  canonicalises and fully unrolls the loops, folds the checks and promotes the
+  local arrays, so Enzyme sees the hand-unrolled callback. Before that pipeline
+  existed callbacks had to index with constants only, which is why the
+  reference systems are AST-generated; `test_enzyme_jacobian.py` now also
+  checks a looped right-hand side. The return is still a tuple of `n_vars`
+  scalars.
 - **The seed table's zero row doubles as the null parameter direction**, so it
   is widened to `max(n_vars, n_params)`. It was `n_vars` once, and every `df/dt`
   silently read past the row whenever there were more parameters than states.
@@ -338,7 +344,9 @@ Things to know when touching this:
 
 Callbacks are compiled with `numba_cuda_mlir`, which constrains them:
 
-- Take and return **fixed-size tuples of scalars**, not arrays.
+- Take and return **fixed-size tuples of scalars**, not arrays. The body may
+  loop over them and over `cuda.local.array` scratch (see above); only the
+  signature is fixed.
 - Use `math`, not `numpy`/`jax.numpy`.
 - **Device code cannot call a plain Python helper.** Either inline the shared
   work or pre-decorate the helper with `@cuda.jit(device=True)`.
