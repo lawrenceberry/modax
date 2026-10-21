@@ -592,15 +592,15 @@ def benchmark(n, backends, repeats):
 
 # Synthetic observations: the network's own predictions at the Planck 2018
 # parameters (eta_10 = 6.1, N_eff = 3.044), with the uncertainties of the
-# real measurements -- Aver et al. (2015) for Y_P, Cooke et al. (2018) for
-# D/H.  Fitting the network to its own output keeps the posterior a clean
+# real measurements -- the LBT Y_p Project (Aver et al. 2026) for Y_P,
+# Kislitsyn et al. (2024) for D/H.  Fitting the network to its own output keeps the posterior a clean
 # recovery test; its predictions sit within 0.1 per cent (Y_P) and 4 per
 # cent (D/H) of the full-network codes, see README.md.
 Y_P_OBS = 0.24700
-SIGMA_YP = 0.0040
+SIGMA_YP = 0.0013
 
 DH_OBS = 2.542e-5
-SIGMA_DH = 0.030e-5
+SIGMA_DH = 0.024e-5
 
 # Uniform box prior: log10(eta_10) in [0.5, 1.0], N_eff in [2.0, 4.0]
 LO = jnp.array([0.5, 2.0])
@@ -727,40 +727,42 @@ def run_nested_sampling():
     print(f"eta_10 = {eta10_mean:.3f} +/- {eta10_std:.3f}")
     print(f"N_eff  = {neff_mean:.3f} +/- {neff_std:.3f}")
 
-    _plot_posterior(w_np, eta10_samples, neff_samples)
-
-
-def _plot_posterior(w, eta10_samples, neff_samples):
-    """Posterior scatter and marginals, in the house style of ``benchmarks/``."""
-    configure_latex_plot_style(plt)
-    print_plot_title("BBN posterior from nested slice sampling")
-    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.5))
-
-    # 2D scatter coloured by posterior weight
-    sc = axes[0].scatter(
+    _plot_posterior(
         eta10_samples,
         neff_samples,
-        c=w,
-        s=4,
-        cmap="viridis",
-        alpha=0.7,
-        linewidths=0,
+        np.array(final_info.particles.loglikelihood),
+        np.array(final_info.particles.loglikelihood_birth),
     )
-    fig.colorbar(sc, ax=axes[0], label="Posterior weight")
-    axes[0].set_xlabel(r"$\eta_{10}$")
-    axes[0].set_ylabel(r"$N_\mathrm{eff}$")
 
-    # marginals
-    axes[1].hist(eta10_samples, weights=w, bins=40, color=MODAX_COLOR, density=True)
-    axes[1].set_xlabel(r"$\eta_{10}$")
-    axes[1].set_ylabel("Posterior density")
-    axes[2].hist(neff_samples, weights=w, bins=40, color=MODAX_COLOR, density=True)
-    axes[2].set_xlabel(r"$N_\mathrm{eff}$")
-    axes[2].set_ylabel("Posterior density")
 
-    for ax in axes:
-        ax.grid(True, linestyle="--", alpha=0.4)
-    fig.tight_layout()
+def _plot_posterior(eta10_samples, neff_samples, logL, logL_birth):
+    """Corner plot of the nested-sampling run, drawn with anesthetic.
+
+    anesthetic weights the dead and live points itself from each point's
+    likelihood and birth contour, so the plot does not depend on the weights
+    computed above.
+    """
+    from anesthetic import NestedSamples
+
+    configure_latex_plot_style(plt)
+    print_plot_title("BBN posterior from nested slice sampling")
+    samples = NestedSamples(
+        data=np.column_stack([eta10_samples, neff_samples]),
+        columns=["eta10", "neff"],
+        logL=logL,
+        logL_birth=logL_birth,
+        labels={"eta10": r"$\eta_{10}$", "neff": r"$N_\mathrm{eff}$"},
+    )
+    axes = samples.plot_2d(
+        ["eta10", "neff"],
+        kinds={"diagonal": "kde_1d", "lower": "kde_2d", "upper": "scatter_2d"},
+        figsize=(5.0, 5.0),
+        color=MODAX_COLOR,
+    )
+    fig = axes.iloc[0, 0].figure
+    # The values the synthetic observations were generated at
+    axes.axlines({"eta10": 6.1, "neff": 3.044}, color="k", linestyle="--", lw=0.8)
+
     out = Path(__file__).parent / "posterior.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {out}")

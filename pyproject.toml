@@ -93,6 +93,8 @@ dev = [
     # The example baselines and their plotting, not runtime dependencies of the
     # solvers. `uv sync` installs this group by default, so the examples run as
     # they always did.
+    # The BBN example's corner plot of its nested-sampling run.
+    "anesthetic>=2.16.0",
     # Nested slice sampling (`blackjax.ns`) has shipped on PyPI since 1.6, which
     # needs Python 3.11; on 3.10 the BBN example's nested sampling is
     # unavailable, but nothing imports blackjax outside it.

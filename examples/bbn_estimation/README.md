@@ -38,8 +38,8 @@ nested sampling needs BlackJAX 1.6, which needs Python 3.11 or newer.
 
 ## Result
 
-With 512 live points the sampler recovers $\eta_{10} = 6.11 \pm 0.15$ and
-$N_\mathrm{eff} = 3.05 \pm 0.29$, on the values the synthetic observations
+With 512 live points the sampler recovers $\eta_{10} = 6.10 \pm 0.06$ and
+$N_\mathrm{eff} = 3.04 \pm 0.09$, on the values the synthetic observations
 were generated at. The script writes the posterior to `posterior.png`.
 
 ## Solver-backend benchmark
@@ -240,8 +240,8 @@ recovery test.
 
 | Observable | Synthetic value | 1-sigma | Measured |
 | --- | --- | --- | --- |
-| Helium mass fraction $Y_P$ | 0.2470 | 0.0040 | $0.2449 \pm 0.0040$ (Aver et al. 2015) |
-| Deuterium ratio $D/H$ | $2.54 \times 10^{-5}$ | $0.03 \times 10^{-5}$ | $(2.527 \pm 0.030) \times 10^{-5}$ (Cooke et al. 2018) |
+| Helium mass fraction $Y_P$ | 0.2470 | 0.0013 | $0.2458 \pm 0.0013$ (Aver et al. 2026) |
+| Deuterium ratio $D/H$ | $2.54 \times 10^{-5}$ | $0.024 \times 10^{-5}$ | $(2.533 \pm 0.024) \times 10^{-5}$ (Kislitsyn et al. 2024) |
 
 For comparison, LINX with its PRIMAT 2023 key network gives $Y_P = 0.2471$ and
 $D/H = 2.43 \times 10^{-5}$ at $\Omega_b h^2 = 0.02242$ ($\eta_{10} \approx 6.14$),
@@ -252,7 +252,7 @@ where this network gives $0.2470$ and $2.52 \times 10^{-5}$.
 1. P. D. Serpico, S. Esposito, F. Iocco, G. Mangano, G. Miele, O. Pisanti (2004). *Nuclear reaction network for primordial nucleosynthesis: a detailed analysis of rates, uncertainties and light nuclei yields.* JCAP **12**, 010.
 2. C. Pitrou, A. Coc, J.-P. Uzan, E. Vangioni (2018). *Precision big bang nucleosynthesis with improved Helium-4 predictions.* Phys. Rep. **754**, 1.
 3. C. Giovanetti, M. Lisanti, H. Liu, S. Mishra-Sharma, J. T. Ruderman (2025). *LINX: A fast, differentiable, and extensible big bang nucleosynthesis package.* Phys. Rev. D.
-4. R. J. Cooke, M. Pettini, C. C. Steidel (2018). *One Percent Determination of the Primordial Deuterium Abundance.* ApJ **855**, 102.
-5. E. Aver, K. A. Olive, E. D. Skillman (2015). *The effects of He I λ10830 on helium abundance determinations.* JCAP **07**, 011.
+4. P. A. Kislitsyn, S. A. Balashev, M. T. Murphy, C. Ledoux, P. Noterdaeme, A. V. Ivanchik (2024). *A new precise determination of the primordial abundance of deuterium: measurement in the metal-poor sub-DLA system at z = 3.42 towards quasar J1332+0052.* MNRAS **528**, 4068.
+5. E. Aver, E. D. Skillman, R. W. Pogge, N. S. J. Rogers, M. K. Weller, K. A. Olive, D. A. Berg, J. J. Salzer, J. H. Miller Jr., J. E. Méndez-Delgado (2026). *The LBT Y$_\mathrm{p}$ Project IV: A New Value of the Primordial Helium Abundance.* arXiv:2601.22238.
 6. J. Skilling (2006). *Nested sampling for general Bayesian computation.* Bayesian Analysis **1**, 833.
 7. D. Yallup, N. Kroupa, W. Handley (2026). *Nested Slice Sampling: Vectorized Nested Sampling for GPU-Accelerated Inference.* arXiv:2601.23252.
