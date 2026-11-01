@@ -67,10 +67,11 @@ class CompressedJacobian:
     # nothing in that row. ``None`` leaves the layout on the grid, where a slot
     # exists for every position.
     packed: tuple[int, ...] | None = None
-    # Slots for diagonal entries the pattern does not declare. ``I/(h*gamma)``
-    # lands on every diagonal whether or not ``J`` has anything there, so a
-    # packed layout has to keep room for them; nothing writes them, which is
-    # why a packed layout with any of these is cleared before the sweeps.
+    # The slot of every diagonal entry, declared by the pattern or not.
+    # ``I/(h*gamma)`` lands on every diagonal whether or not ``J`` has anything
+    # there, so a packed layout keeps room for each; one the pattern leaves out
+    # is written by no sweep, which is why a packed layout with any of those is
+    # cleared before the sweeps.
     packed_diagonal: tuple[int, ...] | None = None
     # Slots the buffer holds beyond the ones some entry claims: the direct
     # sparse factorisation needs room for its fill-in, which belongs to no
@@ -98,13 +99,18 @@ class CompressedJacobian:
 
     def slot(self, row: int, col: int) -> int:
         """Where entry ``(row, col)`` lives."""
+        if self.packed is not None and row == col:
+            # The factorisation's own slot, whether or not the pattern declares
+            # the diagonal. The grid cell ``(row, colour[row])`` cannot stand in
+            # for it: when ``J`` has no ``(row, row)``, another column of that
+            # colour may have an entry in the row and own the cell, and the
+            # ``1/(h*gamma)`` would be added to that entry instead.
+            assert self.packed_diagonal is not None
+            return self.packed_diagonal[row]
         grid = row * self.n_colours + self.colour[col]
         if self.packed is None:
             return grid
         slot = self.packed[grid]
-        if slot < 0 and row == col:
-            assert self.packed_diagonal is not None
-            return self.packed_diagonal[row]
         if slot < 0:
             raise ValueError(
                 f"entry ({row}, {col}) is not in the pattern, so a packed "
