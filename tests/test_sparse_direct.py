@@ -285,6 +285,30 @@ def test_the_footprint_is_the_factorisation_and_nothing_more():
     assert len(set(compressed.diagonal)) == 9
 
 
+def test_an_undeclared_diagonal_gets_the_factorisations_slot():
+    """``y0' = w y1, y1' = -w y0``: no diagonal, and one colour for both columns.
+
+    Columns 0 and 1 never meet in a row, so they share a colour, and the grid
+    cell ``(0, colour)`` is the slot of ``J[0, 1]``. The ``1/(h*gamma)`` of the
+    diagonal must go to the factorisation's own ``(0, 0)`` slot, not be added
+    to that entry; it used to be, and the Einstein-Boltzmann solve whose
+    free-streaming multipoles have no diagonal came back as its initial state.
+    """
+    pattern = normalize_sparsity(np.array([[0, 1], [1, 0]]), 2)
+    layout = analyse(pattern, "natural")
+    compressed = compressed_jacobian(pattern, layout)
+    table = layout.slot_table()
+
+    assert compressed.colour[0] == compressed.colour[1]
+    for i in range(2):
+        assert compressed.slot(i, i) == table[i, i]
+        assert compressed.slot(i, i) != compressed.slot(i, 1 - i)
+    assert compressed.diagonal == tuple(table[i, i] for i in range(2))
+    assert sorted(
+        {*compressed.diagonal, compressed.slot(0, 1), compressed.slot(1, 0)}
+    ) == list(range(4))
+
+
 def test_the_pattern_may_be_coloured_as_tightly_as_it_is():
     """Storage is the factorisation's, so the colouring need not reserve fill.
 
@@ -380,6 +404,29 @@ def test_a_pattern_with_fill_in_solves_the_same():
     builtin = np.asarray(rodas5P_solve(ring_ode, y0, t, params, **kw))
     got = np.asarray(rodas5P_solve(ring_ode, y0, t, params, sparsity=_ring(6), **kw))
     np.testing.assert_allclose(got, builtin, rtol=1e-8, atol=1e-11)
+
+
+def oscillator_ode(y, t, p):
+    """A harmonic oscillator: neither equation reads its own variable."""
+    return (p[0] * y[1], -p[0] * y[0])
+
+
+@requires_cuda
+def test_a_pattern_without_a_diagonal_solves_the_same():
+    """The diagonal the pattern leaves out still receives ``1/(h*gamma)``, and only it."""
+    pattern = np.array([[0, 1], [1, 0]], dtype=bool)
+    y0 = np.tile(np.array([1.0, 0.0]), (64, 1))
+    params = np.tile(np.array([3.0]), (64, 1))
+    t = np.array([0.0, 0.5, 1.0])
+    kw = dict(rtol=1e-11, atol=1e-13, first_step=1e-6, lu_precision="fp64")
+
+    builtin = np.asarray(rodas5P_solve(oscillator_ode, y0, t, params, **kw))
+    got = np.asarray(
+        rodas5P_solve(oscillator_ode, y0, t, params, sparsity=pattern, **kw)
+    )
+    np.testing.assert_allclose(got, builtin, rtol=1e-8, atol=1e-11)
+    exact = np.stack([np.cos(3.0 * t), -np.sin(3.0 * t)], axis=-1)
+    np.testing.assert_allclose(got[0], exact, atol=1e-7)
 
 
 @requires_cuda
