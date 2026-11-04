@@ -40,8 +40,6 @@ SOLVER_ARGTYPES = (
 )
 HOOK_OUT_ARGTYPE = _F64_2D
 """Per-trajectory rows a save hook accumulates into (``(n, hook_size)``)."""
-DRIVER_Y0_ARGTYPE = _F64_2D
-"""Initial states of a driver subsystem (``(n, n_drv)``; ``(n, 1)`` of zeros without one)."""
 SOLVER_INPUT_KINDS = (
     ABI_ARRAY,
     ABI_ARRAY,
@@ -52,8 +50,6 @@ SOLVER_INPUT_KINDS = (
     ABI_SCALAR_I32,
     ABI_ARRAY,
 )
-DRIVER_INPUT_KINDS = SOLVER_INPUT_KINDS + (ABI_ARRAY,)
-"""The Rodas5P inputs: the solver's plus the driver's initial states."""
 
 
 def build_error_weights(error_weights, n: int, n_vars: int) -> np.ndarray:
@@ -99,7 +95,6 @@ def ensemble_ffi_call(
     max_steps,
     n_save_hist: int | None = None,
     hook_size: int | None = None,
-    input_kinds=SOLVER_INPUT_KINDS,
 ):
     """Launch a solver kernel from JAX and return its solution outputs.
 
@@ -128,7 +123,7 @@ def ensemble_ffi_call(
         launch,
         arrays,
         output_specs,
-        input_kinds=input_kinds,
+        input_kinds=SOLVER_INPUT_KINDS,
         scalar_f64_values=(dt0, rtol, atol),
         scalar_i32_values=(max_steps,),
     )
