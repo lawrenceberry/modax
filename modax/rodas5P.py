@@ -15,6 +15,8 @@ from modax._codegen import compile_device_source
 from modax._jax_common import make_custom_vmap_solver, normalize_y0_params
 from modax._jax_numba_custom_call import make_launch
 from modax._numba_common import (
+    DRIVER_INPUT_KINDS,
+    DRIVER_Y0_ARGTYPE,
     HOOK_OUT_ARGTYPE,
     SOLVER_ARGTYPES,
     as_cuda_device,
@@ -162,6 +164,18 @@ class KernelOptions:
     save_hook: object = None
     hook_size: int = 0
     save_history: bool = True
+    # A driver subsystem ``g(theta, t, p) -> tuple`` of ``n_drv`` autonomous
+    # states that the right-hand side reads but never feeds back into:
+    # integrated one Rodas5P sub-step of its own per outer step, its cubic Hermite dense output written into the
+    # thread's copy of the parameter row from column ``driver_column`` on
+    # (``2 + 4 n_drv`` columns: t0, h, then theta0, g0, theta1, g1 per state),
+    # where ``ode_fn`` evaluates it at the stage times. Its Jacobian is
+    # recomputed after ``driver_jac_every`` accepted steps, when the step size
+    # has moved by more than a factor of two, or after a rejection.
+    driver_fn: object = None
+    n_drv: int = 0
+    driver_column: int = -1
+    driver_jac_every: int = 8
 
 
 @functools.cache
@@ -499,6 +513,191 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         ),
     )
 
+    # --- the driver subsystem: ROS2 on its own states, one sub-step per step -
+    # ``theta' = g(theta, t, p)`` reads nothing of ``y``, so it is advanced over
+    # the outer step on its own before the stages, with the same Rodas5P
+    # tableau against a lagged dense Jacobian of its own, and
+    # the stages see it through the cubic Hermite polynomial of
+    # (theta0, g0, theta1, g1) the kernel writes into the thread's parameter
+    # row. ``ode_fn`` then depends on it only through ``t`` and ``p``: the
+    # state Jacobian has no driver columns, and the ``df/dt`` sweep picks up
+    # ``df/dtheta theta'`` through the polynomial. Its embedded estimate (the
+    # last stage increment, as for the state) joins the step's error norm.
+    HAS_DRIVER = options.driver_fn is not None
+    n_drv = int(options.n_drv) if HAS_DRIVER else 0
+    DRV = max(1, n_drv)
+    DRV2 = DRV * DRV
+    drv_col = int(options.driver_column)
+    DRV_JAC_EVERY = int(options.driver_jac_every)
+    if HAS_DRIVER:
+        driver_write = make_cuda_local_vector_writer(options.driver_fn, n_drv)
+        drv_structure = dense_jacobian(n_drv)
+
+        @cuda.jit(device=True)
+        def drv_clear(lu):
+            pass
+
+        write_driver_negated_jacobian = _make_literal_seed_jacobian(
+            n_vars=n_drv,
+            n_params=n_params,
+            n_colours=n_drv,
+            store_table=None,
+            namespace=dict(
+                cuda=cuda,
+                float64=types.float64,
+                tangent_of=make_tangent(options.driver_fn, n_drv, n_params),
+                colour_seeds=drv_structure.seed_table(n_params),
+                clear_matrix=drv_clear,
+                lu_dtype=np.float64,
+            ),
+        )
+        drv_factorize, drv_solve = dense_lu_solver(n_drv)
+    else:
+
+        @cuda.jit(device=True)
+        def driver_write(th, t, p_row, out):
+            pass
+
+        @cuda.jit(device=True)
+        def write_driver_negated_jacobian(th, t, p_row, neg_a, d_t):
+            pass
+
+        @cuda.jit(device=True)
+        def drv_factorize(lu, ipiv):
+            pass
+
+        @cuda.jit(device=True)
+        def drv_solve(lu, ipiv, rhs):
+            pass
+
+    # The driver takes the hierarchy's own Rodas5P step on its few states --
+    # a fourth-order embedded estimate, so its error control costs the outer
+    # step about what the thermal components cost inside the fused solve, and
+    # eight rate evaluations per step (seven stages and the end point for the
+    # Hermite block, whose derivative is next step's first stage).
+    drv_c_rows = (
+        (),
+        (C21,),
+        (C31, C32),
+        (C41, C42, C43),
+        (C51, C52, C53, C54),
+        (C61, C62, C63, C64, C65),
+        (C71, C72, C73, C74, C75, C76),
+        (C81, C82, C83, C84, C85, C86, C87),
+    )
+    drv_a_rows = (
+        (A21,),
+        (A31, A32),
+        (A41, A42, A43),
+        (A51, A52, A53, A54),
+        (A61, A62, A63, A64, A65),
+    )
+
+    def make_driver_stage(s):
+        """Stage ``s``: ``k_s = M^{-1} (g(Y_s) + sum_k c_sk k_k / h)``; ``wd`` holds ``g(Y_s)`` and is overwritten."""
+        c_row = drv_c_rows[s]
+
+        if s == 0:
+
+            @cuda.jit(device=True)
+            def driver_stage(kd, wd, lu_d, ipiv_d, inv_dt):
+                drv_solve(lu_d, ipiv_d, wd)
+                for j in range(n_drv):
+                    kd[0, j] = wd[j]
+
+        else:
+
+            @cuda.jit(device=True)
+            def driver_stage(kd, wd, lu_d, ipiv_d, inv_dt):
+                for j in range(n_drv):
+                    acc = c_row[0] * kd[0, j]
+                    for k in range(1, s):
+                        acc += c_row[k] * kd[k, j]
+                    wd[j] = wd[j] + acc * inv_dt
+                drv_solve(lu_d, ipiv_d, wd)
+                for j in range(n_drv):
+                    kd[s, j] = wd[j]
+
+        return driver_stage
+
+    def make_driver_advance(s):
+        a_row = drv_a_rows[s]
+
+        @cuda.jit(device=True)
+        def driver_advance(ud, th, kd):
+            for j in range(n_drv):
+                acc = a_row[0] * kd[0, j]
+                for k in range(1, s + 1):
+                    acc += a_row[k] * kd[k, j]
+                ud[j] = th[j] + acc
+
+        return driver_advance
+
+    dstage_0, dstage_1, dstage_2, dstage_3, dstage_4, dstage_5, dstage_6, dstage_7 = (
+        make_driver_stage(s) for s in range(8)
+    )
+    dadvance_0, dadvance_1, dadvance_2, dadvance_3, dadvance_4 = (
+        make_driver_advance(s) for s in range(5)
+    )
+
+    @cuda.jit(device=True)
+    def driver_step(th, g0, th1, g1, kd, ud, wd, neg_a, lu_d, ipiv_d, p_local, t, dt_use):
+        """Advance the driver over ``[t, t + dt_use]`` (Rodas5P, autonomous) and write its Hermite block."""
+        inv_dt = 1.0 / dt_use
+        dtgamma_inv = inv_dt / GAMMA
+        for r in range(n_drv):
+            for c in range(n_drv):
+                lu_d[r * n_drv + c] = neg_a[r * n_drv + c] + (dtgamma_inv if r == c else 0.0)
+        drv_factorize(lu_d, ipiv_d)
+        for j in range(n_drv):
+            wd[j] = g0[j]
+        dstage_0(kd, wd, lu_d, ipiv_d, inv_dt)
+        dadvance_0(ud, th, kd)
+        driver_write(ud, t + C2 * dt_use, p_local, wd)
+        dstage_1(kd, wd, lu_d, ipiv_d, inv_dt)
+        dadvance_1(ud, th, kd)
+        driver_write(ud, t + C3 * dt_use, p_local, wd)
+        dstage_2(kd, wd, lu_d, ipiv_d, inv_dt)
+        dadvance_2(ud, th, kd)
+        driver_write(ud, t + C4 * dt_use, p_local, wd)
+        dstage_3(kd, wd, lu_d, ipiv_d, inv_dt)
+        dadvance_3(ud, th, kd)
+        driver_write(ud, t + C5 * dt_use, p_local, wd)
+        dstage_4(kd, wd, lu_d, ipiv_d, inv_dt)
+        dadvance_4(ud, th, kd)
+        driver_write(ud, t + dt_use, p_local, wd)
+        dstage_5(kd, wd, lu_d, ipiv_d, inv_dt)
+        for j in range(n_drv):
+            ud[j] += kd[5, j]
+        driver_write(ud, t + dt_use, p_local, wd)
+        dstage_6(kd, wd, lu_d, ipiv_d, inv_dt)
+        for j in range(n_drv):
+            ud[j] += kd[6, j]
+        driver_write(ud, t + dt_use, p_local, wd)
+        dstage_7(kd, wd, lu_d, ipiv_d, inv_dt)
+        for j in range(n_drv):
+            th1[j] = ud[j] + kd[7, j]
+        driver_write(th1, t + dt_use, p_local, g1)
+        p_local[drv_col] = t
+        p_local[drv_col + 1] = dt_use
+        for j in range(n_drv):
+            base = drv_col + 2 + 4 * j
+            p_local[base] = th[j]
+            p_local[base + 1] = g0[j]
+            p_local[base + 2] = th1[j]
+            p_local[base + 3] = g1[j]
+
+    @cuda.jit(device=True)
+    def driver_hermite(th, g0, th1, g1, j, s, h):
+        s2 = s * s
+        s3 = s2 * s
+        return (
+            (2.0 * s3 - 3.0 * s2 + 1.0) * th[j]
+            + (s3 - 2.0 * s2 + s) * h * g0[j]
+            + (-2.0 * s3 + 3.0 * s2) * th1[j]
+            + (s3 - s2) * h * g1[j]
+        )
+
     # --- one Rosenbrock stage, state row plus any sensitivity rows -----------
     if spec is None:
 
@@ -686,6 +885,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         atol,
         max_steps,
         weights,
+        driver_y0,
         hist,
         accepted_out,
         rejected_out,
@@ -726,12 +926,37 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         # when there is no hook, so the default kernel carries no extra local
         # memory.
         y_save = cuda.local.array(size if HAS_HOOK else 1, np.float64)
+        # The thread's own copy of its parameter row: the driver's Hermite
+        # block is written into it every step.
+        p_local = cuda.local.array(n_params, np.float64)
+        th = cuda.local.array(DRV, np.float64)
+        th1 = cuda.local.array(DRV, np.float64)
+        g0 = cuda.local.array(DRV, np.float64)
+        g1 = cuda.local.array(DRV, np.float64)
+        kd = cuda.local.array((8, DRV), np.float64)
+        ud = cuda.local.array(DRV, np.float64)
+        wd = cuda.local.array(DRV, np.float64)
+        dT_d = cuda.local.array(DRV, np.float64)
+        neg_a = cuda.local.array(DRV2, np.float64)
+        lu_d = cuda.local.array(DRV2, np.float64)
+        ipiv_d = cuda.local.array(DRV, np.int32)
+        h_jac = -1.0
+        since_jac = 0
+        last_rejected = False
 
         for j in range(size):
             y[j] = y0[i, j]
+        for j in range(n_params):
+            p_local[j] = params[i, j]
+        if HAS_DRIVER:
+            for j in range(n_drv):
+                th[j] = driver_y0[i, j]
+            driver_write(th, times[0], p_local, g0)
         if SAVE_HISTORY:
             for j in range(size):
                 hist[i, 0, j] = y[j]
+            for j in range(n_drv):
+                hist[i, 0, size + j] = th[j]
 
         t = times[0]
         save_idx = 1
@@ -748,7 +973,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         if tf_index >= 0:
             tf_local = params[i, tf_index]
 
-        p_row = params[i]
+        p_row = p_local
 
         if HAS_HOOK:
             for j in range(hook_size):
@@ -766,6 +991,19 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
                 dt_use = 1e-30
             inv_dt = 1.0 / dt_use
             t_end = t + dt_use
+
+            if HAS_DRIVER:
+                if (
+                    h_jac < 0.0
+                    or dt_use > 2.0 * h_jac
+                    or dt_use < 0.5 * h_jac
+                    or since_jac >= DRV_JAC_EVERY
+                    or last_rejected
+                ):
+                    write_driver_negated_jacobian(th, t, p_row, neg_a, dT_d)
+                    h_jac = dt_use
+                    since_jac = 0
+                driver_step(th, g0, th1, g1, kd, ud, wd, neg_a, lu_d, ipiv_d, p_local, t, dt_use)
 
             dtgamma_inv = 1.0 / (dt_use * GAMMA)
             write_negated_jacobian(y, t, p_row, lu_buf, dT)
@@ -907,7 +1145,12 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
                 scale = atol + rtol * max(math.fabs(y[j]), math.fabs(y_new_j))
                 r = weights[i, j] * k_stages[7, j] / scale
                 err_local += r * r
-            err_norm = math.sqrt(err_local / n_error)
+            for j in range(n_drv):
+                err_j = kd[7, j]
+                scale = atol + rtol * max(math.fabs(th[j]), math.fabs(th1[j]))
+                r = weights[i, size + j] * err_j / scale
+                err_local += r * r
+            err_norm = math.sqrt(err_local / (n_error + n_drv))
             accept = err_norm <= 1.0 and not math.isnan(err_norm)
 
             if math.isnan(err_norm) or err_norm > 1e18:
@@ -977,14 +1220,23 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
                             hist[i, save_idx, j] = val
                         if HAS_HOOK:
                             y_save[j] = val
+                    if SAVE_HISTORY:
+                        for j in range(n_drv):
+                            hist[i, save_idx, size + j] = driver_hermite(th, g0, th1, g1, j, theta, dt_use)
                     if HAS_HOOK:
                         save_hook(save_idx, y_save, times[save_idx], p_row, hook_out[i])
                     save_idx += 1
                 for j in range(size):
                     y[j] = u[j] + k_stages[7, j]
+                for j in range(n_drv):
+                    th[j] = th1[j]
+                    g0[j] = g1[j]
+                since_jac += 1
+                last_rejected = False
                 t += dt_use
                 accepted += 1
             else:
+                last_rejected = True
                 rejected += 1
             n_steps += 1
 
@@ -993,6 +1245,8 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
             if SAVE_HISTORY:
                 for j in range(size):
                     hist[i, save_idx, j] = y[j]
+                for j in range(n_drv):
+                    hist[i, save_idx, size + j] = th[j]
             if HAS_HOOK:
                 save_hook(save_idx, y, times[save_idx], p_row, hook_out[i])
             save_idx += 1
@@ -1000,6 +1254,8 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
             # Without the history the one slot holds the final state.
             for j in range(size):
                 hist[i, 0, j] = y[j]
+            for j in range(n_drv):
+                hist[i, 0, size + j] = th[j]
         accepted_out[i] = accepted
         rejected_out[i] = rejected
         loop_out[i] = n_steps
@@ -1015,7 +1271,7 @@ def _make_jax_launch(
     blocks = (n + trajectories_per_block - 1) // trajectories_per_block
     return make_launch(
         kernel,
-        SOLVER_ARGTYPES + (HOOK_OUT_ARGTYPE,),
+        SOLVER_ARGTYPES[:8] + (DRIVER_Y0_ARGTYPE,) + SOLVER_ARGTYPES[8:] + (HOOK_OUT_ARGTYPE,),
         grid=blocks,
         block=(trajectories_per_block, 1, 1),
     )
@@ -1048,6 +1304,11 @@ def solve(
     save_hook=None,
     hook_size: int = 0,
     save_history: bool = True,
+    driver_fn=None,
+    driver_y0=None,
+    driver_column=None,
+    driver_weights=None,
+    driver_jac_every: int = 8,
 ):
     """JAX-callable Rodas5 custom-kernel solve.
 
@@ -1201,6 +1462,24 @@ def solve(
         error_weights=error_weights,
     )
 
+    if driver_fn is not None:
+        if driver_y0 is None or driver_column is None:
+            raise ValueError("a driver_fn needs driver_y0 and driver_column")
+        n_drv = int(jnp.shape(driver_y0)[-1])
+        if driver_column + 2 + 4 * n_drv > jnp.shape(params)[-1]:
+            raise ValueError("params has no room for the driver's Hermite block")
+        options = replace(
+            options,
+            driver_fn=driver_fn,
+            n_drv=n_drv,
+            driver_column=int(driver_column),
+            driver_jac_every=int(driver_jac_every),
+        )
+        # Like a hook, a driven solve is the plain ensemble launch.
+        return _solve_impl(
+            ode_fn, y0, t_span, params, options=options, driver_y0=driver_y0,
+            driver_weights=driver_weights, **settings,
+        )
     if save_hook is not None:
         if hook_size <= 0:
             raise ValueError("a save_hook needs a positive hook_size")
@@ -1250,6 +1529,8 @@ def _solve_impl(
     max_steps=100000,
     return_stats=False,
     error_weights=None,
+    driver_y0=None,
+    driver_weights=None,
 ):
     spec = options.spec
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
@@ -1265,17 +1546,27 @@ def _solve_impl(
     if spec is not None:
         y0_arr = augmented_y0(y0_arr, spec)
         weights_host = augmented_error_weights(weights_host, spec)
-    weights_arr = jnp.asarray(weights_host)
+    n_drv = int(options.n_drv) if options.driver_fn is not None else 0
+    if n_drv:
+        drv_w = np.ones(n_drv) if driver_weights is None else np.asarray(driver_weights, dtype=np.float64)
+        weights_host = np.concatenate(
+            (weights_host, np.broadcast_to(drv_w, (n, n_drv))), axis=1
+        )
+        driver_y0_arr = jnp.asarray(driver_y0, dtype=jnp.float64).reshape(n, n_drv)
+    else:
+        driver_y0_arr = jnp.zeros((n, 1), dtype=jnp.float64)
+    weights_arr = jnp.asarray(np.ascontiguousarray(weights_host))
 
     launch = _make_jax_launch(ode_fn, n, n_vars, n_params, options)
     # No global scratch: the kernel keeps the state, the ten stage vectors and
     # df/dt in registers and thread-local memory.
     hist, accepted, rejected, loop_steps, hook_out = ensemble_ffi_call(
         launch,
-        (y0_arr, times, params_arr, weights_arr),
+        (y0_arr, times, params_arr, weights_arr, driver_y0_arr),
         (),
+        input_kinds=DRIVER_INPUT_KINDS,
         n=n,
-        n_vars=n_system,
+        n_vars=n_system + n_drv,
         n_save=n_save,
         dt0=dt0,
         rtol=rtol,
