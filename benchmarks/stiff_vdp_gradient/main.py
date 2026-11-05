@@ -134,6 +134,7 @@ BENCHMARK = SweepBenchmark(
     cases=(
         SweepCase(
             key="modax rodas5P fp32 (sparse)",
+            label="modax Rodas5P FP32",
             color=MODAX_COLOR,
             marker="P",
             linestyle="--",
@@ -144,6 +145,7 @@ BENCHMARK = SweepBenchmark(
         ),
         SweepCase(
             key="modax rodas5P fp32 (dense)",
+            label="modax Rodas5P FP32 (non-sparse)",
             color=MODAX_COLOR,
             marker="X",
             mode="jax_grad",

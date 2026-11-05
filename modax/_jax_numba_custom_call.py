@@ -8,16 +8,21 @@ keep using plain ``uv run python`` without a package build step.
 from __future__ import annotations
 
 import ctypes
+import functools
 import hashlib
+import os
 import subprocess
 import sysconfig
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
 import jax
 import numpy as np
+from jax.typing import ArrayLike
+from numba_cuda_mlir.descriptor import MLIRDispatcher
+from numba_cuda_mlir.numba_cuda.types import Type
 
 _CAPSULE_NAME = b"xla._CUSTOM_CALL_TARGET"
 _TARGET_NAME = "modax_numba_cuda_abi_launch"
@@ -280,11 +285,75 @@ def register_target() -> None:
 # Loaded modules are held for the process lifetime: the ``CUfunction`` handed to
 # the FFI target stays valid only while its module is loaded, and these kernels
 # live as long as the JAX primitives that launch them.
-_LOADED_MODULES: list[Any] = []
+_LOADED_MODULES: list[ctypes.c_void_p] = []
 
 
-def compile_kernel(kernel: Any, argtypes: Sequence[Any]) -> int:
+_ENZYME_CC_ENV_VAR = "NUMBA_ENZYME_CUDA_CC"
+_NEWEST_LLVM7_TARGET = (9, 0)
+
+
+@functools.cache
+def compile_target() -> tuple[int, int]:
+    """The compute capability modax compiles its kernels and derivatives for.
+
+    The current GPU's own, except on Blackwell (10.0 and up), where it is 9.0.
+    numba-cuda-mlir lowers a Blackwell target through its LLVM 20 dialect,
+    which the Enzyme derivatives a kernel links cannot share: their LLVM 15
+    toolchain reads only the LLVM 7 dialect numba-cuda-mlir uses below 10.0.
+    Compiling both the kernel and its derivatives for 9.0 keeps them on that
+    path, and numba-cuda-mlir still links the result for the GPU it runs on,
+    since a target older than the device is linked for the device.
+
+    ``NUMBA_ENZYME_CUDA_CC``, which numba-enzyme reads for its own target,
+    overrides it for both, read once on the first compile.
+
+    Returns
+    -------
+    tuple of int
+        ``(major, minor)``.
+    """
+    from numba_cuda_mlir import tools
+
+    if os.environ.get(_ENZYME_CC_ENV_VAR):
+        # Parsed and validated exactly as numba-enzyme takes it.
+        from numba_enzyme.cuda import _compute_capability
+
+        return _compute_capability(None, tools)
+    device = tools.get_gpu_compute_capability(tuple)
+    return device if device < (10, 0) else _NEWEST_LLVM7_TARGET
+
+
+def target_kernel(kernel: MLIRDispatcher) -> MLIRDispatcher:
+    """Point ``kernel`` at `compile_target` where it is not the GPU's own.
+
+    An explicit chip below the device's is compiled for that chip and linked
+    for the device, which is what keeps a Blackwell kernel and its Enzyme
+    derivatives on one dialect (see `compile_target`). Elsewhere the kernel is
+    left as it is.
+
+    Parameters
+    ----------
+    kernel : MLIRDispatcher
+        A ``cuda.jit`` kernel, not yet compiled.
+
+    Returns
+    -------
+    MLIRDispatcher
+        The same kernel.
+    """
+    from numba_cuda_mlir import tools
+
+    target = compile_target()
+    if target != tools.get_gpu_compute_capability(tuple):
+        kernel.targetoptions["chip"] = f"sm_{target[0]}{target[1]}"
+    return kernel
+
+
+def compile_kernel(kernel: MLIRDispatcher, argtypes: Sequence[Type]) -> int:
     """Compile a ``cuda.jit`` kernel and return its ``CUfunction`` pointer.
+
+    The kernel is compiled for `compile_target`, which differs from the GPU
+    only on Blackwell.
 
     numba-cuda-mlir exposes no ``get_cufunc()`` -- its ``MLIRLibrary`` only
     offers the textual IR.  The linked cubin and the mangled entry name are on
@@ -292,7 +361,7 @@ def compile_kernel(kernel: Any, argtypes: Sequence[Any]) -> int:
     and look the function up by name.
     """
 
-    cres = kernel.compile(tuple(argtypes)).cres
+    cres = target_kernel(kernel).compile(tuple(argtypes)).cres
     cubin = cres.metadata["cubin"]
     func_name = cres.metadata["func_name"]
 
@@ -315,13 +384,18 @@ def compile_kernel(kernel: Any, argtypes: Sequence[Any]) -> int:
 
 
 def make_launch(
-    kernel: Any,
-    argtypes: Sequence[Any],
+    kernel: MLIRDispatcher,
+    argtypes: Sequence[Type],
     *,
     grid: int | Sequence[int],
     block: int | Sequence[int],
     shared_mem: int = 0,
 ) -> CudaLaunch:
+    """Compile ``kernel`` for ``argtypes`` and bundle it with its launch geometry.
+
+    ``grid`` and ``block`` may be an int or up to three dimensions, padded to
+    three; ``shared_mem`` is the dynamic shared memory per block, in bytes.
+    """
     return CudaLaunch(
         function=compile_kernel(kernel, argtypes),
         grid=_as_3d(grid),
@@ -332,13 +406,13 @@ def make_launch(
 
 def ffi_abi_call(
     launch: CudaLaunch,
-    inputs: Sequence[Any],
+    inputs: Sequence[ArrayLike],
     output_specs: Sequence[jax.ShapeDtypeStruct],
     *,
     input_kinds: Sequence[int],
     scalar_f64_values: Sequence[float] = (),
     scalar_i32_values: Sequence[int] = (),
-) -> tuple[Any, ...]:
+) -> tuple[jax.Array, ...]:
     """Launch a Numba CUDA kernel using Numba's normal array/scalar ABI.
 
     Outputs are always arrays, so only the input kinds need spelling out.
@@ -366,6 +440,6 @@ def ffi_abi_call(
         has_side_effect=False,
         custom_call_api_version=_CUSTOM_CALL_API_VERSION,
     )(*inputs, **attrs)
-    if not isinstance(result, tuple):
+    if isinstance(result, jax.Array):
         return (result,)
-    return result
+    return tuple(result)

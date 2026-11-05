@@ -6,9 +6,8 @@ repo_name: lawrenceberry/modax
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; Lawrence Berry
 
-# The long-form prose lives in README.md and the examples' own READMEs, which
-# the pages under docs/ pull in section by section with pymdownx.snippets, so
-# there is one copy of it. Those files are outside docs_dir, hence the watch
+# README.md's sections, wheels/README.md and the examples' READMEs are pulled into the pages under docs/ with pymdownx.snippets, so there is one
+# copy of each. Those files are outside docs_dir, hence the watch
 # list below and snippets' base_path.
 watch:
   - README.md
@@ -52,23 +51,27 @@ theme:
         name: Switch to system preference
 
 nav:
-  - Home: index.md
-  - Getting started: getting-started.md
-  - The numba-enzyme-cuda wheel: wheels/README.md
-  - Guide:
-      - Calling a solver: guide/api.md
-      - Writing ODE callbacks: guide/callbacks.md
-      - Sparse systems: guide/sparse.md
-      - Gradients: guide/gradients.md
-      - Kernel design: guide/kernel-design.md
+  - Quickstart: index.md
+  - Motivations: motivations.md
+  - Design: design.md
+  - Development: development.md
+  - Acknowledgement: acknowledgement.md
+  - Usage:
+    - Choosing a solver: usage/solvers.md
+    - Running a solver: usage/running.md
+    - Exploiting sparsity: usage/sparse.md
+    - Computing gradients: usage/gradients.md
   - Examples:
-      - Overview: examples/index.md
-      - BBN parameter estimation: examples/bbn-estimation.md
-      - 21cm IGM evolution: examples/21cm-igm-evolution.md
-      - Mukhanov-Sasaki modes: examples/mukhanov-sasaki.md
-  - API reference:
-      - Solvers: api/solvers.md
-      - Internals: api/internals.md
+    - Parameter estimation: examples/parameter-estimation.md
+    - Uncertainty quantification: examples/uncertainty-quantification.md
+    - Physically uncoupled systems: examples/physically-uncoupled-systems.md
+  - Benchmarks:
+    - Lorenz: benchmarks/lorenz.md
+    - Robertson: benchmarks/robertson.md
+    - Van der Pol: benchmarks/van-der-pol.md
+  - API Reference:
+    - Solvers: api/solvers.md
+    - Internals: api/internals.md
 
 plugins:
   - search
@@ -81,6 +84,10 @@ plugins:
           options:
             docstring_style: google
             docstring_section_style: table
+            # The solve functions carry typed overloads so that return_stats
+            # (and Rodas5P's save_hook) fix the return type statically; the
+            # implementation signature is the one worth rendering.
+            show_overloads: false
             heading_level: 2
             show_root_heading: true
             show_root_full_path: true

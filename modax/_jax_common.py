@@ -1,15 +1,32 @@
-"""Shared scaffolding for exposing the numba-cuda ensemble solvers to JAX."""
+"""The JAX-facing glue: ensemble inputs, the FFI launch and the ``vmap`` rule."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable
 
 import jax
 import jax.numpy as jnp
 from jax.custom_batching import custom_vmap
+from jax.typing import ArrayLike
+
+from modax._jax_numba_custom_call import CudaLaunch, ffi_abi_call
+from modax._numba_common import (
+    SOLVER_INPUT_KINDS,
+    SolveOutput,
+    SolveSettings,
+    build_error_weights,
+)
+from modax._sensitivity import (
+    SensitivitySpec,
+    augmented_error_weights,
+    augmented_y0,
+)
 
 
-def normalize_y0_params(y0, params):
+def normalize_y0_params(
+    y0: ArrayLike, params: ArrayLike
+) -> tuple[jax.Array, jax.Array, int, int]:
     """Broadcast ``y0`` / ``params`` to a consistent ``(N, …)`` ensemble layout.
 
     Accepts either 1-D (``(n_vars,)`` / ``(n_params,)``) or 2-D
@@ -46,7 +63,111 @@ def normalize_y0_params(y0, params):
     return y0_arr, params_arr, n, y0_arr.shape[1]
 
 
-def _broadcast_for_vmap(arg, is_batched: bool, axis_size: int, name: str):
+@dataclass(frozen=True)
+class EnsembleInputs:
+    """The array inputs of one launch, in kernel order, and the extents behind them.
+
+    ``n_vars`` is the state dimension the kernel was built for and ``n_system``
+    the number of components it integrates: the same, unless a sensitivity
+    spec augments the state, in which case ``y0`` and ``weights`` are already
+    the augmented arrays.
+    """
+
+    y0: jax.Array
+    times: jax.Array
+    params: jax.Array
+    weights: jax.Array
+    n_vars: int
+    n_system: int
+
+    @property
+    def n(self) -> int:
+        return self.y0.shape[0]
+
+    @property
+    def n_params(self) -> int:
+        return self.params.shape[1]
+
+    @property
+    def n_save(self) -> int:
+        return self.times.shape[0]
+
+    @property
+    def arrays(self) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        return self.y0, self.times, self.params, self.weights
+
+
+def prepare_inputs(
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    settings: SolveSettings,
+    spec: SensitivitySpec | None,
+) -> EnsembleInputs:
+    """Normalise a solve's arguments into the arrays the kernel reads.
+
+    With a ``spec`` the kernel integrates the joint ``[y, S]`` system, so the
+    initial state and the error weights are widened to the augmented extent.
+    """
+    y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
+    weights = build_error_weights(settings.error_weights, n, n_vars)
+    if spec is not None:
+        y0_arr = augmented_y0(y0_arr, spec)
+        weights = augmented_error_weights(weights, spec)
+    return EnsembleInputs(
+        y0=y0_arr,
+        times=jnp.asarray(t_span, dtype=jnp.float64),
+        params=params_arr,
+        weights=jnp.asarray(weights),
+        n_vars=n_vars,
+        n_system=n_vars if spec is None else spec.n_aug,
+    )
+
+
+def ensemble_ffi_call(
+    launch: CudaLaunch,
+    inputs: EnsembleInputs,
+    settings: SolveSettings,
+    *,
+    n_save_hist: int | None = None,
+    hook_size: int | None = None,
+) -> tuple[jax.Array, ...]:
+    """Launch a solver kernel from JAX and return its outputs.
+
+    Returns ``(hist, accepted, rejected, loop)``. There is no scratch: every
+    per-trajectory buffer is thread-local, so the kernel's outputs are the
+    history and the counters alone.
+
+    ``n_save_hist`` is the history's time extent when it differs from the number
+    of save times (a kernel that keeps only the final state passes 1), and
+    ``hook_size`` the width of the save hook's per-trajectory accumulator rows,
+    which the kernel takes as one more output right after the counters; the
+    call then returns ``(hist, accepted, rejected, loop, hook_out)``.
+    """
+    n = inputs.n
+    int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
+    n_hist = inputs.n_save if n_save_hist is None else n_save_hist
+    output_specs = (
+        jax.ShapeDtypeStruct((n, n_hist, inputs.n_system), jnp.float64),
+        int_spec,
+        int_spec,
+        int_spec,
+    )
+    if hook_size is not None:
+        output_specs += (jax.ShapeDtypeStruct((n, hook_size), jnp.float64),)
+    return ffi_abi_call(
+        launch,
+        inputs.arrays,
+        output_specs,
+        input_kinds=SOLVER_INPUT_KINDS,
+        scalar_f64_values=(settings.dt0, settings.rtol, settings.atol),
+        scalar_i32_values=(settings.max_steps,),
+    )
+
+
+def _broadcast_for_vmap(
+    arg: ArrayLike, is_batched: bool, axis_size: int, name: str
+) -> jax.Array:
     arr = jnp.asarray(arg)
     if is_batched:
         if arr.ndim != 2:
@@ -67,7 +188,11 @@ def _broadcast_for_vmap(arg, is_batched: bool, axis_size: int, name: str):
     return jnp.broadcast_to(arr, (axis_size,) + arr.shape)
 
 
-def make_custom_vmap_solver(solve_impl: Callable, *, return_stats: bool):
+def make_custom_vmap_solver(
+    solve_impl: Callable[[jax.Array, jax.Array, jax.Array], SolveOutput],
+    *,
+    return_stats: bool,
+) -> custom_vmap:
     """Wrap a solver implementation so outer ``jax.vmap`` becomes one ensemble call.
 
     ``solve_impl`` must accept ``(y0, t_span, params)`` and return the normal
@@ -79,11 +204,17 @@ def make_custom_vmap_solver(solve_impl: Callable, *, return_stats: bool):
     """
 
     @custom_vmap
-    def _solve(y0, t_span, params):
-        return solve_impl(y0, t_span, params)
+    def _solve(y0: ArrayLike, t_span: ArrayLike, params: ArrayLike) -> SolveOutput:
+        return solve_impl(jnp.asarray(y0), jnp.asarray(t_span), jnp.asarray(params))
 
     @_solve.def_vmap
-    def _solve_vmap(axis_size, in_batched, y0, t_span, params):
+    def _solve_vmap(
+        axis_size: int,
+        in_batched: tuple[bool, bool, bool],
+        y0: ArrayLike,
+        t_span: ArrayLike,
+        params: ArrayLike,
+    ) -> tuple[SolveOutput, object]:
         y0_batched, t_span_batched, params_batched = in_batched
         if t_span_batched:
             t_span_arr = jnp.asarray(t_span)
@@ -98,9 +229,9 @@ def make_custom_vmap_solver(solve_impl: Callable, *, return_stats: bool):
 
         y0_arr = _broadcast_for_vmap(y0, y0_batched, axis_size, "y0")
         params_arr = _broadcast_for_vmap(params, params_batched, axis_size, "params")
-        result = solve_impl(y0_arr, t_span, params_arr)
+        result = solve_impl(y0_arr, jnp.asarray(t_span), params_arr)
 
-        if not return_stats:
+        if not isinstance(result, tuple):
             return result[:, None, :, :], True
 
         sol, stats = result

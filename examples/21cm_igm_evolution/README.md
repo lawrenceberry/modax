@@ -1,10 +1,18 @@
-# 21cm IGM Evolution Example
+# Uncertainty quantification: the global 21 cm signal
 
-This example demonstrates Monte Carlo uncertainty quantification for the global
-21cm signal using a massively batched, uncoupled ODE solve.  It draws uncertain
-astrophysical parameters for the first galaxies, evolves many independent IGM
-thermal histories, and plots the median plus 95% prior envelope of the
-sky-averaged brightness temperature.
+Monte Carlo propagation of uncertainty in the astrophysics of the first
+galaxies through to the predicted sky-averaged 21 cm brightness temperature.
+The script draws the star-formation efficiency, the X-ray efficiency and the
+minimum virial temperature from their priors, evolves an independent
+intergalactic-medium thermal and ionisation history for each draw, and reports
+the median and 95 per cent prior envelope of the brightness temperature against
+observed frequency.
+
+The trajectories are completely independent, which makes this the pattern
+massive batching suits best: by default 50,000 small stiff ODEs in a single
+call. The spread of step counts across the prior volume also puts the ensemble
+in the divergent regime, where a thread-per-trajectory kernel does well and a
+lock-step batched solver does not.
 
 Run it with:
 
@@ -13,23 +21,46 @@ uv run python examples/21cm_igm_evolution/main.py
 ```
 
 The modax solve runs as a Numba-CUDA kernel, so this needs a CUDA GPU.
-The `scipy` backend below is the CPU-only path.
 
-The default run uses 50,000 trajectories.  Tests use a much smaller batch.
+## Result
+
+The ensemble's median shows the characteristic absorption trough, −77 mK at
+59 MHz ($z \approx 23$), with a 95 per cent prior envelope spanning −122 to
+0 mK at that frequency. The envelope widens towards high frequency (low
+redshift) as the uncertain X-ray heating and ionising emissivity take effect.
+The script writes the plot to `global_21cm_envelope.png`.
 
 ## Solver-backend benchmark
 
-The batched ensemble solve can be timed across solver backends on identical
-right-hand-side code with the `--benchmark` flag: modax Rodas5P (GPU), Diffrax
-Kvaerno5 (GPU), and serial `scipy.solve_ivp` LSODA (the no-GPU baseline used by
-codes such as ECHO21).
+The ensemble solve can be timed across solver backends on identical
+right-hand-side code with the `--benchmark` flag: modax Rodas5P and Diffrax
+Kvaerno5 on the GPU, and `scipy.integrate.solve_ivp` LSODA on the CPU, each
+history integrated independently and the ensemble spread across every core --
+the integration strategy of serial codes such as ECHO21.
 
 ```bash
-# head-to-head at N=2000 (scipy is the slow one)
-uv run python examples/21cm_igm_evolution/main.py --benchmark --n 2000
+# all three backends at N = 20000, as in the paper
+uv run python examples/21cm_igm_evolution/main.py --benchmark --n 20000
 # GPU backends at the full default ensemble size
 uv run python examples/21cm_igm_evolution/main.py --benchmark --backends modax diffrax --n 50000
 ```
+
+The modax solve uses per-component error weights, weighting the two
+logit-transformed fractions at 0.2 relative to the temperature, and a
+proportional-integral step controller; the reference backends run with their
+default controllers. The three place the median trough within 0.1 mK of one
+another. The paper measures 20,000 histories on an NVIDIA GeForce RTX 4070
+SUPER against an AMD Ryzen 9 7950X across all 32 hardware threads -- hardware
+of comparable price and power draw:
+
+| Backend | Wall clock | Per solve |
+|---|---|---|
+| SciPy LSODA (CPU, 32 threads) | 13.4 s | 671 µs |
+| Diffrax Kvaerno5 (GPU) | 1.45 s | 73 µs |
+| **modax Rodas5P (GPU)** | **31 ms** | **1.6 µs** |
+
+That is roughly 430× the parallel CPU baseline and 47× Diffrax. The full
+50,000-history solve takes 60 ms on modax against 2.8 s on Diffrax.
 
 ## Model
 

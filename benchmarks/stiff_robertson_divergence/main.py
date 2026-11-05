@@ -3,13 +3,9 @@
 Runs the Robertson system with 30,000 trajectories while sweeping the
 ``make_scenario(..., divergence=...)`` knob. For each solver and divergence
 value, the benchmark records solve time and the actual distribution of accepted
-plus rejected Rodas5P steps. gradsolve Rosenbrock23, its fused NVIDIA Warp
-kernel, steps each trajectory on its own thread, as modax does, but caps every
-trajectory at 50000 attempts and returns NaN for one that needs more, which the
-reference raises on, so its points at large divergence are recorded as
-failures. Like modax it is also run with the ensemble pre-sorted by modax's
-attempted steps; its own step counts differ, being a second-order method, but
-rank the trajectories much the same way.
+plus rejected Rodas5P steps. DiffEqGPU's EnsembleGPUArray Rodas5P starts from
+a first step of 1e-10 rather than the shared 1e-4, since it cannot recover from
+a rejected first step on a divergent ensemble.
 
 Usage:
     uv run python benchmarks/stiff_robertson_divergence/main.py
@@ -28,12 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import benchmarks.benchmark_common  # noqa: E402,F401
 from benchmarks._divergence import DivergenceBenchmark, DivergenceCase, main
 from benchmarks.benchmark_common import (  # noqa: E402
-    GRADSOLVE_COLOR,
     JULIA_COLOR,
     MODAX_COLOR,
 )
 from modax.rodas5P import solve as rodas5P_solve
-from reference.solvers.python.gradsolve_engines import solve as gradsolve_solve
 from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import robertson
 
@@ -78,31 +72,20 @@ BENCHMARK = DivergenceBenchmark(
         #     kwargs={**_SOLVER_KWARGS, "max_steps": 1_000_000},
         #     max_divergence=1.5,
         # ),
-        # DivergenceCase(
-        #     key="julia rodas5P EnsembleGPUArray",
-        #     color=JULIA_COLOR,
-        #     marker="D",
-        #     mode="julia",
-        #     ensemble_backend="EnsembleGPUArray",
-        # ),
         DivergenceCase(
-            key="gradsolve rosenbrock23",
-            color=GRADSOLVE_COLOR,
-            marker="o",
-            mode="timing",
-            solve_fn=gradsolve_solve,
-            kwargs={**_SOLVER_KWARGS, "engine": "warp_rosenbrock"},
-            jit=False,
-        ),
-        DivergenceCase(
-            key="gradsolve rosenbrock23 (sorted)",
-            color=GRADSOLVE_COLOR,
-            marker="P",
-            mode="timing",
-            solve_fn=gradsolve_solve,
-            kwargs={**_SOLVER_KWARGS, "engine": "warp_rosenbrock"},
-            jit=False,
-            sort_by_steps=True,
+            key="julia rodas5P EnsembleGPUArray",
+            color=JULIA_COLOR,
+            marker="^",
+            mode="julia",
+            ensemble_backend="EnsembleGPUArray",
+            # EnsembleGPUArray steps the whole ensemble with one step size,
+            # and once its Rodas5P rejects the first step of a divergent
+            # ensemble it rejects every retry until dt underflows and the
+            # solve returns Unstable, even as dt falls below a first step
+            # that would have succeeded. Its own first-step estimate and 1e-6
+            # fail this way from divergence 1.25 up and 1e-8 at divergence 3;
+            # 1e-10 is accepted at every divergence.
+            kwargs={**_SOLVER_KWARGS, "first_step": 1e-10},
         ),
         DivergenceCase(
             key="julia rodas5P EnsembleGPUKernel",

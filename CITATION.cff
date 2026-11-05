@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use modax in your research, please cite the arXiv article below."
+title: modax
+type: software
+authors:
+  - family-names: Berry
+    given-names: Lawrence
+version: 0.0.4
+license: MIT
+repository-code: "https://github.com/lawrenceberry/modax"
+url: "https://lawrenceberry.github.io/modax/"
+preferred-citation:
+  type: article
+  title: Accelerating massive ensembles of ordinary differential equations
+  authors:
+    - family-names: Berry
+      given-names: Lawrence
+    - family-names: Handley
+      given-names: Will
+    - family-names: Hahn
+      given-names: Oliver
+    - family-names: Schöneberg
+      given-names: Nils
+  year: 2026
+  doi: 10.48550/arXiv.2609.35661
+  url: "https://arxiv.org/abs/2609.35661"
+  journal: arXiv
+  identifiers:
+    - type: other
+      value: "arXiv:2609.35661"
+      description: The arXiv preprint of the article

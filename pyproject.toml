@@ -1,6 +1,6 @@
 [project]
 name = "modax-solvers"
-version = "0.0.4"
+version = "0.0.7"
 description = "GPU-accelerated ODE solvers for massive ensembles of low-dimensional trajectories"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,8 +42,9 @@ dependencies = [
     # upstream's release has no CUDA backend; it vendors the LLVM 15 + Enzyme
     # toolchain the derivative pipeline shells out to and provides the
     # `numba_enzyme` import package, so upstream must not be installed
-    # alongside it (see wheels/README.md).
-    "numba-enzyme-cuda>=0.2.2",
+    # alongside it (see wheels/README.md). 0.3.0 is the first release with the
+    # O3 prepasses that let a callback loop over its state, and Blackwell.
+    "numba-enzyme-cuda>=0.3.0",
     # Colours the Jacobian's column-intersection graph, so a sparsity pattern
     # turns into the few compressed Enzyme sweeps that recover it.
     "networkx>=3.4",
@@ -93,6 +94,8 @@ dev = [
     # The example baselines and their plotting, not runtime dependencies of the
     # solvers. `uv sync` installs this group by default, so the examples run as
     # they always did.
+    # The BBN example's corner plot of its nested-sampling run.
+    "anesthetic>=2.16.0",
     # Nested slice sampling (`blackjax.ns`) has shipped on PyPI since 1.6, which
     # needs Python 3.11; on 3.10 the BBN example's nested sampling is
     # unavailable, but nothing imports blackjax outside it.

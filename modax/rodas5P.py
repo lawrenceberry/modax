@@ -1,42 +1,88 @@
-"""Cooperative packed-batch Rodas5P custom kernel using numba-cuda."""
+"""Rodas5P custom kernel using numba-cuda: one thread per trajectory, everything thread-local."""
 
 from __future__ import annotations
 
 import functools
 import math
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import (
+    Any,
+    Callable,
+    Iterator,
+    Literal,
+    MutableSequence,
+    Sequence,
+    TypeAlias,
+    overload,
+)
 
+import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
+from jax.typing import ArrayLike
 from numba_cuda_mlir import cuda, types
+from numba_cuda_mlir.descriptor import MLIRDispatcher
 
 from modax._codegen import compile_device_source
-from modax._jax_common import make_custom_vmap_solver, normalize_y0_params
-from modax._jax_numba_custom_call import make_launch
+from modax._jax_common import (
+    ensemble_ffi_call,
+    make_custom_vmap_solver,
+    prepare_inputs,
+)
+from modax._jax_numba_custom_call import CudaLaunch, make_launch
+from modax._kernel_cache import enable_content_cache
 from modax._numba_common import (
     HOOK_OUT_ARGTYPE,
     SOLVER_ARGTYPES,
+    OdeFn,
+    PIDGains,
+    SolveOutput,
+    Solver,
+    SolverStats,
+    SolveSettings,
     as_cuda_device,
-    build_error_weights,
-    ensemble_ffi_call,
-    initial_step,
     make_cuda_local_vector_writer,
+    make_step_controller,
     solver_stats,
 )
 from modax._sensitivity import (
     SensitivitySpec,
-    augmented_error_weights,
-    augmented_y0,
     make_augmented_local_writer,
     make_second_tangent,
     make_sensitivity_solver,
     make_tangent,
     seed_table,
 )
-from modax._sparse_direct import sparse_direct_solver_for
-from modax._kernel_cache import enable_content_cache
-from modax._sparsity import dense_jacobian, normalize_sparsity
+
+# Re-exported: the save hook of a quantity and its tangents, for solve(...).
+from modax._sensitivity import quantity_hook as quantity_hook
+from modax._sparse_direct import Ordering, sparse_direct_solver_for
+from modax._sparsity import Pattern, Sparsity, dense_jacobian, normalize_sparsity
+
+LUPrecision: TypeAlias = Literal["fp32", "fp64"]
+"""The precision of the per-step LU factorisation and triangular solves."""
+
+ArrayRhs: TypeAlias = (
+    Callable[[Sequence[float], float, Sequence[float], MutableSequence[float]], None]
+    | MLIRDispatcher
+)
+"""A right-hand side over arrays, ``f(y, t, p, out)``, equivalent to the
+tuple-form ``ode_fn``."""
+
+SaveHook: TypeAlias = (
+    Callable[
+        [int, Sequence[float], float, Sequence[float], MutableSequence[float]], None
+    ]
+    | MLIRDispatcher
+)
+"""A save hook ``hook(save_idx, y, t, p_row, acc)``, called at every save time."""
+
+HookedOutput: TypeAlias = (
+    tuple[jax.Array, jax.Array] | tuple[jax.Array, jax.Array, SolverStats]
+)
+"""What a hooked solve returns: the history and the hook rows, with the stats
+when asked."""
 
 # fmt: off
 # Rodas5P W-transformed coefficients (Steinebach 2023, BIT 63:27).
@@ -106,19 +152,18 @@ D5 =  2.325825639765069
 # fmt: on
 
 
-SAFETY = 0.9
+# The step controller: the error order the exponents divide by, and how far a
+# step may grow or shrink at once.
+ORDER = 6
 FACTOR_MIN = 0.2
 FACTOR_MAX = 6.0
-# Elementary I-controller exponent (-1/k, k the error order). The PID terms in
-# the kernel are expressed relative to this.
-EXPONENT = -1.0 / 6.0
 
 # One warp per block: the trajectories in a block step adaptively and so diverge,
 # and a warp is the granularity at which that divergence is free.
 _DEFAULT_TRAJECTORIES_PER_BLOCK = 32
 
 
-def trajectories_per_block_or_default(requested=None) -> int:
+def trajectories_per_block_or_default(requested: int | None = None) -> int:
     """How many trajectories a block carries, one per thread.
 
     Nothing on chip bounds this any more: every per-trajectory buffer, the
@@ -145,38 +190,34 @@ class KernelOptions:
     substitutes ``spec`` and nothing else.
     """
 
-    pcoeff: float = 0.0
-    icoeff: float = 1.0
-    dcoeff: float = 0.0
-    lu_precision: str = "fp32"
+    gains: PIDGains = PIDGains()
+    lu_precision: LUPrecision = "fp32"
     trajectories_per_block: int = _DEFAULT_TRAJECTORIES_PER_BLOCK
     spec: SensitivitySpec | None = None
-    sparsity: tuple[tuple[int, ...], ...] | None = None
-    ordering: str = "amd"
+    sparsity: Pattern | None = None
+    ordering: Ordering = "amd"
     tf_index: int = -1
     max_registers: int | None = None
-    array_rhs: object = None
+    array_rhs: ArrayRhs | None = None
     # A save hook ``hook(save_idx, y, t, p_row, acc)`` the kernel calls at every
     # save time with the dense-output state, accumulating into the trajectory's
     # ``hook_size``-wide output row; ``save_history=False`` then keeps only the
     # final state instead of the whole history.
-    save_hook: object = None
+    save_hook: SaveHook | None = None
     hook_size: int = 0
     save_history: bool = True
-    # Split the system into a driver block and a main block from the sparsity
-    # pattern's one-way coupling (:mod:`modax._split`); the driver holds at
-    # most ``split_max_driver`` states. Without a pattern, or with a pattern
-    # that has no such structure, the plain kernel runs.
+    # ``split=True`` integrates a pattern's one-way-coupled leading block as a
+    # driver of its own ahead of the rest (:mod:`modax._split`); the driver
+    # holds at most ``split_max_driver`` states. ``cache`` keeps the compiled
+    # kernel on disk under a digest of what it was built from
+    # (:mod:`modax._kernel_cache`).
     split: bool = False
     split_max_driver: int = 16
-    # Keep the compiled kernel on disk, keyed by what it was built from
-    # (:mod:`modax._kernel_cache`), so a new process loads it instead of
-    # rebuilding it.
     cache: bool = False
 
 
 @functools.cache
-def dense_lu_solver(n_vars: int):
+def dense_lu_solver(n_vars: int) -> tuple[MLIRDispatcher, MLIRDispatcher]:
     """Dense LU with partial pivoting, one system per thread.
 
     This is what the kernel uses when it is given no sparsity pattern:
@@ -259,33 +300,41 @@ def dense_lu_solver(n_vars: int):
 SEED_BATCH = 8
 
 
-def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, namespace, inline="always", batch=None, coupling=False):
+def _make_literal_seed_jacobian(
+    *,
+    n_vars: int,
+    n_params: int,
+    n_colours: int,
+    store_table: npt.NDArray[np.int32] | None,
+    namespace: dict[str, object],
+    inline: str = "always",
+    batch: int | None = None,
+    coupling_slots: Sequence[tuple[int, ...]] = (),
+) -> MLIRDispatcher:
     """Generate the Jacobian writer with every colour's seed row spelled out.
 
     ``store_table`` is the layout's destination table, ``(row, colour) ->
     slot`` with ``-1`` for none, or ``None`` for the plain colour grid where
     entry ``(row, g)`` sits at ``row * n_colours + g``. The time sweep
     (``df/dt`` into ``dT``) is one more direction of the same batched calls,
-    so with ``batch`` at least ``n_colours + 1`` the writer is a single call
-    of the derivative, and Enzyme lowers the primal for one arity instead of
-    one per batch size. With ``coupling`` the writer takes two more
-    arguments, a parameter-direction seed ``p_seed`` and an output ``out``,
-    and one more direction of the same calls returns ``df/dp . p_seed`` into
-    ``out``: the split kernel seeds the driver block's error estimate through
-    the Hermite block to put its effect into the main block's error estimate.
+    so with ``batch`` given the directions go in equal batches of at most
+    that many, padded with zero directions, and Enzyme lowers the primal for
+    one arity instead of one per batch size. ``coupling_slots`` adds one
+    direction per entry, a unit seed on those parameter columns, whose
+    result goes to row ``k`` of the writer's extra ``coup`` argument
+    (``(len(coupling_slots), n_vars)``): the split kernel seeds the Hermite
+    values of each upstream output and reads off ``df/dq``.
     """
     zero_row = n_colours
-    n_directions = n_colours + 1 + int(coupling)
+    n_coupling = len(coupling_slots)
+    n_directions = n_colours + 1 + n_coupling
     if batch is None:
         batch = SEED_BATCH
     else:
-        # equal batches of at most ``batch`` directions, padded with zero
-        # directions, so that every call has one arity and Enzyme lowers the
-        # primal once (a lowering per arity is the expensive half of a build)
         n_batches = -(-n_directions // min(int(batch), SEED_BATCH))
         batch = -(-n_directions // n_batches)
 
-    def slots_for(g):
+    def slots_for(g: int) -> Iterator[tuple[int, int]]:
         for row in range(n_vars):
             if store_table is None:
                 yield row, row * n_colours + g
@@ -294,27 +343,26 @@ def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, nam
                 if slot >= 0:
                     yield row, slot
 
-    # (seed row, time seed, parameter seed): the colours, the time direction,
-    # the coupling direction, then zero directions to fill the last batch
-    # (their results are not read)
-    zero_p = f"seed[{zero_row}, 0:{n_params}]"
-    directions = [(g, "0.0", zero_p) for g in range(n_colours)] + [(zero_row, "1.0", zero_p)]
-    if coupling:
-        directions.append((zero_row, "0.0", "p_seed"))
-    directions += [(zero_row, "0.0", zero_p)] * (-len(directions) % batch)
+    # (state seed row, time seed, parameter seed row): the colours, the time
+    # direction, the coupling directions, then zero directions to fill the
+    # last batch (their results are not read)
+    directions = [(g, "0.0", zero_row) for g in range(n_colours)] + [(zero_row, "1.0", zero_row)]
+    directions += [(zero_row, "0.0", zero_row + 1 + k) for k in range(n_coupling)]
+    directions += [(zero_row, "0.0", zero_row)] * (-len(directions) % batch)
 
-    def stores(direction, value_of):
-        g, dt_seed, p_seed = direction
+    def stores(direction: tuple[int, str, int], value_of: Callable[[int], str]) -> list[str]:
+        g, dt_seed, p_row = direction
         if dt_seed == "1.0":
             return [f"    dT[{row}] = {value_of(row)}" for row in range(n_vars)]
-        if p_seed == "p_seed":
-            return [f"    out[{row}] = {value_of(row)}" for row in range(n_vars)]
+        if p_row > zero_row:
+            k = p_row - zero_row - 1
+            return [f"    coup[{k}, {row}] = {value_of(row)}" for row in range(n_vars)]
         if g == zero_row:
             return []  # padding
         return [f"    lu[{slot}] = lu_dtype(-{value_of(row)})" for row, slot in slots_for(g)]
 
     lines = [
-        "def write_negated_jacobian(y_local, t, p_row, lu, dT" + (", p_seed, out):" if coupling else "):"),
+        "def write_negated_jacobian(y_local, t, p_row, lu, dT" + (", coup):" if n_coupling else "):"),
         "    seed = cuda.const.array_like(colour_seeds)",
         f"    column = cuda.local.array({n_vars}, float64)",
         "    clear_matrix(lu)",
@@ -324,11 +372,15 @@ def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, nam
     for start in range(0, len(directions), batch):
         group = directions[start : start + batch]
         if len(group) == 1:
-            g, dt_seed, p_seed = group[0]
-            lines.append(f"    tangent_of(column, y_local, t, p_row, seed[{g}, 0:{n_vars}], {dt_seed}, {p_seed})")
+            g, dt_seed, p_row = group[0]
+            lines.append(
+                f"    tangent_of(column, y_local, t, p_row, seed[{g}, 0:{n_vars}], {dt_seed}, seed[{p_row}, 0:{n_params}])"
+            )
             lines += stores(group[0], lambda row: f"column[{row}]")
         else:
-            dirs = ", ".join(f"seed[{g}, 0:{n_vars}], {dt_seed}, {p_seed}" for g, dt_seed, p_seed in group)
+            dirs = ", ".join(
+                f"seed[{g}, 0:{n_vars}], {dt_seed}, seed[{p_row}, 0:{n_params}]" for g, dt_seed, p_row in group
+            )
             lines.append(f"    tangent_of(block, y_local, t, p_row, {dirs})")
             for k, direction in enumerate(group):
                 lines += stores(direction, lambda row, k=k: f"block[{k}, {row}]")
@@ -336,7 +388,9 @@ def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, nam
 
 
 @functools.cache
-def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
+def _make_kernel(
+    ode_fn: OdeFn, n_vars: int, n_params: int, options: KernelOptions
+) -> tuple[MLIRDispatcher, int]:
     """Rodas5P, one trajectory per CUDA thread.
 
     A thread owns its trajectory outright: the state, the ten stage vectors,
@@ -369,13 +423,12 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         def save_hook(save_idx, y, t, p_row, acc):
             return
 
-    e1 = EXPONENT * (options.icoeff + options.pcoeff + options.dcoeff)
-    e2 = -EXPONENT * (options.pcoeff + 2.0 * options.dcoeff)
-    e3 = EXPONENT * options.dcoeff
+    next_step = make_step_controller(options.gains, ORDER, FACTOR_MIN, FACTOR_MAX)
     # The state, right-hand side, Jacobian and error estimate are always
-    # float64; lu_dtype governs only the iteration matrix and its solves. The
-    # Rosenbrock--Wanner order conditions hold under an approximate Jacobian, so
-    # an FP32 factorisation does not reduce the method's order.
+    # float64; lu_dtype governs only the iteration matrix and its solves.
+    # Rodas5P satisfies the Rosenbrock-W order conditions to second order, so
+    # the FP32 rounding in the factorisation costs an error that scales with
+    # that rounding, absorbed by the step controller, rather than convergence.
     lu_dtype = np.float32 if lu_precision == "fp32" else np.float64
     # cuda.local.array wants the numba type rather than the numpy dtype.
     lu_local_dtype = types.float32 if lu_precision == "fp32" else types.float64
@@ -404,10 +457,6 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
     lu_size = structure.size
     diag_table = np.asarray(structure.diagonal, dtype=np.int32)
     store_table = structure.store_slots()
-    # Only a layout with slots nothing writes needs clearing first. The dense
-    # grid writes every slot; a sparse layout has one slot per entry of J and
-    # leaves the factorisation's fill-in for nobody to write.
-    needs_clear = store_table is not None and lu_size > int((store_table >= 0).sum())
 
     if spec is not None:
         ode_write = make_augmented_local_writer(ode_fn, spec)
@@ -492,9 +541,9 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
 
     # The grid writes every slot and a packed layout has one slot per entry,
     # so both come out fully defined by the sweeps. Only a layout with slots
-    # nothing writes -- the dense expansion's structural zeros, or a packed
-    # diagonal the pattern left out -- is cleared first.
-    if needs_clear:
+    # nothing writes -- the factorisation's fill-in, or a packed diagonal the
+    # pattern left out -- is cleared first.
+    if structure.has_unwritten_slots:
 
         @cuda.jit(device=True)
         def clear_matrix(lu):
@@ -621,8 +670,9 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
     # the same instruction mix as the hand-unrolled form did. The split on
     # ``d`` keeps the three stages without a df/dt term from emitting an
     # ``x * 0.0`` the compiler may not drop.
+    # Row ``s`` of the tableau's C holds ``s`` entries; stage 0 has none and
+    # the rows are indexed by ``s - 1`` below.
     c_rows = (
-        (),
         (C21,),
         (C31, C32),
         (C41, C42, C43),
@@ -640,8 +690,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         (A61, A62, A63, A64, A65),
     )
 
-    def make_stage(s):
-        c_row = c_rows[s]
+    def make_stage(s: int) -> MLIRDispatcher:
         d = d_row[s]
 
         if s == 0:
@@ -653,6 +702,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
                 stage_solve(lu, ipiv, rhs, k_stages, s, work, y, p_row, t)
 
         elif d != 0.0:
+            c_row = c_rows[s - 1]
 
             @cuda.jit(device=True)
             def stage(lu, ipiv, rhs, k_stages, work, dT, y, p_row, t, dt_use, inv_dt):
@@ -666,6 +716,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
                 stage_solve(lu, ipiv, rhs, k_stages, s, work, y, p_row, t)
 
         else:
+            c_row = c_rows[s - 1]
 
             @cuda.jit(device=True)
             def stage(lu, ipiv, rhs, k_stages, work, dT, y, p_row, t, dt_use, inv_dt):
@@ -678,7 +729,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
 
         return stage
 
-    def make_advance(s):
+    def make_advance(s: int) -> MLIRDispatcher:
         a_row = a_rows[s]
         n_prev = s + 1
 
@@ -752,7 +803,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         # The stage increments are what came out of the linear solve, so they
         # already carry only lu_precision; storing them wider keeps rounding
         # that is not there and doubles the thread's local-memory footprint,
-        # which is what bounds occupancy once the matrix is off the shared path.
+        # and that footprint is what the local-memory traffic scales with.
         k_stages = cuda.local.array((8, size), lu_local_dtype)
         # The dense-output state a save hook is handed; a single dummy slot
         # when there is no hook, so the default kernel carries no extra local
@@ -942,21 +993,9 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
             err_norm = math.sqrt(err_local / n_error)
             accept = err_norm <= 1.0 and not math.isnan(err_norm)
 
-            if math.isnan(err_norm) or err_norm > 1e18:
-                safe_err = 1e18
-            elif err_norm == 0.0:
-                safe_err = 1e-18
-            else:
-                safe_err = err_norm
-            factor = SAFETY * safe_err**e1 * err_prev**e2 * err_prev2**e3
-            # Advance the PID error history only on accepted steps.
-            if accept:
-                err_prev2 = err_prev
-                err_prev = safe_err
-            if factor < FACTOR_MIN:
-                factor = FACTOR_MIN
-            elif factor > FACTOR_MAX:
-                factor = FACTOR_MAX
+            factor, err_prev, err_prev2 = next_step(
+                err_norm, err_prev, err_prev2, accept
+            )
             dt = dt_use * factor
 
             if accept:
@@ -1041,7 +1080,7 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
     return kernel, tpb
 
 
-def split_blocks(sparsity, n_vars: int, max_driver: int = 16):
+def split_blocks(sparsity: Sparsity, n_vars: int, max_driver: int = 16):
     """The driver and main blocks ``split=True`` would use for a pattern, or ``None``."""
     from modax._split import analyse_blocks
 
@@ -1050,8 +1089,8 @@ def split_blocks(sparsity, n_vars: int, max_driver: int = 16):
 
 @functools.cache
 def _make_jax_launch(
-    ode_fn, n: int, n_vars: int, n_params: int, options: KernelOptions
-):
+    ode_fn: OdeFn, n: int, n_vars: int, n_params: int, options: KernelOptions
+) -> CudaLaunch:
     blocks = None
     if options.split and options.sparsity is not None:
         from modax._split import analyse_blocks, make_split_kernel
@@ -1070,38 +1109,262 @@ def _make_jax_launch(
     )
 
 
+@overload
 def solve(
-    ode_fn,
-    y0,
-    t_span,
-    params,
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
     *,
-    rtol=1e-8,
-    atol=1e-10,
-    first_step=None,
-    max_steps=100000,
-    return_stats=False,
-    error_weights=None,
-    pcoeff=0.0,
-    icoeff=1.0,
-    dcoeff=0.0,
-    lu_precision: str = "fp32",
-    trajectories_per_block=None,
-    sens_error_control=True,
-    sens_param_columns=None,
-    sparsity=None,
-    ordering="amd",
-    tf_index=None,
-    max_registers=None,
-    array_rhs=None,
-    save_hook=None,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[False] = False,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: None = None,
     hook_size: int = 0,
     save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
+) -> jax.Array: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[True],
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: None = None,
+    hook_size: int = 0,
+    save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
+) -> tuple[jax.Array, SolverStats]: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[False] = False,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: SaveHook,
+    hook_size: int = 0,
+    save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
+) -> tuple[jax.Array, jax.Array]: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: Literal[True],
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: SaveHook,
+    hook_size: int = 0,
+    save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
+) -> tuple[jax.Array, jax.Array, SolverStats]: ...
+
+
+@overload
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: bool,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: SaveHook | None = None,
+    hook_size: int = 0,
+    save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
+) -> SolveOutput | HookedOutput: ...
+
+
+def solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: bool = False,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: SaveHook | None = None,
+    hook_size: int = 0,
+    save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
     split: bool = False,
     split_max_driver: int = 16,
     cache: bool = False,
-):
-    """JAX-callable Rodas5 custom-kernel solve.
+) -> SolveOutput | HookedOutput:
+    """JAX-callable Rodas5P custom-kernel solve.
+
+    Args:
+        ode_fn: The right-hand side, ``(y, t, p) -> tuple`` of scalars; see
+            Writing ODE callbacks. A plain function is ``cuda.jit``-ed for you.
+        y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``; a 1-D state is
+            shared by every trajectory.
+        t_span: Save times, ``(n_save,)``, shared across the ensemble. Not
+            differentiable.
+        params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
+            from whichever of ``y0`` and ``params`` is batched; if both are,
+            they must agree.
+        rtol: Relative tolerance of the weighted RMS error norm.
+        atol: Absolute tolerance of the weighted RMS error norm.
+        first_step: Initial step size. ``None`` or any non-positive value lets
+            the kernel start from 1e-6 of its own integration window; it is a
+            launch-time scalar because ``t_span`` is traced.
+        max_steps: Per-trajectory step budget.
+        return_stats: Also return a dict of per-trajectory step counters,
+            ``accepted_steps``, ``rejected_steps`` and ``loop_steps``, each
+            ``(N,)``.
+        error_weights: Optional per-component weights, ``(n_vars,)`` or
+            ``(N, n_vars)``, applied in the error norm; a weight of 0 excludes
+            that component from step-size control.
+        pcoeff: Proportional gain of the PID step controller.
+        icoeff: Integral gain; the default ``(0, 1, 0)`` is the classic
+            I-controller.
+        dcoeff: Derivative gain.
+        lu_precision: ``"fp32"`` or ``"fp64"``, the precision of the per-step
+            LU factorisation and triangular solves; see below.
+        trajectories_per_block: Threads per block, one trajectory each;
+            defaults to a warp.
+        sens_error_control: Whether a differentiated solve's sensitivity
+            components take part in step-size control; see below.
+        sens_param_columns: Restrict the parameter sensitivities to these
+            ``params`` columns; ``None`` carries every column.
+        sparsity: The Jacobian's sparsity pattern, as an ``(n_vars, n_vars)``
+            mask, a scipy sparse matrix or an ``(nnz, 2)`` index array; see
+            below.
+        ordering: Fill-reducing permutation for the sparse LU, ``"amd"`` or
+            ``"natural"``.
+        tf_index: A ``params`` column holding each trajectory's own end time.
+        max_registers: Cap on the kernel's per-thread register count.
+        array_rhs: An ``f(y, t, p, out)`` device function equivalent to
+            ``ode_fn``. The primal stage evaluations do not need the tuple
+            form, which exists for Enzyme, so handing this in lets the eight
+            evaluations per step call it directly.
+        save_hook: A device function ``hook(save_idx, y, t, p_row, acc)``
+            called at every save time; see below.
+        hook_size: Width of the hook's per-trajectory output row; must be
+            positive when ``save_hook`` is given.
+        save_history: Keep the full history. ``False`` keeps only the final
+            state, and needs a ``save_hook`` to consume the saves.
+
+    Returns:
+        The history, ``(N, n_save, n_vars)``, or ``(N, 1, n_vars)`` with
+        ``save_history=False``. A hooked solve returns ``(hist, hook_out)``,
+        with ``hook_out`` of shape ``(N, hook_size)``, and ``return_stats=True``
+        appends the stats dict to whichever is returned.
+
+    Raises:
+        ValueError: If ``trajectories_per_block`` is not positive,
+            ``save_hook`` is given without a positive ``hook_size``, or
+            ``save_history=False`` is given without a ``save_hook``.
 
     Only the right-hand side is supplied. The Jacobian ``df/dy``, and the
     partial time derivative ``df/dt`` that a non-autonomous system needs to
@@ -1110,12 +1373,15 @@ def solve(
 
     ``lu_precision`` (``"fp32"`` or ``"fp64"``) selects the precision of the
     per-step LU factorisation and triangular solves. The state, right-hand
-    side, Jacobian and error estimate are always float64; because the
-    Rosenbrock--Wanner order conditions retain full order under an approximate
-    Jacobian, the ``"fp32"`` default does not reduce the method's order while
-    halving the LU shared-memory footprint and exploiting FP32 throughput.
-    ``"fp64"`` is available for ill-conditioned systems where the FP32
-    factorisation degrades step-size control.
+    side, Jacobian and error estimate are always float64. Rodas5P attains its
+    full fifth order only with the exact Jacobian; it satisfies the
+    Rosenbrock--Wanner order conditions to second order, so an inexact
+    iteration matrix reduces it to order 2 with an additional error that
+    scales with the perturbation and that the step controller compensates for
+    with smaller steps. At the level of FP32 rounding that costs little, and
+    the ``"fp32"`` default halves the LU's local-memory footprint and exploits
+    FP32 throughput. ``"fp64"`` is available for ill-conditioned systems where
+    the FP32 factorisation degrades step-size control.
 
     ``first_step`` pins the initial step size; the default ``None`` (like any
     non-positive value) lets the kernel start from 1e-6 of the integration
@@ -1143,8 +1409,7 @@ def solve(
     factorisation serves the state and every sensitivity column and the coupling
     is a forward substitution. What grows with ``n_sens`` is the thread's own
     working set -- ten stage vectors of the augmented state, in local memory --
-    rather than the block's shared budget, which carries only the ``n_vars``
-    matrix. This is still a solver for problems with few parameters relative to
+    while the matrix stays ``n_vars``-sized. This is still a solver for problems with few parameters relative to
     the state dimension.
 
     ``sens_param_columns`` restricts the parameter sensitivities to the columns
@@ -1167,9 +1432,9 @@ def solve(
     The joint Jacobian's lower-left block ``d(J_y S + J_p)/dy`` is a second
     derivative of ``ode_fn``, and it is formed rather than dropped: Enzyme's
     forward-over-forward sweep applies it to the state increment without ever
-    materialising the matrix. Dropping it would be legitimate under the W
-    property -- order 5 survives an approximate Jacobian -- but not cheap: the
-    error constant it costs was measured at 200x the steps on a right-hand side
+    materialising the matrix. Dropping it would leave the method convergent,
+    since the W conditions hold to second order, but not cheap: the error
+    constant it costs was measured at 200x the steps on a right-hand side
     bilinear in state and parameters, which is most reaction networks.
 
     ``sparsity`` is where a structured problem pays off, and it is the only
@@ -1195,29 +1460,10 @@ def solve(
     SuiteSparse's approximate minimum degree out of ``cvxopt``, or
     ``"natural"`` to skip the ordering. It is ignored without a pattern.
 
-    Forward sensitivities work with either solver: the joint iteration matrix is
-    block lower triangular with the same ``M0`` on every diagonal block, so only
-    the ``n_vars`` block is ever factorised and the coupling between blocks is a
-    forward substitution the kernel does itself.
-
     ``tf_index`` names a column of ``params`` holding each trajectory's own end
     time, for ensembles whose members finish at different times; save times
     past a trajectory's end hold its final state. The default ``None`` ends
     every trajectory at ``t_span[-1]``.
-
-    ``split=True`` has the kernel look for one-way coupling in ``sparsity``
-    (:mod:`modax._split`): a leading set of states that nothing downstream
-    feeds back into is integrated ahead of the rest in every step, as a block
-    of its own with a dense matrix, and handed to the rest as a quintic
-    Hermite polynomial of time, so the main block's matrix carries no column
-    of theirs and the step keeps fifth order. ``split_max_driver`` caps that
-    block's size. Sensitivities, hooks and ``vmap`` work as without the split;
-    the history keeps the state order given.
-
-    ``cache=True`` keeps the compiled kernel on disk (numba's cache directory,
-    beside this module unless ``NUMBA_CACHE_DIR`` says otherwise), keyed by
-    everything it was built from (:mod:`modax._kernel_cache`): a later process
-    loads it in about a second instead of rebuilding it.
 
     ``trajectories_per_block`` is one thread's worth of work each, defaulting to
     a warp; nothing on chip bounds it, since every per-trajectory buffer is
@@ -1235,21 +1481,42 @@ def solve(
     to the final state, shape ``(n, 1, n_vars)``. A solve with a hook returns
     ``(hist, hook_out)`` (plus the stats when asked) and supports neither
     ``jax.vmap`` nor differentiation.
+
+    ``sensitivity`` integrates the joint ``[y, S]`` system of that
+    :class:`~modax._sensitivity.SensitivitySpec` as the primal instead of
+    attaching the JVP rule: the history (or the final state) comes back
+    ``n_aug`` wide in the layout ``split_augmented`` reads, and a save hook
+    sees the augmented state, the state followed by one ``n_vars`` block per
+    direction. That is how a consumer evaluated inside the launch forms its own
+    tangents: a hook that stores both a quantity of the state and its
+    directional derivative along ``S`` gives a differentiable hooked solve, at
+    the cost of a joint launch and no history. ``y0`` is the plain initial
+    state; the spec's initial sensitivities are supplied here.
+
+    :func:`quantity_hook` builds such a hook from a device function of
+    ``(y, t, p)`` returning the quantities: it stores them at every save and,
+    given the spec, their tangents along each direction from an Enzyme sweep
+    built for the kernel's own target, so a caller need not differentiate them
+    itself.
+
+    ``split=True`` reads the pattern's one-way coupling: a leading block of
+    states nothing downstream feeds back into (at most ``split_max_driver``
+    of them) is integrated on steps of its own ahead of the rest, which reads
+    it as a quintic Hermite interpolant (:mod:`modax._split`). ``cache=True``
+    keeps the compiled kernel on disk, keyed by everything it was built from
+    (:mod:`modax._kernel_cache`), so a later process loads it in a second.
     """
     n_vars = jnp.shape(y0)[-1]
-    # Normalised here, not in the kernel builder, because that is cached on its
-    # arguments and a pattern has to arrive as the same hashable value twice.
-    if sparsity is not None:
-        sparsity = normalize_sparsity(sparsity, n_vars)
     options = KernelOptions(
-        pcoeff=pcoeff,
-        icoeff=icoeff,
-        dcoeff=dcoeff,
+        gains=PIDGains(pcoeff, icoeff, dcoeff),
         lu_precision=lu_precision,
         trajectories_per_block=trajectories_per_block_or_default(
             trajectories_per_block
         ),
-        sparsity=sparsity,
+        # Normalised here, not in the kernel builder, because that is cached
+        # on its arguments and a pattern has to arrive as the same hashable
+        # value twice.
+        sparsity=None if sparsity is None else normalize_sparsity(sparsity, n_vars),
         ordering=ordering,
         tf_index=-1 if tf_index is None else int(tf_index),
         max_registers=max_registers,
@@ -1261,99 +1528,87 @@ def solve(
         split_max_driver=int(split_max_driver),
         cache=bool(cache),
     )
-    settings = dict(
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        return_stats=return_stats,
-        error_weights=error_weights,
-    )
+    settings = SolveSettings(rtol, atol, first_step, max_steps, error_weights)
 
-    if save_hook is not None:
-        if hook_size <= 0:
-            raise ValueError("a save_hook needs a positive hook_size")
-        # The hook's accumulator is a second output the vmap and JVP rules do
-        # not know, so a hooked solve is the plain ensemble launch.
-        return _solve_impl(ode_fn, y0, t_span, params, options=options, **settings)
-    if not save_history:
+    if save_hook is not None and hook_size <= 0:
+        raise ValueError("a save_hook needs a positive hook_size")
+    if save_hook is None and not save_history:
         raise ValueError("save_history=False needs a save_hook to consume the saves")
+    if sensitivity is not None:
+        n_params = jnp.shape(params)[-1]
+        if sensitivity.n_vars != n_vars or sensitivity.n_params != n_params:
+            raise ValueError(
+                f"the sensitivity spec is for {sensitivity.n_vars} variables and "
+                f"{sensitivity.n_params} parameters, the problem has {n_vars} and "
+                f"{n_params}"
+            )
+        options = replace(options, spec=sensitivity)
+    if save_hook is not None or sensitivity is not None:
+        # The hook's accumulator is a second output the vmap and JVP rules do
+        # not know, and a joint solve asked for by name is its own primal, so
+        # either is the plain ensemble launch.
+        hist, hook_out, stats = _launch(ode_fn, y0, t_span, params, options, settings)
+        if save_hook is None:
+            return (hist, stats) if return_stats else hist
+        return (hist, hook_out, stats) if return_stats else (hist, hook_out)
 
     # The JVP rule wraps the vmap-aware solvers rather than the other way
     # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
     # what tells the rule which sensitivity blocks it has to integrate.
-    def solver_for(options):
+    def solver_for(spec: SensitivitySpec | None) -> Solver:
         return make_custom_vmap_solver(
-            functools.partial(_solve_impl, ode_fn, options=options, **settings),
+            functools.partial(
+                _solve_impl,
+                ode_fn,
+                options=replace(options, spec=spec),
+                settings=settings,
+                return_stats=return_stats,
+            ),
             return_stats=return_stats,
         )
 
-    primal_solver = solver_for(options)
-
-    def joint_solver_for(spec):
-        return solver_for(replace(options, spec=spec))
-
     return make_sensitivity_solver(
-        primal_solver,
-        joint_solver_for,
-        jnp.shape(y0)[-1],
+        solver_for,
+        n_vars,
         jnp.shape(params)[-1],
-        return_stats,
-        sens_error_control,
-        None
-        if sens_param_columns is None
-        else tuple(int(c) for c in sens_param_columns),
+        sens_error_control=sens_error_control,
+        sens_param_columns=sens_param_columns,
     )(y0, t_span, params)
 
 
 def _solve_impl(
-    ode_fn,
-    y0,
-    t_span,
-    params,
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
     *,
     options: KernelOptions,
-    rtol=1e-8,
-    atol=1e-10,
-    first_step=None,
-    max_steps=100000,
-    return_stats=False,
-    error_weights=None,
-):
-    spec = options.spec
-    y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
-    times = jnp.asarray(t_span, dtype=jnp.float64)
-    n_save = times.shape[0]
-    n_params = params_arr.shape[1]
-    dt0 = initial_step(first_step)
-    weights_host = build_error_weights(error_weights, n, n_vars)
+    settings: SolveSettings,
+    return_stats: bool,
+) -> SolveOutput:
+    """An unhooked solve: the history, with the stats when asked."""
+    hist, _, stats = _launch(ode_fn, y0, t_span, params, options, settings)
+    return (hist, stats) if return_stats else hist
 
-    # With a spec the kernel integrates the joint [y, S] system, so every
-    # per-component extent below is the augmented one.
-    n_system = n_vars if spec is None else spec.n_aug
-    if spec is not None:
-        y0_arr = augmented_y0(y0_arr, spec)
-        weights_host = augmented_error_weights(weights_host, spec)
-    weights_arr = jnp.asarray(weights_host)
 
-    launch = _make_jax_launch(ode_fn, n, n_vars, n_params, options)
+def _launch(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    options: KernelOptions,
+    settings: SolveSettings,
+) -> tuple[jax.Array, jax.Array, SolverStats]:
+    """Run the kernel: the history, the hook rows and the step counters."""
+    inputs = prepare_inputs(y0, t_span, params, settings, options.spec)
+    launch = _make_jax_launch(ode_fn, inputs.n, inputs.n_vars, inputs.n_params, options)
     # No global scratch: the kernel keeps the state, the ten stage vectors and
     # df/dt in registers and thread-local memory.
     hist, accepted, rejected, loop_steps, hook_out = ensemble_ffi_call(
         launch,
-        (y0_arr, times, params_arr, weights_arr),
-        (),
-        n=n,
-        n_vars=n_system,
-        n_save=n_save,
-        dt0=dt0,
-        rtol=rtol,
-        atol=atol,
-        max_steps=max_steps,
-        n_save_hist=n_save if options.save_history else 1,
+        inputs,
+        settings,
+        n_save_hist=inputs.n_save if options.save_history else 1,
         hook_size=max(1, options.hook_size),
     )
-    result = (hist,) if options.save_hook is None else (hist, hook_out)
-    if return_stats:
-        result += (solver_stats(accepted, rejected, loop_steps),)
-    return result[0] if len(result) == 1 else result
+    return hist, hook_out, solver_stats(accepted, rejected, loop_steps)

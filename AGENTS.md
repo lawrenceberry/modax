@@ -93,9 +93,11 @@ Coverage counts `modax/` only and `[tool.coverage.report]` excludes
 as unreached would measure the compiler rather than the tests.
 
 The site is `docs/` plus `mkdocs.yml`, and `.github/workflows/docs.yml`
-publishes it to GitHub Pages on every push to `main`. The long-form prose is
-*not* duplicated there: the pages pull sections out of `README.md`, the
-examples' READMEs and `wheels/README.md` with `pymdownx.snippets`, so
+publishes it to GitHub Pages on every push to `main`. The long-form prose
+lives in `docs/`; `README.md` is kept to an overview, installation and
+development setup. What the two share is not duplicated: the pages pull the
+README's `overview`, `install`, `quickstart`, `development`, `citation`
+and `license` sections, `LICENSE`, `wheels/README.md` and the examples' READMEs in with `pymdownx.snippets`, so
 `<!-- --8<-- [start:name] -->` / `[end:name]` markers in those files are
 load-bearing. Docstrings are rendered by mkdocstrings, so a cross-reference in
 one is written ``[`modax._sparsity`][]`` rather than as a Sphinx role.
@@ -128,19 +130,23 @@ A hooked solve is a plain ensemble launch: no `jax.vmap`, no differentiation.
 
 Shared support modules:
 
-- **`_numba_common.py`** — host-side helpers shared by both kernels: initial
-  step selection, error weights, the shared kernel signature and its JAX launch
-  (`ensemble_ffi_call`), and the `cuda.jit` coercion for user callbacks. There
-  is no direct numba launch path: every solve, the benchmark scripts included,
-  goes through `solve` and the XLA custom call.
+- **`_numba_common.py`** — what both kernels share: the `cuda.jit` coercion
+  for user callbacks, the per-call `SolveSettings`, the `PIDGains` and the
+  step-controller device function (`make_step_controller`, which both kernels
+  call once per attempted step), the error weights and the shared kernel
+  signature.
 - **`_codegen.py`** — `compile_device_source`, the one place generated device
   source is exec'd and registered with `linecache`. Both emitters below use it.
 - **`_jax_numba_custom_call.py`** — the XLA FFI shim. Compiles a launcher,
   registers it as an FFI target, and exposes `ffi_abi_call` so a numba kernel
   becomes a JAX primitive.
-- **`_jax_common.py`** — the JAX-facing glue: ensemble shape normalisation and
-  `make_custom_vmap_solver`, whose `custom_vmap` rule lowers an outer
-  `jax.vmap` over a single solve into one native ensemble launch.
+- **`_jax_common.py`** — the JAX-facing glue: ensemble shape normalisation
+  into the `EnsembleInputs` a launch reads (`prepare_inputs`), the JAX launch
+  itself (`ensemble_ffi_call`), and `make_custom_vmap_solver`, whose
+  `custom_vmap` rule lowers an outer `jax.vmap` over a single solve into one
+  native ensemble launch. There is no direct numba launch path: every solve,
+  the benchmark scripts included, goes through `solve` and the XLA custom
+  call.
 - **`_sparsity.py`** — colours a sparsity pattern's column intersection graph
   and defines `CompressedJacobian`, the layout the Enzyme sweeps write into.
 - **`_sparse_direct.py`** — orders a pattern with AMD, factorises it
@@ -264,9 +270,11 @@ Schur solver. `tests/test_sparse_direct.py` runs the two emissions against each
 other and requires them bit-identical.
 
 No pivoting is sound here for the same reason the Jacobian may be approximate:
-Rodas5P is a Rosenbrock-**W** method, so order 5 survives, and a pivot that
-reaches zero leaves an infinity, the error norm goes to NaN, the step is
-rejected, and the smaller step puts a larger `1/(h*gamma)` on that very diagonal.
+Rodas5P satisfies the Rosenbrock-**W** order conditions to second order, so an
+inexact factorisation costs order (2, with 1 for the embedded estimator) and
+step-size control rather than convergence, and a pivot that reaches zero
+leaves an infinity, the error norm goes to NaN, the step is rejected, and the
+smaller step puts a larger `1/(h*gamma)` on that very diagonal.
 
 It also decouples colouring from storage, which a hand-written solver could not.
 Such a solver owned its buffer, so it had to declare its own fill-in in the
@@ -280,7 +288,7 @@ elimination order — zero fill, `nnz(L + U) == nnz(J) == 238`, one slot per
 entry — and the order it finds is the hand-written Schur solver's: peel each
 free-streaming hierarchy from its truncated end inwards, where every variable has
 degree two, then eliminate the dense core last. It replaced that solver and is
-22% faster than it. The README's "Sparse systems" section carries the full
+22% faster than it. `docs/usage/sparse.md` carries the full
 design argument — why AMD and not COLAMD, why no pivoting, why symbolic, why
 CSR, why unrolled — and is what to read before touching any of it.
 
@@ -310,12 +318,18 @@ Things to know when touching this:
 - **`ode_fn` is always the tuple form.** There is no `jac_fn` any more; the
   Jacobian and `df/dt` both come from Enzyme, and the tuple form is what Enzyme
   reads.
-- **A runtime index into the tuple is fatal.** numba emits a bounds-check
-  `cmpxchg` for it and Enzyme refuses the atomic ("cannot handle unknown
-  instruction"). Wrapping the loops around a thread-local array instead gets
-  past typing but yields IR NVVM will not verify. Callbacks must therefore index
-  only with constants — which is why the reference systems are AST-generated,
-  and why DISCO-EB generates its unrolled right-hand side from the looped one.
+- **Loops over the state are fine since numba-enzyme runs `O3` before Enzyme.**
+  As lowered by numba, a runtime index into the tuple (or into a thread-local
+  array) carries a bounds check whose failure path is a `cmpxchg` Enzyme
+  refuses ("cannot handle unknown instruction"), and numba's `range` loops have
+  a data-dependent step SCEV cannot unroll. numba-enzyme's pre-Enzyme pipeline
+  (`NUMBA_ENZYME_CUDA_PREPASSES`, default `default<O3>,function(sroa,instcombine)`)
+  canonicalises and fully unrolls the loops, folds the checks and promotes the
+  local arrays, so Enzyme sees the hand-unrolled callback. Before that pipeline
+  existed callbacks had to index with constants only, which is why the
+  reference systems are AST-generated; `test_enzyme_jacobian.py` now also
+  checks a looped right-hand side. The return is still a tuple of `n_vars`
+  scalars.
 - **The seed table's zero row doubles as the null parameter direction**, so it
   is widened to `max(n_vars, n_params)`. It was `n_vars` once, and every `df/dt`
   silently read past the row whenever there were more parameters than states.
@@ -330,7 +344,9 @@ Things to know when touching this:
 
 Callbacks are compiled with `numba_cuda_mlir`, which constrains them:
 
-- Take and return **fixed-size tuples of scalars**, not arrays.
+- Take and return **fixed-size tuples of scalars**, not arrays. The body may
+  loop over them and over `cuda.local.array` scratch (see above); only the
+  signature is fixed.
 - Use `math`, not `numpy`/`jax.numpy`.
 - **Device code cannot call a plain Python helper.** Either inline the shared
   work or pre-decorate the helper with `@cuda.jit(device=True)`.
@@ -449,9 +465,11 @@ which lists every local change made to numba-enzyme and how a new one is cut.
 [ne]: https://github.com/Qruise-ai/numba-enzyme
 
 `lu_precision` (`"fp32"`/`"fp64"`) selects the LU precision for implicit
-solvers. The `"fp32"` default does not lower the method's order — the
-Rosenbrock order conditions hold under an approximate Jacobian — while
-halving the LU buffer's footprint.
+solvers. Rodas5P is not a full W-method: with an inexact iteration matrix it
+drops to order 2 (order 1 for the embedded estimator), with an additional error
+that scales with the perturbation and that the step controller absorbs by
+taking smaller steps. At the level of FP32 rounding that costs little, and the
+`"fp32"` default halves the LU buffer's footprint.
 
 ### Forward sensitivities
 
@@ -466,7 +484,7 @@ d/dt [y, S] = [f(t, y, p), J_y S + J_p]
 
 as one system of `n_aug = n_vars * (1 + n_sens)` components, so `value_and_grad`
 is one solve rather than two. `t_span` is not differentiable and raises. The
-README's "Gradients" section carries the design argument and the proof that a
+docs' `usage/gradients.md` carries the design argument and the proof that a
 stiff ODE has an equally stiff sensitivity system; this is what to know before
 touching the code.
 
@@ -499,9 +517,10 @@ touching the code.
   diagonal block, so `block_solve` is a forward substitution against one
   factorisation: state row first, then each sensitivity row with its right-hand
   side corrected by `L_k k_y`. The LU is `n_vars`-sized, not `n_aug`-sized.
-  Do not be tempted back to the block-diagonal approximation: it is legitimate
-  under the W property and order 5 survives, but the error constant does not —
-  201x the steps on a bilinear right-hand side, measured, and
+  Do not be tempted back to the block-diagonal approximation: the method stays
+  convergent under it, since the W conditions hold to second order, but the
+  error constant does not survive — 201x the steps on a bilinear right-hand
+  side, measured, and
   `test_joint_solve_costs_about_what_the_plain_solve_costs` is the guard.
 - **The batch no longer has to be re-sized for a joint solve.** The stage
   vectors that hold the augmented state are thread-local, so only the

@@ -62,7 +62,7 @@ from numba_cuda_mlir import cuda, types
 
 from modax._codegen import compile_device_source
 from modax._kernel_cache import enable_content_cache
-from modax._numba_common import as_cuda_device
+from modax._numba_common import SAFETY, as_cuda_device
 from modax._sensitivity import SensitivitySpec, make_second_tangent, make_tangent
 from modax._sparse_direct import sparse_direct_solver_for
 from modax._sparsity import colour_sparsity, dense_jacobian
@@ -311,10 +311,8 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         def save_hook(save_idx, y, t, p_row, acc):
             return
 
-    e1 = R.EXPONENT * (options.icoeff + options.pcoeff + options.dcoeff)
-    e2 = -R.EXPONENT * (options.pcoeff + 2.0 * options.dcoeff)
-    e3 = R.EXPONENT * options.dcoeff
-    GAMMA, SAFETY, FACTOR_MIN, FACTOR_MAX = R.GAMMA, R.SAFETY, R.FACTOR_MIN, R.FACTOR_MAX
+    e1, e2, e3 = options.gains.exponents(R.ORDER)
+    GAMMA, FACTOR_MIN, FACTOR_MAX = R.GAMMA, R.FACTOR_MIN, R.FACTOR_MAX
     C2, C3, C4, C5 = R.C2, R.C3, R.C4, R.C5
     c_rows = _rows(((), (R.C21,), (R.C31, R.C32), (R.C41, R.C42, R.C43), (R.C51, R.C52, R.C53, R.C54),
                     (R.C61, R.C62, R.C63, R.C64, R.C65), (R.C71, R.C72, R.C73, R.C74, R.C75, R.C76),
@@ -434,7 +432,8 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         namespace=dict(cuda=cuda, float64=types.float64, tangent_of=main_tangent,
                        colour_seeds=main_structure.seed_table(n_params_local), clear_matrix=m_clear,
                        lu_dtype=lu_dtype),
-        inline="never", batch=main_structure.n_colours + 2, coupling=True,
+        inline="never", batch=main_structure.n_colours + 1 + n_drv,
+        coupling_slots=[(hermite_slot(drv_col, j), hermite_slot(drv_col, j) + 3) for j in range(n_drv)],
     )
     write_driver_jacobian = R._make_literal_seed_jacobian(
         n_vars=n_drv, n_params=n_params_local, n_colours=d_structure.n_colours, store_table=d_store,
@@ -751,12 +750,12 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                 write_driver(u, t + t_after[s] * dt_use, p_local, work, pbuf, zero)
 
     @cuda.jit(device=True, inline="never")
-    def main_step(y, u, work, dT, k_stages, lu, ipiv, rhs, p_local, t, dt_use, pbuf, hseed, zero, p_seed, coupling_err, jdiag):
+    def main_step(y, u, work, dT, k_stages, lu, ipiv, rhs, p_local, t, dt_use, pbuf, hseed, zero, coup, jdiag):
         """One Rodas5P step of the main block from ``y``; leaves ``u + k_stages[7]`` as the candidate."""
         inv_dt = 1.0 / dt_use
         dtgamma_inv = inv_dt / GAMMA
         diag = cuda.const.array_like(m_diag)
-        write_main_jacobian(y, t, p_local, lu, dT, p_seed, coupling_err)
+        write_main_jacobian(y, t, p_local, lu, dT, coup)
         write_main_sens_dt(y, t, p_local, dT, pbuf, hseed, zero)
         for d_ in range(n_main):
             jdiag[d_] = -np.float64(lu[diag[d_]])  # the Jacobian's diagonal, before the step's 1/(h gamma)
@@ -909,8 +908,8 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         node_g = cuda.local.array((N_NODES, size_d), np.float64)
         node_s2 = cuda.local.array((N_NODES, size_d), np.float64)
         node_err = cuda.local.array((N_NODES, n_drv), np.float64)  # the driver's error estimate of the step ending at a node
-        p_seed = cuda.local.array(P_LOCAL, np.float64)  # the driver's error through the Hermite block, as a direction
-        coupling_err = cuda.local.array(n_main, np.float64)  # df/dtheta . (driver's error), the main block's inherited error rate
+        coup = cuda.local.array((n_drv, n_main), np.float64)  # df/dtheta_j, from the Jacobian writer's coupling directions
+        eps_drv = cuda.local.array(n_drv, np.float64)  # the driver's error estimate over the step the main block is in
         jdiag = cuda.local.array(n_main, np.float64)  # the main block's Jacobian diagonal at the step's start
         th_a = cuda.local.array(size_d, np.float64)
         g_a = cuda.local.array(size_d, np.float64)
@@ -994,8 +993,6 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
             node_s2[0, j] = s21[j]
         for j in range(n_drv):
             node_err[0, j] = 0.0
-        for c in range(P_LOCAL):
-            p_seed[c] = 0.0
 
         if HAS_HOOK:
             for j in range(hook_size):
@@ -1120,18 +1117,15 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
             dense_driver(node_t, node_th, node_g, node_s2, n_nodes, t, th_a, g_a, s2_a)
             dense_driver(node_t, node_th, node_g, node_s2, n_nodes, t_end, th_b, g_b, s2_b)
             write_hermite(p_local, hseed, t, dt_use, th_a, g_a, s2_a, th_b, g_b, s2_b)
-            # The driver's error over this step (the largest estimate of the
-            # driver steps it lies in), seeded as a constant shift of the
-            # Hermite block's values: the sweep returns df/dtheta . error.
+            # The driver's error over this step: the largest estimate of the
+            # driver steps it lies in.
             for j in range(n_drv):
                 err_j = 0.0
                 for q in range(1, n_nodes):
                     if node_t[q] > t + 1e-12 * max(1.0, math.fabs(t)) and node_t[q - 1] < t_end:
                         err_j = max(err_j, node_err[q, j])
-                b = drv_col + 2 + 6 * j
-                p_seed[b] = err_j
-                p_seed[b + 3] = err_j
-            main_step(y, u, work, dT, k_stages, lu_buf, ipiv_buf, rhs_buf, p_local, t, dt_use, pbuf, hseed, zero, p_seed, coupling_err, jdiag)
+                eps_drv[j] = err_j
+            main_step(y, u, work, dT, k_stages, lu_buf, ipiv_buf, rhs_buf, p_local, t, dt_use, pbuf, hseed, zero, coup, jdiag)
             # The main block's error inherited from the driver over the driver
             # step this main step lies in: H df/dtheta . epsilon against the
             # main rows' tolerance. It cannot be reduced by a shorter main step
@@ -1147,9 +1141,12 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
             # damps itself faster than that (the tight coupling): the diagonal
             # of a Rosenbrock stage over H, 1 / (1/(H gamma) + |J_rr|), both.
             for r in range(n_main):
+                rate = 0.0
+                for j in range(n_drv):
+                    rate += coup[j, r] * eps_drv[j]
                 scale = atol + rtol * math.fabs(y[r])
                 damping = 1.0 + h_cover * GAMMA * max(0.0, -jdiag[r])
-                e = weights[i, Mix[r]] * h_cover * math.fabs(coupling_err[r]) / (damping * scale)
+                e = weights[i, Mix[r]] * h_cover * math.fabs(rate) / (damping * scale)
                 if e > inherited:
                     inherited = e
 

@@ -2,8 +2,8 @@
 
 The solvers reach JAX through an XLA FFI custom call, so the solve itself is
 opaque to autodiff: there is no traced graph for JAX to differentiate and no
-practical way to run Enzyme over the kernel (see "Why forward sensitivities" in
-the README). Derivatives are therefore supplied by a ``jax.custom_jvp`` rule
+practical way to run Enzyme over the kernel (see "Why continuous forward
+sensitivities" in docs/usage/gradients.md). Derivatives are therefore supplied by a ``jax.custom_jvp`` rule
 that integrates the sensitivity system alongside the state.
 
 Writing ``S(t) = dy(t)/dtheta`` for a direction block ``theta``, differentiating
@@ -50,15 +50,24 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
+from typing import Any, Callable, Sequence
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 from jax.custom_derivatives import SymbolicZero
+from jax.typing import ArrayLike
 from numba_cuda_mlir import cuda, types
+from numba_cuda_mlir.descriptor import MLIRDispatcher
+from numba_cuda_mlir.numba_cuda.typing.templates import Signature
 from numba_enzyme import jvp
 
-from modax._numba_common import as_cuda_device
+from modax._jax_numba_custom_call import compile_target
+from modax._numba_common import OdeFn, SolveOutput, Solver, as_cuda_device
+
+Tangent = Callable[..., None]
+"""An Enzyme forward sweep: ``(out, *args, *directions)``, writing ``out``."""
 
 
 @dataclass(frozen=True)
@@ -82,7 +91,7 @@ class SensitivitySpec:
     error_control: bool = True
     param_columns: tuple[int, ...] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not (self.wrt_y0 or self.wrt_params):
             raise ValueError(
                 "a sensitivity spec must carry at least one direction block"
@@ -136,7 +145,7 @@ class SensitivitySpec:
 
 
 @functools.cache
-def _primal_signature(n_vars: int, n_params: int):
+def _primal_signature(n_vars: int, n_params: int) -> Signature:
     """The concrete ``ode_fn`` specialisation every derivative is built for."""
     return types.UniTuple(types.float64, n_vars)(
         types.UniTuple(types.float64, n_vars),
@@ -146,18 +155,23 @@ def _primal_signature(n_vars: int, n_params: int):
 
 
 @functools.cache
-def make_tangent(ode_fn, n_vars: int, n_params: int):
+def make_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     """``D f(y, t, p)[u]`` in one forward sweep, for an arbitrary direction.
 
     The sensitivity right-hand side ``J_y S_k + J_p_k`` *is* a directional
     derivative: seed ``(S_k, 0, e_k)`` and it comes out whole.  Assembling it
     from unit columns instead costs ``n_vars + 1`` sweeps where this costs one.
     """
-    return jvp(as_cuda_device(ode_fn), signature=_primal_signature(n_vars, n_params))
+    # For the kernel's own target (compile_target), so the two link on Blackwell.
+    return jvp(
+        as_cuda_device(ode_fn),
+        signature=_primal_signature(n_vars, n_params),
+        cc=compile_target(),
+    )
 
 
 @functools.cache
-def make_second_tangent(ode_fn, n_vars: int, n_params: int):
+def make_second_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     """``D2 f(y, t, p)[u, v] + D f(y, t, p)[w]``, forward over forward.
 
     The joint system's Jacobian is the derivative of a right-hand side that
@@ -176,11 +190,16 @@ def make_second_tangent(ode_fn, n_vars: int, n_params: int):
     which leaves the plain bilinear form.
     """
     signature = _primal_signature(n_vars, n_params)
-    return jvp(jvp(as_cuda_device(ode_fn), signature=signature), signature=signature)
+    cc = compile_target()
+    return jvp(
+        jvp(as_cuda_device(ode_fn), signature=signature, cc=cc),
+        signature=signature,
+        cc=cc,
+    )
 
 
 @functools.cache
-def seed_table(spec: SensitivitySpec):
+def seed_table(spec: SensitivitySpec) -> npt.NDArray[np.float64]:
     """Read-only table every unit and zero direction is a window into.
 
     ``2 * L`` zeros with a single ``1.0`` at ``L``, so the window starting at
@@ -196,7 +215,7 @@ def seed_table(spec: SensitivitySpec):
 
 
 @functools.cache
-def make_augmented_local_writer(ode_fn, spec: SensitivitySpec):
+def make_augmented_local_writer(ode_fn: OdeFn, spec: SensitivitySpec) -> MLIRDispatcher:
     """Joint ``[f, J_y S + J_p]`` writer for a kernel's thread-local state.
 
     Both kernels run one trajectory per thread, so the whole augmented vector --
@@ -243,6 +262,127 @@ def make_augmented_local_writer(ode_fn, spec: SensitivitySpec):
     return write_vector
 
 
+@functools.cache
+def _quantity_signature(n_outputs: int, n_vars: int, n_params: int) -> Signature:
+    """The specialisation a :func:`quantity_hook`'s quantities are differentiated in."""
+    return types.UniTuple(types.float64, n_outputs)(
+        types.UniTuple(types.float64, n_vars),
+        types.float64,
+        types.UniTuple(types.float64, n_params),
+    )
+
+
+@functools.cache
+def quantity_hook(
+    quantities: Callable[..., tuple[float, ...]],
+    n_outputs: int,
+    n_vars: int,
+    n_params: int,
+    sensitivity: SensitivitySpec | None = None,
+) -> MLIRDispatcher:
+    """A save hook storing ``quantities(y, t, p)`` at every save, and their tangents.
+
+    ``quantities`` is a device function (or a plain function, compiled as one)
+    of the state, the time and the parameter row returning a tuple of
+    ``n_outputs`` floats: the per-save values a consumer wants instead of the
+    history. The hook stores them save-major, ``n_outputs * (1 + n_sens)``
+    numbers per save, so its ``hook_size`` is that times the number of saves.
+
+    Without ``sensitivity`` (``n_sens = 0``) it stores the values alone, for a
+    plain hooked solve. With it, for the joint launch of
+    ``solve(..., sensitivity=spec)``, it stores after the values of each save
+    their total derivative along every direction ``k`` of the spec, direction
+    after direction::
+
+        dq/d theta_k = (dq/dy) S_k + dq/dp e_k
+
+    (no ``e_k`` term for an initial-state direction), from one Enzyme forward
+    sweep of ``quantities`` seeded with ``(S_k, 0, e_k)``, the sweep the
+    sensitivity equations run on the right-hand side. The derivative is built
+    for the kernel's own target (``compile_target``), so the two link on every
+    GPU, Blackwell included, and the caller needs no Enzyme of its own.
+
+    Parameters
+    ----------
+    quantities : callable
+        ``quantities(y, t, p) -> tuple`` of ``n_outputs`` floats, reading
+        ``y[0:n_vars]`` only.
+    n_outputs : int
+        Length of the tuple ``quantities`` returns.
+    n_vars, n_params : int
+        The problem's state and parameter-row sizes.
+    sensitivity : SensitivitySpec, optional
+        The spec of the joint launch the hook serves.
+
+    Returns
+    -------
+    MLIRDispatcher
+        ``hook(save_idx, y, t, p_row, acc)``, the ``save_hook`` of ``solve``.
+    """
+    if n_outputs < 1:
+        raise ValueError("a quantity hook stores at least one quantity")
+    if sensitivity is not None and (
+        sensitivity.n_vars != n_vars or sensitivity.n_params != n_params
+    ):
+        raise ValueError(
+            f"the sensitivity spec is for {sensitivity.n_vars} variables and "
+            f"{sensitivity.n_params} parameters, the quantities for {n_vars} "
+            f"and {n_params}"
+        )
+    fn_device = as_cuda_device(quantities)
+
+    if sensitivity is None:
+
+        @cuda.jit(device=True)
+        def store_values(save_idx, y, t, p_row, acc):
+            values = fn_device(y, t, p_row)
+            base = n_outputs * save_idx
+            for j in range(n_outputs):
+                acc[base + j] = values[j]
+
+        return store_values
+
+    n_sens = sensitivity.n_sens
+    n_y0_dirs = sensitivity.n_y0_dirs
+    param_cols = sensitivity.param_seed_columns
+    length = max(n_vars, n_params)
+    width = n_outputs * (1 + n_sens)
+    seeds = seed_table(sensitivity)
+    # For the kernel's own target (compile_target), so the two link on Blackwell.
+    tangent_of = jvp(
+        fn_device,
+        signature=_quantity_signature(n_outputs, n_vars, n_params),
+        cc=compile_target(),
+    )
+
+    @cuda.jit(device=True)
+    def store_values_and_tangents(save_idx, y, t, p_row, acc):
+        seed = cuda.const.array_like(seeds)
+        values = fn_device(y, t, p_row)
+        base = width * save_idx
+        for j in range(n_outputs):
+            acc[base + j] = values[j]
+
+        tangent = cuda.local.array(n_outputs, types.float64)
+        for k in range(n_sens):
+            column = n_vars + k * n_vars
+            start = 0 if k < n_y0_dirs else length - param_cols[k - n_y0_dirs]
+            tangent_of(
+                tangent,
+                y[0:n_vars],
+                t,
+                p_row,
+                y[column : column + n_vars],
+                0.0,
+                seed[start : start + n_params],
+            )
+            out = base + n_outputs * (1 + k)
+            for j in range(n_outputs):
+                acc[out + j] = tangent[j]
+
+    return store_values_and_tangents
+
+
 def clear_caches() -> None:
     """Drop the cached device writers and Enzyme derivatives.
 
@@ -253,9 +393,10 @@ def clear_caches() -> None:
     make_second_tangent.cache_clear()
     seed_table.cache_clear()
     make_augmented_local_writer.cache_clear()
+    quantity_hook.cache_clear()
 
 
-def augmented_y0(y0_arr, spec: SensitivitySpec):
+def augmented_y0(y0_arr: jax.Array, spec: SensitivitySpec) -> jax.Array:
     """``(n, n_vars)`` initial state -> ``(n, n_aug)`` joint initial state.
 
     ``S(t0)`` is the identity for the initial-state block (``dy0/dy0``) and zero
@@ -271,7 +412,9 @@ def augmented_y0(y0_arr, spec: SensitivitySpec):
     return jnp.concatenate(blocks, axis=1)
 
 
-def augmented_error_weights(weights_arr, spec: SensitivitySpec):
+def augmented_error_weights(
+    weights_arr: npt.NDArray[np.float64], spec: SensitivitySpec
+) -> npt.NDArray[np.float64]:
     """``(n, n_vars)`` error weights -> ``(n, n_aug)``.
 
     A zero weight drops a component from the step-size error norm, so
@@ -292,7 +435,9 @@ def augmented_error_weights(weights_arr, spec: SensitivitySpec):
     )
 
 
-def split_augmented(hist, spec: SensitivitySpec):
+def split_augmented(
+    hist: jax.Array, spec: SensitivitySpec
+) -> tuple[jax.Array, jax.Array]:
     """``(n, n_save, n_aug)`` -> state ``(n, n_save, n_vars)`` and ``S`` ``(n, n_save, n_vars, n_sens)``."""
     n, n_save, _ = hist.shape
     state = hist[:, :, : spec.n_vars]
@@ -300,7 +445,7 @@ def split_augmented(hist, spec: SensitivitySpec):
     return state, jnp.swapaxes(sens, 2, 3)
 
 
-def _match_shape(tangent, axis_size: int, name: str):
+def _match_shape(tangent: ArrayLike, axis_size: int, name: str) -> jax.Array:
     """Broadcast an input tangent the way the primal argument was broadcast.
 
     ``normalize_y0_params`` broadcasts a 1-D argument across the ensemble, so
@@ -317,7 +462,7 @@ def _match_shape(tangent, axis_size: int, name: str):
     return arr
 
 
-def _zero_tangent(x):
+def _zero_tangent(x: ArrayLike) -> jax.Array | npt.NDArray[np.void]:
     """A zero tangent of the type JAX expects for ``x``.
 
     Integer outputs (the step counters) take the empty ``float0`` type rather
@@ -329,21 +474,20 @@ def _zero_tangent(x):
 
 
 def make_sensitivity_solver(
-    primal_solver,
-    joint_solver_for,
+    solver_for: Callable[[SensitivitySpec | None], Solver],
     n_vars: int,
     n_params: int,
-    return_stats: bool,
+    *,
     sens_error_control: bool,
-    param_columns: tuple[int, ...] | None = None,
-):
+    sens_param_columns: Sequence[int] | None = None,
+) -> Solver:
     """Attach a forward-sensitivity JVP rule to one solver implementation.
 
-    ``primal_solver(y0, t_span, params)`` runs the plain solve.
-    ``joint_solver_for(spec)`` returns the corresponding solver for the joint
-    ``[y, S]`` system described by ``spec``; its output has the ordinary solver
-    shape, with ``n_aug`` components in place of ``n_vars``.  Both are expected
-    to be already wrapped for ``vmap``: the rule has to sit *outside*
+    ``solver_for(None)`` is the plain solve, ``(y0, t_span, params)``, and
+    ``solver_for(spec)`` the corresponding solver for the joint ``[y, S]``
+    system described by ``spec``; its output has the ordinary solver shape,
+    with ``n_aug`` components in place of ``n_vars``.  Both are expected to be
+    already wrapped for ``vmap``: the rule has to sit *outside*
     ``custom_vmap``, whose JVP path traces to a jaxpr and so instantiates every
     symbolic zero, which would hide exactly the information the rule uses to
     decide which sensitivity blocks to integrate.
@@ -355,13 +499,24 @@ def make_sensitivity_solver(
     transpose it: ``jax.grad`` and ``jax.jacrev`` work off the same rule as
     ``jax.jvp`` and ``jax.jacfwd``, with no adjoint solve.
     """
+    primal_solver = solver_for(None)
+    param_columns = (
+        None
+        if sens_param_columns is None
+        else tuple(int(c) for c in sens_param_columns)
+    )
 
     @jax.custom_jvp
-    def solve_fn(y0, t_span, params):
+    def solve_fn(y0: ArrayLike, t_span: ArrayLike, params: ArrayLike) -> SolveOutput:
         return primal_solver(y0, t_span, params)
 
     @functools.partial(solve_fn.defjvp, symbolic_zeros=True)
-    def solve_jvp(primals, tangents):
+    def solve_jvp(
+        primals: tuple[ArrayLike, ArrayLike, ArrayLike],
+        tangents: tuple[
+            ArrayLike | SymbolicZero, ArrayLike | SymbolicZero, ArrayLike | SymbolicZero
+        ],
+    ) -> tuple[SolveOutput, Any]:
         y0, t_span, params = primals
         dy0, dt_span, dparams = tangents
 
@@ -381,8 +536,8 @@ def make_sensitivity_solver(
         spec = SensitivitySpec(
             n_vars, n_params, wrt_y0, wrt_params, sens_error_control, param_columns
         )
-        out = joint_solver_for(spec)(y0, t_span, params)
-        hist, stats = out if return_stats else (out, None)
+        out = solver_for(spec)(y0, t_span, params)
+        hist, stats = out if isinstance(out, tuple) else (out, None)
         state, sens = split_augmented(hist, spec)
 
         axis_size = state.shape[0]
