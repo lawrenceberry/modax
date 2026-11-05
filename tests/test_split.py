@@ -46,6 +46,18 @@ def test_the_pattern_splits():
     assert split_blocks(np.ones((2, 2)), 2) is None
 
 
+def test_the_driver_is_closed_under_dependence():
+    # 0 drives the coupled pair (1, 2); 3 integrates 0 alone and nothing reads it
+    pattern = np.array([(0, 0), (1, 0), (1, 1), (1, 2), (2, 1), (2, 2), (2, 0), (3, 0)])
+    blocks = split_blocks(pattern, 4, max_driver=2)
+    assert blocks.driver == (0, 3) and blocks.main == (1, 2)
+    assert split_blocks(pattern, 4, max_driver=1).driver == (0,)
+    assert split_blocks(pattern, 4, max_driver=4).driver == (0, 1, 2)  # the pair fits; 3 would empty the main block
+    # a sink that reads the pair stays in the main block
+    pattern = np.vstack([pattern, [(3, 1)]])
+    assert split_blocks(pattern, 4, max_driver=2).driver == (0,)
+
+
 @pytest.mark.parametrize("split", [False, True])
 def test_split_matches_the_exact_solution(split):
     y0 = jnp.array([[0.3, 0.1], [1.0, -0.5]])

@@ -9,9 +9,10 @@ Einstein-Boltzmann hierarchy is the case this was built for (four states that
 every photon multipole reads and that read nothing back), but nothing here
 knows that: the split is found from the pattern alone.
 
-With ``split=True`` the Rodas5P solve takes the leading topological levels of
-the condensation as one driver block, as long as it stays small, and the rest
-as the main block, and integrates them in order inside one kernel:
+With ``split=True`` the Rodas5P solve collects the components that read only
+components already collected into one driver block, as long as it stays small,
+takes the rest as the main block, and integrates them in order inside one
+kernel:
 
 1. The driver takes a Rodas5P step of its own over the outer step, on a dense
    matrix of its size, with a Jacobian that is always fresh (the end-point
@@ -69,7 +70,7 @@ class BlockSplit:
 
     driver: tuple[int, ...]
     main: tuple[int, ...]
-    levels: tuple[tuple[int, ...], ...]
+    levels: tuple[tuple[int, ...], ...]  # the driver's components, in the order they joined
 
     @property
     def n_drv(self) -> int:
@@ -80,12 +81,12 @@ class BlockSplit:
         return len(self.main)
 
 
-def topological_levels(pattern: tuple[tuple[int, ...], ...]) -> tuple[tuple[int, ...], ...]:
-    """The pattern's strongly connected components, grouped by depth in their condensation.
+def components_in_order(pattern: tuple[tuple[int, ...], ...]) -> list[tuple[tuple[int, ...], frozenset[int]]]:
+    """The pattern's strongly connected components in topological order, each with the states it reads.
 
-    Level 0 holds the components nothing feeds into; a component sits one level
-    below the deepest component it reads. Within a level nothing reads anything
-    else of that level.
+    A pair ``(members, reads)`` per component: ``members`` its state indices,
+    ``reads`` the indices outside it that its rows depend on. Nothing reads a
+    component listed after it.
     """
     import networkx as nx
 
@@ -97,13 +98,12 @@ def topological_levels(pattern: tuple[tuple[int, ...], ...]) -> tuple[tuple[int,
             if col != row:
                 graph.add_edge(col, row)  # row depends on col
     condensation = nx.condensation(graph)
-    levels = []
-    for generation in nx.topological_generations(condensation):
-        members: list[int] = []
-        for node in generation:
-            members.extend(condensation.nodes[node]["members"])
-        levels.append(tuple(sorted(members)))
-    return tuple(levels)
+    ordered = []
+    for node in nx.topological_sort(condensation):
+        members = tuple(sorted(condensation.nodes[node]["members"]))
+        reads = frozenset(c for i in members for c in pattern[i]) - frozenset(members)
+        ordered.append((members, reads))
+    return ordered
 
 
 def analyse_blocks(
@@ -111,25 +111,27 @@ def analyse_blocks(
 ) -> BlockSplit | None:
     """The driver and main blocks of a pattern, or ``None`` when it does not split.
 
-    The leading levels are merged into the driver while it holds at most
-    ``max_driver`` states and at least one level is left for the main block.
-    A superset pattern can only merge components, never separate them, so a
-    core declared dense is safe: at worst there is one level and no split.
+    The strongly connected components are taken in topological order, and
+    each joins the driver when everything it reads is already there and the
+    driver stays within ``max_driver`` states, short of the whole system; the
+    rest is the main block. So
+    the driver is closed under "depends on", whatever the rows the main block
+    does not feed (an optical depth that only integrates the driver's opacity
+    joins it too), and a superset pattern, which can only merge components,
+    is safe: at worst nothing splits.
     """
-    levels = topological_levels(pattern)
-    if len(levels) < 2:
-        return None
-    driver: list[int] = []
-    used = 0
-    for level in levels[:-1]:
-        if len(driver) + len(level) > max_driver:
-            break
-        driver.extend(level)
-        used += 1
+    components = components_in_order(pattern)
+    driver: set[int] = set()
+    levels: list[tuple[int, ...]] = []
+    for members, reads in components:
+        size = len(driver) + len(members)
+        if reads <= driver and size <= max_driver and size < len(pattern):
+            driver.update(members)
+            levels.append(members)
     if not driver:
         return None
-    main = sorted(i for level in levels[used:] for i in level)
-    return BlockSplit(tuple(sorted(driver)), tuple(main), levels)
+    main = sorted(set(range(len(pattern))) - driver)
+    return BlockSplit(tuple(sorted(driver)), tuple(main), tuple(levels))
 
 
 def restrict_pattern(pattern, indices: tuple[int, ...]) -> tuple[tuple[int, ...], ...]:
