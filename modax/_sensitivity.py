@@ -262,6 +262,127 @@ def make_augmented_local_writer(ode_fn: OdeFn, spec: SensitivitySpec) -> MLIRDis
     return write_vector
 
 
+@functools.cache
+def _quantity_signature(n_outputs: int, n_vars: int, n_params: int) -> Signature:
+    """The specialisation a :func:`quantity_hook`'s quantities are differentiated in."""
+    return types.UniTuple(types.float64, n_outputs)(
+        types.UniTuple(types.float64, n_vars),
+        types.float64,
+        types.UniTuple(types.float64, n_params),
+    )
+
+
+@functools.cache
+def quantity_hook(
+    quantities: Callable[..., tuple[float, ...]],
+    n_outputs: int,
+    n_vars: int,
+    n_params: int,
+    sensitivity: SensitivitySpec | None = None,
+) -> MLIRDispatcher:
+    """A save hook storing ``quantities(y, t, p)`` at every save, and their tangents.
+
+    ``quantities`` is a device function (or a plain function, compiled as one)
+    of the state, the time and the parameter row returning a tuple of
+    ``n_outputs`` floats: the per-save values a consumer wants instead of the
+    history. The hook stores them save-major, ``n_outputs * (1 + n_sens)``
+    numbers per save, so its ``hook_size`` is that times the number of saves.
+
+    Without ``sensitivity`` (``n_sens = 0``) it stores the values alone, for a
+    plain hooked solve. With it, for the joint launch of
+    ``solve(..., sensitivity=spec)``, it stores after the values of each save
+    their total derivative along every direction ``k`` of the spec, direction
+    after direction::
+
+        dq/d theta_k = (dq/dy) S_k + dq/dp e_k
+
+    (no ``e_k`` term for an initial-state direction), from one Enzyme forward
+    sweep of ``quantities`` seeded with ``(S_k, 0, e_k)``, the sweep the
+    sensitivity equations run on the right-hand side. The derivative is built
+    for the kernel's own target (``compile_target``), so the two link on every
+    GPU, Blackwell included, and the caller needs no Enzyme of its own.
+
+    Parameters
+    ----------
+    quantities : callable
+        ``quantities(y, t, p) -> tuple`` of ``n_outputs`` floats, reading
+        ``y[0:n_vars]`` only.
+    n_outputs : int
+        Length of the tuple ``quantities`` returns.
+    n_vars, n_params : int
+        The problem's state and parameter-row sizes.
+    sensitivity : SensitivitySpec, optional
+        The spec of the joint launch the hook serves.
+
+    Returns
+    -------
+    MLIRDispatcher
+        ``hook(save_idx, y, t, p_row, acc)``, the ``save_hook`` of ``solve``.
+    """
+    if n_outputs < 1:
+        raise ValueError("a quantity hook stores at least one quantity")
+    if sensitivity is not None and (
+        sensitivity.n_vars != n_vars or sensitivity.n_params != n_params
+    ):
+        raise ValueError(
+            f"the sensitivity spec is for {sensitivity.n_vars} variables and "
+            f"{sensitivity.n_params} parameters, the quantities for {n_vars} "
+            f"and {n_params}"
+        )
+    fn_device = as_cuda_device(quantities)
+
+    if sensitivity is None:
+
+        @cuda.jit(device=True)
+        def store_values(save_idx, y, t, p_row, acc):
+            values = fn_device(y, t, p_row)
+            base = n_outputs * save_idx
+            for j in range(n_outputs):
+                acc[base + j] = values[j]
+
+        return store_values
+
+    n_sens = sensitivity.n_sens
+    n_y0_dirs = sensitivity.n_y0_dirs
+    param_cols = sensitivity.param_seed_columns
+    length = max(n_vars, n_params)
+    width = n_outputs * (1 + n_sens)
+    seeds = seed_table(sensitivity)
+    # For the kernel's own target (compile_target), so the two link on Blackwell.
+    tangent_of = jvp(
+        fn_device,
+        signature=_quantity_signature(n_outputs, n_vars, n_params),
+        cc=compile_target(),
+    )
+
+    @cuda.jit(device=True)
+    def store_values_and_tangents(save_idx, y, t, p_row, acc):
+        seed = cuda.const.array_like(seeds)
+        values = fn_device(y, t, p_row)
+        base = width * save_idx
+        for j in range(n_outputs):
+            acc[base + j] = values[j]
+
+        tangent = cuda.local.array(n_outputs, types.float64)
+        for k in range(n_sens):
+            column = n_vars + k * n_vars
+            start = 0 if k < n_y0_dirs else length - param_cols[k - n_y0_dirs]
+            tangent_of(
+                tangent,
+                y[0:n_vars],
+                t,
+                p_row,
+                y[column : column + n_vars],
+                0.0,
+                seed[start : start + n_params],
+            )
+            out = base + n_outputs * (1 + k)
+            for j in range(n_outputs):
+                acc[out + j] = tangent[j]
+
+    return store_values_and_tangents
+
+
 def clear_caches() -> None:
     """Drop the cached device writers and Enzyme derivatives.
 
@@ -272,6 +393,7 @@ def clear_caches() -> None:
     make_second_tangent.cache_clear()
     seed_table.cache_clear()
     make_augmented_local_writer.cache_clear()
+    quantity_hook.cache_clear()
 
 
 def augmented_y0(y0_arr: jax.Array, spec: SensitivitySpec) -> jax.Array:

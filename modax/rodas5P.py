@@ -53,6 +53,9 @@ from modax._sensitivity import (
     make_tangent,
     seed_table,
 )
+
+# Re-exported: the save hook of a quantity and its tangents, for solve(...).
+from modax._sensitivity import quantity_hook as quantity_hook
 from modax._sparse_direct import Ordering, sparse_direct_solver_for
 from modax._sparsity import Pattern, Sparsity, dense_jacobian, normalize_sparsity
 
@@ -1435,6 +1438,12 @@ def solve(
     directional derivative along ``S`` gives a differentiable hooked solve, at
     the cost of a joint launch and no history. ``y0`` is the plain initial
     state; the spec's initial sensitivities are supplied here.
+
+    :func:`quantity_hook` builds such a hook from a device function of
+    ``(y, t, p)`` returning the quantities: it stores them at every save and,
+    given the spec, their tangents along each direction from an Enzyme sweep
+    built for the kernel's own target, so a caller need not differentiate them
+    itself.
     """
     n_vars = jnp.shape(y0)[-1]
     options = KernelOptions(

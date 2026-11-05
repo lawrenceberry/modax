@@ -81,7 +81,7 @@ def test_an_explicit_target_is_validated_as_numba_enzyme_does(device, monkeypatc
 
 
 def test_derivatives_are_built_for_the_kernel_target(device, monkeypatch):
-    """Both tangents carry the target, so they link with the kernel."""
+    """Every tangent carries the target, so it links with the kernel."""
 
     jvp = Mock(side_effect=lambda fn, **options: fn)
     monkeypatch.setattr(_sensitivity, "jvp", jvp)
@@ -93,9 +93,12 @@ def test_derivatives_are_built_for_the_kernel_target(device, monkeypatch):
 
         _sensitivity.make_tangent(rhs, 1, 1)
         _sensitivity.make_second_tangent(rhs, 1, 1)
+        _sensitivity.quantity_hook(
+            rhs, 1, 1, 1, _sensitivity.SensitivitySpec(1, 1, False, True)
+        )
     finally:
         _sensitivity.clear_caches()
-    assert jvp.call_count == 3
+    assert jvp.call_count == 4
     assert all(call.kwargs["cc"] == (9, 0) for call in jvp.call_args_list)
 
 
@@ -139,7 +142,7 @@ def decay(y, t, p):
 @requires_a_blackwell_toolkit
 @pytest.mark.parametrize("with_sensitivities", [False, True])
 def test_rodas5p_links_for_blackwell(pretend_blackwell, with_sensitivities):
-    """The kernel and its Enzyme Jacobian compile for 9.0 and link for 12.0."""
+    """The kernel, its Enzyme Jacobian and its hook compile for 9.0, link for 12.0."""
 
     from modax.rodas5P import HOOK_OUT_ARGTYPE, SOLVER_ARGTYPES, KernelOptions
     from modax.rodas5P import _make_kernel as make_rodas5p_kernel
@@ -149,10 +152,13 @@ def test_rodas5p_links_for_blackwell(pretend_blackwell, with_sensitivities):
         if with_sensitivities
         else None
     )
-    kernel, _ = make_rodas5p_kernel(decay, 2, 2, KernelOptions(spec=spec))
-    cres = bridge.target_kernel(kernel).compile(
-        SOLVER_ARGTYPES + (HOOK_OUT_ARGTYPE,)
-    ).cres
+    # With a quantity hook, whose tangent is a third Enzyme derivative to link.
+    hook = _sensitivity.quantity_hook(lambda y, t, p: (y[0] + y[1],), 1, 2, 2, spec)
+    options = KernelOptions(spec=spec, save_hook=hook, hook_size=4)
+    kernel, _ = make_rodas5p_kernel(decay, 2, 2, options)
+    cres = (
+        bridge.target_kernel(kernel).compile(SOLVER_ARGTYPES + (HOOK_OUT_ARGTYPE,)).cres
+    )
     assert kernel.targetoptions["chip"] == "sm_90"
     assert cres.metadata["cubin"]
 
