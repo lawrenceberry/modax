@@ -155,6 +155,16 @@ def _primal_signature(n_vars: int, n_params: int) -> Signature:
 
 
 @functools.cache
+def _quantity_signature(n_outputs: int, n_vars: int, n_params: int) -> Signature:
+    """The specialisation a :func:`quantity_hook`'s quantities are differentiated in."""
+    return types.UniTuple(types.float64, n_outputs)(
+        types.UniTuple(types.float64, n_vars),
+        types.float64,
+        types.UniTuple(types.float64, n_params),
+    )
+
+
+@functools.cache
 def make_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     """``D f(y, t, p)[u]`` in one forward sweep, for an arbitrary direction.
 
@@ -196,6 +206,24 @@ def make_second_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
         signature=signature,
         cc=cc,
     )
+
+
+@functools.cache
+def make_quantity_tangent(fn, n_outputs: int, n_vars: int, n_params: int) -> Tangent:
+    """``D q(y, t, p)[u]`` for a quantity function of ``n_outputs`` values of ``n_vars`` states."""
+    return jvp(
+        as_cuda_device(fn),
+        signature=_quantity_signature(n_outputs, n_vars, n_params),
+        cc=compile_target(),
+    )
+
+
+@functools.cache
+def make_quantity_second_tangent(fn, n_outputs: int, n_vars: int, n_params: int) -> Tangent:
+    """``D2 q[u, v] + D q[w]`` for a quantity function, forward over forward as :func:`make_second_tangent`."""
+    signature = _quantity_signature(n_outputs, n_vars, n_params)
+    cc = compile_target()
+    return jvp(jvp(as_cuda_device(fn), signature=signature, cc=cc), signature=signature, cc=cc)
 
 
 @functools.cache
@@ -260,16 +288,6 @@ def make_augmented_local_writer(ode_fn: OdeFn, spec: SensitivitySpec) -> MLIRDis
                 out[base + r] = tangent[r]
 
     return write_vector
-
-
-@functools.cache
-def _quantity_signature(n_outputs: int, n_vars: int, n_params: int) -> Signature:
-    """The specialisation a :func:`quantity_hook`'s quantities are differentiated in."""
-    return types.UniTuple(types.float64, n_outputs)(
-        types.UniTuple(types.float64, n_vars),
-        types.float64,
-        types.UniTuple(types.float64, n_params),
-    )
 
 
 @functools.cache

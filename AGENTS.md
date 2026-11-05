@@ -536,59 +536,93 @@ touching the code.
   per thread, so each writes its own local arrays with no barrier inside a
   device function its callers invoke under a divergent `if running`.
 
-### Splitting a one-way-coupled system (`split=True`, `modax/_split.py`)
+### Hierarchies of one-way-coupled blocks (`modax/_hierarchy.py`, `split=True`)
 
-- `solve(..., sparsity=pattern, split=True)` reads the pattern as a graph,
-  takes its strongly connected components in topological order and collects
-  into a *driver* block every component that reads only components already
-  collected, while the block stays within `split_max_driver` states; the rest
-  is the *main* block. The driver is closed under dependence (a row that only
+- `Block(rhs, n, reads=(...), outputs=..., n_outputs=..., sparsity=...)` and
+  `Hierarchy(root, layout=None)` (exported from `modax`) describe a DAG of
+  blocks: a block's `rhs(y, t, p[, q])` takes the quantities the blocks it
+  reads publish (`q`, block after block), and publishes through `outputs(y,
+  t, p[, q])` (its states when `None`). `solve(Hierarchy(root), ...)` takes
+  the blocks' states upstream first (or in `layout`'s order). `solve(...,
+  sparsity=pattern, split=True)` (`modax/_split.py`) finds a two-block
+  hierarchy from a single `ode_fn`: the strongly connected components of the
+  pattern, in topological order, that read only components already taken,
+  within `split_max_driver` states, publish their states (the *driver*);
+  the rest reads them. The driver is closed under dependence (a row that only
   integrates driver states joins it). `split_blocks(pattern, n_vars)` shows
-  the split without compiling anything.
-- The driver steps on its own ahead of the main block, with its own error
-  norm and controller, and keeps a buffer of `DRIVER_NODES` nodes (state,
-  rate, `theta'' = J g + dg/dt`, and the same for its sensitivity rows). The
-  main block's step is clamped to the last node; the quintic Hermite over the
-  main step is built from the dense output's values and first two derivatives
-  at the step's ends, written into the thread's local parameter row, and the
-  generated `main_rhs` reads the driver states from it. Both generated
-  right-hand sides come from the user's `ode_fn`: zeros for the other block's
-  states (dead code after inlining) or the polynomial.
-- **Inherited error.** The main block's estimate takes the driver's dense
-  output as exact, so the driver's error reaches the hierarchy unmeasured.
-  The main block's Jacobian sweep carries one more direction, the driver's
-  error estimate over the driver step seeded through the Hermite block, which
-  returns `b = df/dtheta . epsilon` for free; over the driver step `H` that
-  moves a slow row by `H b` and a self-damping row (the tight coupling) by
-  `b / |J_rr|`, so `H |b| / (1 + H gamma |J_rr|)` against the row's tolerance
-  is the inherited error. It goes into the *driver's* step proposal (the
-  largest since the driver's last step counts like the driver's own estimate),
-  never into the main norm: the driver's error is already made when the main
-  block sees it, and a term that does not shrink with the main step only makes
-  the main controller cut steps without end (ten times the steps when tried).
-  Passing `b` through the main block's own `M^-1` instead was a runaway once
-  the main step was clamped to a shrinking driver step. On DISCO-EB at thermal
-  weight 0.1 it costs 11 percent (0.45 to 0.50 s) and takes P(k) from 5.5e-4
-  to 3.2e-4 of the weight-1 answer.
-- **Warp vote.** Lanes advance their drivers together (`cuda.any_sync` over
-  the warp's `lane_mask`; every lane with room in its buffer steps when any
-  lane needs to). Without it each lane advanced when its own main step ran
-  out of dense output, the warp executed the driver's code at nearly every
-  main step, and the saving over a lockstep split vanished (0.75 s against
-  0.62 s for DISCO-EB's 128 x 128 batch). Every lane stays in the main loop
-  until all are done so that every vote is reached by every lane in the mask.
+  the split without compiling anything. Both generated right-hand sides come
+  from the user's `ode_fn`: zeros for the other block's states (dead code
+  after inlining) or the quintic read from the parameter row
+  (`reads_from_params=True`, which spares the main block a wrapper and the
+  cold build a copy of the 55-state IR).
+- **The kernel is generated source** (`_emit_kernel`): per block its
+  buffers, its node ring (`NODES`, `NODES_SENS` with directions), and an
+  *advance* loop emitted recursively -- a block advances until its dense
+  output reaches what its reader needs, stepping its own upstream first.
+  Every block but the sink keeps nodes (state, rate, `y'' = J y' + df/dt`,
+  the same for its sensitivity rows, and for its published quantities their
+  values and first two derivatives); a reader's step is clamped to the last
+  node of every block it reads; the quintic Hermite over the reader's step
+  is built from the dense outputs at the step's ends and written into the
+  thread's local parameter row (`hermite_slot`), where the reader's generated
+  `rhs_b` evaluates it. The per-block device functions (`_block_functions`)
+  are the step, the joint writer, the Jacobian writer with coupling
+  directions, the second derivatives, and the quantity sweeps.
+- **Inherited error.** A reader's estimate takes the upstream's dense output
+  as exact, so the upstream's error reaches it unmeasured. The reader's
+  Jacobian sweep carries one more direction per upstream, the upstream's
+  (signed) error estimate over the piece the step lies in, seeded through
+  the Hermite values (and through the quantity function: a published
+  quantity's error is `D o[(eps_y, 0, eps_upstream)]`), which returns `b =
+  df/dq . epsilon` for free; over the upstream step `H` that moves a slow row
+  by `H b` and a self-damping row by `b / |J_rr|`, so `H |b| / (1 + H gamma
+  |J_rr|)` against the row's tolerance is the inherited error. It goes into
+  the *upstream's* step proposal (the largest since its last step counts like
+  its own estimate), never into the reader's norm: the upstream's error is
+  already made when the reader sees it, and a term that does not shrink with
+  the reader's step only makes its controller cut steps without end (ten
+  times the steps when tried). Passing `b` through the reader's own `M^-1`
+  instead was a runaway once the step was clamped to a shrinking upstream
+  step. On DISCO-EB at thermal weight 0.1 it costs 11 percent and takes P(k)
+  from 5.5e-4 to 3.2e-4 of the weight-1 answer.
+- **Sensitivities.** A block carries the parameter directions and the
+  initial-state directions of its own and its upstream states (`dirs`,
+  `pos`); its parameter seed for a direction carries the Hermite
+  coefficients of the upstream quantities' sensitivities (`hseed`), so one
+  sweep returns `J_y S + J_p + df/dq S_q`. A published quantity's `S_q` and
+  `S_q'` are first- and second-order sweeps of the quantity function at the
+  node; `S_q''` would be a third-order sweep, which numba-enzyme does not
+  compose (depth 3 miscounts the level arguments), so each piece's end
+  curvatures of `S_q` come from the quintic through value and rate at the
+  piece's start, midpoint and end (`_CURV_LEFT/_RIGHT`, `nQ2` right of a
+  node and `nQ2l` left of it).
+- **Warp vote.** Lanes advance an upstream block together (`cuda.any_sync`
+  over the warp's `lane_mask`; every lane with room in its ring steps when
+  any lane needs to). Without it each lane advanced when its own step ran
+  out of dense output, the warp executed the upstream code at nearly every
+  step, and the saving over a lockstep split vanished (0.75 s against 0.62 s
+  for DISCO-EB's 128 x 128 batch). Every lane stays in every loop that votes
+  until all are done, so the generated code guards per-lane work with `if`,
+  never `continue`, around a nested vote.
 - The eight Rosenbrock stages of a block are one loop that dispatches to
   literal-coefficient stage functions: numba's untyped inlining deep-copies
   the inlined right-hand side at every call site at every level of the call
   tree, and eight call sites per block cost a 50-state system ten minutes of
-  `copy.deepcopy`; one site per block builds in under three.
-- Forward sensitivities ride on both blocks; the main block's parameter seed
-  for a direction carries the Hermite coefficients of the driver's
-  sensitivity in that direction (`hseed`), so one sweep returns
-  `J_y S + J_p + df/dtheta S_theta`.
-- Write exponentials with a capped argument in a driver's providers: an
-  `exp` that overflows to `inf` makes the sweep's derivative `inf/inf = NaN`,
-  and a NaN error norm rejects the driver's step forever.
+  `copy.deepcopy`; one site per block builds in under three. The generated
+  right-hand sides, the sparse solver, the Jacobian writers and the steps are
+  compiled on their own (`inline="never"`): DISCO-EB's 55-state kernel builds
+  in 35-40 s.
+- numba-cuda-mlir's LLVM 7 translation: an array element re-read inside the
+  branch of a comparison on it (`if fabs(a[q, j]) > ...: x = a[q, j]`)
+  comes out as bitcode libNVVM cannot parse ("Invalid record"); read it into
+  a local first. A ternary over two arrays becomes a select of memrefs; use
+  two loops.
+- Write exponentials with a capped argument in an upstream block's
+  providers: an `exp` that overflows to `inf` makes the sweep's derivative
+  `inf/inf = NaN`, and a NaN error norm rejects the block's step forever.
+- `tests/test_hierarchy.py` pins a three-block diamond with nonlinear
+  published quantities (and its sensitivities) against the joint solve;
+  `tests/test_split.py` the pattern split.
 
 ### Kernel cache (`modax/_kernel_cache.py`)
 

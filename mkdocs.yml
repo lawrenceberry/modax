@@ -60,6 +60,7 @@ nav:
     - Choosing a solver: usage/solvers.md
     - Running a solver: usage/running.md
     - Exploiting sparsity: usage/sparse.md
+    - Hierarchies of blocks: usage/hierarchies.md
     - Computing gradients: usage/gradients.md
   - Examples:
     - Parameter estimation: examples/parameter-estimation.md

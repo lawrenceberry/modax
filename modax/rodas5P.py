@@ -25,6 +25,7 @@ from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.descriptor import MLIRDispatcher
 
 from modax._codegen import compile_device_source
+from modax._hierarchy import as_hierarchy
 from modax._jax_common import (
     ensemble_ffi_call,
     make_custom_vmap_solver,
@@ -1088,12 +1089,17 @@ def split_blocks(sparsity: Sparsity, n_vars: int, max_driver: int = 16):
 def _make_jax_launch(
     ode_fn: OdeFn, n: int, n_vars: int, n_params: int, options: KernelOptions
 ) -> CudaLaunch:
+    from modax._hierarchy import as_hierarchy, make_hierarchy_kernel
+
+    hierarchy = as_hierarchy(ode_fn)
     blocks = None
-    if options.split and options.sparsity is not None:
+    if hierarchy is None and options.split and options.sparsity is not None:
         from modax._split import analyse_blocks, make_split_kernel
 
         blocks = analyse_blocks(options.sparsity, options.split_max_driver)
-    if blocks is not None:
+    if hierarchy is not None:
+        kernel, trajectories_per_block = make_hierarchy_kernel(hierarchy, n_params, options)
+    elif blocks is not None:
         kernel, trajectories_per_block = make_split_kernel(ode_fn, n_vars, n_params, options, blocks)
     else:
         kernel, trajectories_per_block = _make_kernel(ode_fn, n_vars, n_params, options)
@@ -1504,6 +1510,12 @@ def solve(
     (:mod:`modax._kernel_cache`), so a later process loads it in a second.
     """
     n_vars = jnp.shape(y0)[-1]
+    hierarchy = as_hierarchy(ode_fn)
+    if hierarchy is not None:
+        if hierarchy.n_vars != n_vars:
+            raise ValueError(f"the hierarchy has {hierarchy.n_vars} states, y0 has {n_vars}")
+        if sparsity is not None:
+            raise ValueError("a hierarchy's blocks carry their own sparsity; pass none to solve")
     options = KernelOptions(
         gains=PIDGains(pcoeff, icoeff, dcoeff),
         lu_precision=lu_precision,
