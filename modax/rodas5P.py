@@ -309,7 +309,7 @@ def _make_literal_seed_jacobian(
     namespace: dict[str, object],
     inline: str = "always",
     batch: int | None = None,
-    coupling_slots: Sequence[tuple[int, ...]] = (),
+    coupling: int = 0,
 ) -> MLIRDispatcher:
     """Generate the Jacobian writer with every colour's seed row spelled out.
 
@@ -319,15 +319,15 @@ def _make_literal_seed_jacobian(
     (``df/dt`` into ``dT``) is one more direction of the same batched calls,
     so with ``batch`` given the directions go in equal batches of at most
     that many, padded with zero directions, and Enzyme lowers the primal for
-    one arity instead of one per batch size. ``coupling_slots`` adds one
-    direction per entry, a unit seed on those parameter columns, whose
-    result goes to row ``k`` of the writer's extra ``coup`` argument
-    (``(len(coupling_slots), n_vars)``): the split kernel seeds the Hermite
-    values of each upstream output and reads off ``df/dq``.
+    one arity instead of one per batch size. ``coupling`` adds that many
+    directions seeded at run time: the writer then takes ``p_seed``, a
+    ``(coupling, n_params)`` array of parameter seeds, and ``coup``, a
+    ``(coupling, n_vars)`` array that receives ``df/dp . p_seed[k]`` for each;
+    the split kernel seeds an upstream block's error through its Hermite
+    values and reads off the error rate it hands down.
     """
     zero_row = n_colours
-    n_coupling = len(coupling_slots)
-    n_directions = n_colours + 1 + n_coupling
+    n_directions = n_colours + 1 + coupling
     if batch is None:
         batch = SEED_BATCH
     else:
@@ -343,26 +343,27 @@ def _make_literal_seed_jacobian(
                 if slot >= 0:
                     yield row, slot
 
-    # (state seed row, time seed, parameter seed row): the colours, the time
+    # (state seed row, time seed, parameter seed): the colours, the time
     # direction, the coupling directions, then zero directions to fill the
     # last batch (their results are not read)
-    directions = [(g, "0.0", zero_row) for g in range(n_colours)] + [(zero_row, "1.0", zero_row)]
-    directions += [(zero_row, "0.0", zero_row + 1 + k) for k in range(n_coupling)]
-    directions += [(zero_row, "0.0", zero_row)] * (-len(directions) % batch)
+    zero_p = f"seed[{zero_row}, 0:{n_params}]"
+    directions = [(g, "0.0", zero_p) for g in range(n_colours)] + [(zero_row, "1.0", zero_p)]
+    directions += [(zero_row, "0.0", f"p_seed[{k}]") for k in range(coupling)]
+    directions += [(zero_row, "0.0", zero_p)] * (-len(directions) % batch)
 
-    def stores(direction: tuple[int, str, int], value_of: Callable[[int], str]) -> list[str]:
-        g, dt_seed, p_row = direction
+    def stores(direction: tuple[int, str, str], value_of: Callable[[int], str]) -> list[str]:
+        g, dt_seed, p_seed = direction
         if dt_seed == "1.0":
             return [f"    dT[{row}] = {value_of(row)}" for row in range(n_vars)]
-        if p_row > zero_row:
-            k = p_row - zero_row - 1
+        if p_seed.startswith("p_seed"):
+            k = p_seed[len("p_seed[") : -1]
             return [f"    coup[{k}, {row}] = {value_of(row)}" for row in range(n_vars)]
         if g == zero_row:
             return []  # padding
         return [f"    lu[{slot}] = lu_dtype(-{value_of(row)})" for row, slot in slots_for(g)]
 
     lines = [
-        "def write_negated_jacobian(y_local, t, p_row, lu, dT" + (", coup):" if n_coupling else "):"),
+        "def write_negated_jacobian(y_local, t, p_row, lu, dT" + (", p_seed, coup):" if coupling else "):"),
         "    seed = cuda.const.array_like(colour_seeds)",
         f"    column = cuda.local.array({n_vars}, float64)",
         "    clear_matrix(lu)",
@@ -372,15 +373,11 @@ def _make_literal_seed_jacobian(
     for start in range(0, len(directions), batch):
         group = directions[start : start + batch]
         if len(group) == 1:
-            g, dt_seed, p_row = group[0]
-            lines.append(
-                f"    tangent_of(column, y_local, t, p_row, seed[{g}, 0:{n_vars}], {dt_seed}, seed[{p_row}, 0:{n_params}])"
-            )
+            g, dt_seed, p_seed = group[0]
+            lines.append(f"    tangent_of(column, y_local, t, p_row, seed[{g}, 0:{n_vars}], {dt_seed}, {p_seed})")
             lines += stores(group[0], lambda row: f"column[{row}]")
         else:
-            dirs = ", ".join(
-                f"seed[{g}, 0:{n_vars}], {dt_seed}, seed[{p_row}, 0:{n_params}]" for g, dt_seed, p_row in group
-            )
+            dirs = ", ".join(f"seed[{g}, 0:{n_vars}], {dt_seed}, {p_seed}" for g, dt_seed, p_seed in group)
             lines.append(f"    tangent_of(block, y_local, t, p_row, {dirs})")
             for k, direction in enumerate(group):
                 lines += stores(direction, lambda row, k=k: f"block[{k}, {row}]")
