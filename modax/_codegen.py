@@ -10,28 +10,31 @@ text they produce, which is what this module does once.
 
 from __future__ import annotations
 
-import itertools
+import hashlib
 import linecache
 
 from numba_cuda_mlir import cuda
 
-_SOURCES = itertools.count(1)
-
-
-def compile_device_source(name: str, lines: list[str], namespace: dict | None = None):
+def compile_device_source(name: str, lines: list[str], namespace: dict | None = None, inline: str = "always"):
     """Exec ``lines`` defining ``name`` and return it as a device function.
 
     The source is registered with ``linecache`` under a filename of its own, so
     a numba typing error inside it points at the offending line rather than at
     nothing, and the text stays readable from a debugger as
     ``fn._generated_source``. ``namespace`` supplies whatever the generated body
-    refers to by name.
+    refers to by name. ``inline="never"`` keeps the function out of numba's
+    IR-level inlining (and LLVM's): numba deep-copies an inlined callee's IR at
+    every call site at every level of the call tree, which for a generated
+    right-hand side of fifty states is minutes of build time, where a call
+    costs the kernel nothing it can measure.
     """
     source = "\n".join(lines) + "\n"
-    filename = f"<modax generated {name} {next(_SOURCES)}>"
+    # named by the source's digest, so that the name (and the cache files of a
+    # function compiled on its own) are the same in every process
+    filename = f"<modax generated {name} {hashlib.sha256(source.encode()).hexdigest()[:12]}>"
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
     scope: dict = {}
     exec(compile(source, filename, "exec"), dict(namespace or {}), scope)  # noqa: S102
     generated = scope[name]
     generated._generated_source = source
-    return cuda.jit(device=True)(generated)
+    return cuda.jit(device=True, inline=inline)(generated)

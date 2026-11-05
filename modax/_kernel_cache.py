@@ -21,8 +21,11 @@ import hashlib
 import types
 from importlib.metadata import PackageNotFoundError, version
 
+import os
+
 import numpy as np
-from numba_cuda_mlir.caching import MLIRCache
+from numba_cuda_mlir.caching import MLIRCache, MLIRCacheImpl
+from numba_cuda_mlir.numba_cuda.core.caching import CacheImpl, _CacheLocator
 
 _SCALARS = (int, float, complex, bool, str, bytes, type(None))
 
@@ -115,8 +118,40 @@ def content_digest(root) -> str:
     return hasher.hexdigest()
 
 
+class _GeneratedLocator(_CacheLocator):
+    """Where a function generated from source (:mod:`modax._codegen`) is cached: beside this package.
+
+    numba's locators want a source file on disk; a generated function has
+    only its ``<modax generated ...>`` name. Its freshness is in the content
+    digest of the key, so the source stamp is constant.
+    """
+
+    def __init__(self, py_func):
+        self._name = py_func.__name__
+        self._cache_path = os.environ.get("NUMBA_CACHE_DIR") or os.path.join(os.path.dirname(__file__), "__pycache__")
+
+    def get_cache_path(self):
+        return self._cache_path
+
+    def get_source_stamp(self):
+        return 0
+
+    def get_disambiguator(self):
+        return self._name
+
+    @classmethod
+    def from_function(cls, py_func, py_file):
+        return cls(py_func) if str(py_file).startswith("<modax generated") else None
+
+
+class _ContentKeyedImpl(MLIRCacheImpl):
+    _locator_classes = [_GeneratedLocator, *CacheImpl._locator_classes]
+
+
 class ContentKeyedCache(MLIRCache):
     """numba-cuda-mlir's kernel cache with :func:`content_digest` in place of the closure pickle."""
+
+    _impl_class = _ContentKeyedImpl
 
     def __init__(self, py_func, targetoptions, digest: str):
         self._digest = digest

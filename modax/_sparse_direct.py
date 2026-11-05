@@ -405,14 +405,14 @@ class SparseDirectSolver:
 
     ipiv_size = 1
 
-    def __init__(self, layout: SparseLULayout, compressed: CompressedJacobian):
+    def __init__(self, layout: SparseLULayout, compressed: CompressedJacobian, inline: str = "always"):
         self.layout = layout
         self.compressed = compressed
         # Resolved once and handed to both, since it is the expensive part of
         # the analysis and the factorisation is the only thing that needs it.
         ops = layout.factorization_ops()
-        self.factorize_local = _make_factorize(layout, ops)
-        self.solve_local = _make_solve(layout)
+        self.factorize_local = _make_factorize(layout, ops, inline)
+        self.solve_local = _make_solve(layout, inline)
 
     @property
     def nnz(self) -> int:
@@ -429,16 +429,17 @@ class SparseDirectSolver:
 
 @functools.cache
 def sparse_direct_solver_for(
-    pattern: tuple[tuple[int, ...], ...], ordering: str = "amd"
+    pattern: tuple[tuple[int, ...], ...], ordering: str = "amd", inline: str = "always"
 ) -> SparseDirectSolver:
     """Compile a direct sparse solver for a *normalised* pattern.
 
     This is what the kernel builder calls, since it has already normalised what
     the caller passed as ``sparsity``. Cached on the pattern, so asking twice
     gets the same compiled device functions and the kernel's own cache hits.
+    ``inline`` is passed to :func:`modax._codegen.compile_device_source`.
     """
     layout = analyse(pattern, ordering)
-    return SparseDirectSolver(layout, compressed_jacobian(pattern, layout))
+    return SparseDirectSolver(layout, compressed_jacobian(pattern, layout), inline)
 
 
 def sparse_direct_solver(sparsity, n_vars: int, *, ordering: str = "amd"):
@@ -469,7 +470,7 @@ MAX_UNROLLED_SUBSTITUTIONS = 2048
 MAX_UNROLLED_UPDATES = 8192
 
 
-def _make_factorize(layout: SparseLULayout, ops):
+def _make_factorize(layout: SparseLULayout, ops, inline: str = "always"):
     """Up-looking LU of ``M``, in place, no pivoting.
 
     Row ``i`` is finished before row ``i + 1`` begins, so by the time the
@@ -498,7 +499,7 @@ def _make_factorize(layout: SparseLULayout, ops):
     pivot_of = layout.diag_ptr[layout.col_ind]
 
     if destination.size <= MAX_UNROLLED_UPDATES:
-        return _unrolled_factorize(layout, dst_start, destination, pivot_of, upper_end)
+        return _unrolled_factorize(layout, dst_start, destination, pivot_of, upper_end, inline)
 
     tables, (ROW, DIAG, PIVOT, START, END, DST) = _pack(
         layout.row_ptr, layout.diag_ptr, pivot_of, dst_start, upper_end, destination
@@ -522,7 +523,7 @@ def _make_factorize(layout: SparseLULayout, ops):
     return sparse_direct_factorize
 
 
-def _unrolled_factorize(layout, dst_start, destination, pivot_of, upper_end):
+def _unrolled_factorize(layout, dst_start, destination, pivot_of, upper_end, inline="always"):
     """Generate the factorisation with every slot spelled out as a literal.
 
     Each multiplier gets its own name rather than reusing one, so the only
@@ -543,10 +544,10 @@ def _unrolled_factorize(layout, dst_start, destination, pivot_of, upper_end):
                 q += 1
         pivot = int(diag_ptr[i])
         lines.append(f"    lu[{pivot}] = 1.0 / lu[{pivot}]")
-    return compile_device_source("sparse_direct_factorize", lines)
+    return compile_device_source("sparse_direct_factorize", lines, inline=inline)
 
 
-def _make_solve(layout: SparseLULayout):
+def _make_solve(layout: SparseLULayout, inline: str = "always"):
     """The two triangular solves: ``M x = rhs`` in place, sparse both ways.
 
     Each sweep touches only the nonzeros -- ``nnz(L) + nnz(U)`` multiply-adds
@@ -576,7 +577,7 @@ def _make_solve(layout: SparseLULayout):
     _, _, substitutions = layout.flop_counts()
 
     if substitutions <= MAX_UNROLLED_SUBSTITUTIONS:
-        return _unrolled_solve(n, row_ptr, diag_ptr, origin, col_origin)
+        return _unrolled_solve(n, row_ptr, diag_ptr, origin, col_origin, inline)
 
     tables, (ROW, DIAG, ROW_ORIG, COL_ORIG) = _pack(
         row_ptr, diag_ptr, origin, col_origin
@@ -602,7 +603,7 @@ def _make_solve(layout: SparseLULayout):
     return sparse_direct_solve
 
 
-def _unrolled_solve(n, row_ptr, diag_ptr, origin, col_origin):
+def _unrolled_solve(n, row_ptr, diag_ptr, origin, col_origin, inline="always"):
     """Generate the two sweeps with every slot spelled out as a literal."""
 
     def terms(span):
@@ -619,7 +620,7 @@ def _unrolled_solve(n, row_ptr, diag_ptr, origin, col_origin):
         row, pivot = int(origin[i]), int(diag_ptr[i])
         upper = range(pivot + 1, int(row_ptr[i + 1]))
         lines.append(f"    rhs[{row}] = (rhs[{row}]{terms(upper)}) * lu[{pivot}]")
-    return compile_device_source("sparse_direct_solve", lines)
+    return compile_device_source("sparse_direct_solve", lines, inline=inline)
 
 
 def _pack(*arrays):

@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import functools
 import math
+import os as _os
 from dataclasses import dataclass
 from typing import Any
 
@@ -183,7 +184,9 @@ def generate_driver_rhs(ode_fn, n_vars: int, split: BlockSplit):
         "    f = ode_fn(y, t, p)",
         "    return (" + ", ".join(f"f[{i}]" for i in split.driver) + ",)",
     ]
-    return compile_device_source("driver_rhs", lines, {"ode_fn": as_cuda_device(ode_fn)})
+    # not inlined by numba (see compile_device_source), except that numba-cuda-mlir
+    # cannot return a one-tuple from a called device function
+    return compile_device_source("driver_rhs", lines, {"ode_fn": as_cuda_device(ode_fn)}, inline="never" if split.n_drv > 1 else "always")
 
 
 def generate_main_rhs(ode_fn, n_vars: int, split: BlockSplit, drv_col: int):
@@ -209,7 +212,7 @@ def generate_main_rhs(ode_fn, n_vars: int, split: BlockSplit, drv_col: int):
         "    f = ode_fn(y, t, p)",
         "    return (" + ", ".join(f"f[{i}]" for i in split.main) + ",)",
     ]
-    return compile_device_source("main_rhs", lines, {"ode_fn": as_cuda_device(ode_fn)})
+    return compile_device_source("main_rhs", lines, {"ode_fn": as_cuda_device(ode_fn)}, inline="never" if split.n_main > 1 else "always")
 
 
 @cuda.jit(device=True)
@@ -263,7 +266,11 @@ def quintic_d2(c0, c1, c2, c3, c4, c5, s, h):
 DRIVER_NODES = 12
 """Nodes of the driver's dense output a thread keeps: the main block's next step
 must end at or before the last of them, so this bounds how far the driver runs
-ahead (and the local memory it takes, ``3 * DRIVER_NODES`` driver states)."""
+ahead (and the local memory it takes, ``3 * DRIVER_NODES`` driver states with
+their sensitivity rows; with sensitivities on, a thread keeps
+:data:`DRIVER_NODES_SENS`)."""
+
+DRIVER_NODES_SENS = 4
 
 
 # --- the kernel -------------------------------------------------------------------------
@@ -353,6 +360,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
     HSEED_COLS = max(1, 6 * n_drv)
     N_AUG = n_vars * (1 + n_sens)
     Y_SAVE_LEN = N_AUG if options.save_hook is not None else 1
+    N_NODES = DRIVER_NODES if n_sens_d == 0 else DRIVER_NODES_SENS
     # numba's SSA pass recurses once per basic block, and this kernel has many.
     import sys
 
@@ -377,7 +385,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         m_factorize, m_solve = R.dense_lu_solver(n_main)
         m_ipiv = n_main
     else:
-        main_solver = sparse_direct_solver_for(restrict_pattern(options.sparsity, M), options.ordering)
+        main_solver = sparse_direct_solver_for(restrict_pattern(options.sparsity, M), options.ordering, "never")
         main_structure = main_solver.compressed
         m_factorize, m_solve = main_solver.factorize_local, main_solver.solve_local
         m_ipiv = main_solver.ipiv_size
@@ -426,12 +434,14 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         namespace=dict(cuda=cuda, float64=types.float64, tangent_of=main_tangent,
                        colour_seeds=main_structure.seed_table(n_params_local), clear_matrix=m_clear,
                        lu_dtype=lu_dtype),
+        inline="never", batch=main_structure.n_colours + 1,
     )
     write_driver_jacobian = R._make_literal_seed_jacobian(
         n_vars=n_drv, n_params=n_params_local, n_colours=d_structure.n_colours, store_table=d_store,
         namespace=dict(cuda=cuda, float64=types.float64, tangent_of=drv_tangent,
                        colour_seeds=d_structure.seed_table(n_params_local), clear_matrix=d_clear,
                        lu_dtype=np.float64),
+        inline="never", batch=d_structure.n_colours + 1,
     )
 
     # -- the seeds of the sensitivity sweeps ----------------------------------------
@@ -467,31 +477,54 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
             pbuf[col] = 1.0
 
     # -- joint right-hand sides [f, J S + J_p] ---------------------------------------
-    @cuda.jit(device=True)
-    def write_driver(z, t, p_local, out, pbuf, zero):
-        values = driver_device(z, t, p_local)
-        for j in range(n_drv):
-            out[j] = values[j]
-        tangent = cuda.local.array(n_drv, types.float64)
-        for kd in range(n_sens_d):
-            base = n_drv + kd * n_drv
-            seed_driver(kd, pbuf)
-            drv_tangent(tangent, z, t, p_local, z[base : base + n_drv], 0.0, pbuf)
-            for r in range(n_drv):
-                out[base + r] = tangent[r]
+    # Without directions the sensitivity loops are left out rather than run
+    # zero times: numba types a loop body it never enters, and typing the
+    # tangent call builds a derivative of that arity.
+    if n_sens_d > 0:
 
-    @cuda.jit(device=True)
-    def write_main(z, t, p_local, out, pbuf, hseed, zero):
-        values = main_device(z, t, p_local)
-        for j in range(n_main):
-            out[j] = values[j]
-        tangent = cuda.local.array(n_main, types.float64)
-        for k in range(n_sens):
-            base = n_main + k * n_main
-            seed_main(k, pbuf, hseed)
-            main_tangent(tangent, z, t, p_local, z[base : base + n_main], 0.0, pbuf)
-            for r in range(n_main):
-                out[base + r] = tangent[r]
+        @cuda.jit(device=True)
+        def write_driver(z, t, p_local, out, pbuf, zero):
+            values = driver_device(z, t, p_local)
+            for j in range(n_drv):
+                out[j] = values[j]
+            tangent = cuda.local.array(n_drv, types.float64)
+            for kd in range(n_sens_d):
+                base = n_drv + kd * n_drv
+                seed_driver(kd, pbuf)
+                drv_tangent(tangent, z, t, p_local, z[base : base + n_drv], 0.0, pbuf)
+                for r in range(n_drv):
+                    out[base + r] = tangent[r]
+
+    else:
+
+        @cuda.jit(device=True)
+        def write_driver(z, t, p_local, out, pbuf, zero):
+            values = driver_device(z, t, p_local)
+            for j in range(n_drv):
+                out[j] = values[j]
+
+    if n_sens > 0:
+
+        @cuda.jit(device=True)
+        def write_main(z, t, p_local, out, pbuf, hseed, zero):
+            values = main_device(z, t, p_local)
+            for j in range(n_main):
+                out[j] = values[j]
+            tangent = cuda.local.array(n_main, types.float64)
+            for k in range(n_sens):
+                base = n_main + k * n_main
+                seed_main(k, pbuf, hseed)
+                main_tangent(tangent, z, t, p_local, z[base : base + n_main], 0.0, pbuf)
+                for r in range(n_main):
+                    out[base + r] = tangent[r]
+
+    else:
+
+        @cuda.jit(device=True)
+        def write_main(z, t, p_local, out, pbuf, hseed, zero):
+            values = main_device(z, t, p_local)
+            for j in range(n_main):
+                out[j] = values[j]
 
     # dF/dt of the sensitivity rows (second-order sweep seeded with the time direction)
     if HAS_SENS:
@@ -659,7 +692,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         # copied the inlined right-hand side eight times over at every level
         # of the call tree, minutes of deep copies for a 50-state system. The
         # stage number picks the literal stage function.
-        @cuda.jit(device=True)
+        @cuda.jit(device=True, inline="never")
         def stage(s, lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero):
             if s == 0:
                 s0(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
@@ -701,7 +734,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
     d_stage, d_advance = make_block(n_drv, size_d, n_sens_d, d_solve, np.float64, drv_second, seed_driver, False)
     T_AFTER = np.asarray((C2, C3, C4, C5, 1.0, 1.0, 1.0, 0.0))  # the time of the state after stage s
 
-    @cuda.jit(device=True)
+    @cuda.jit(device=True, inline="never")
     def driver_step(th, u, work, dT, kd, lu, ipiv, rhs, p_local, t, dt_use, pbuf, zero):
         """One Rodas5P step of the driver block from ``th``; leaves ``u + kd[7]`` as the candidate."""
         inv_dt = 1.0 / dt_use
@@ -717,7 +750,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                 d_advance(s, u, th, kd)
                 write_driver(u, t + t_after[s] * dt_use, p_local, work, pbuf, zero)
 
-    @cuda.jit(device=True)
+    @cuda.jit(device=True, inline="never")
     def main_step(y, u, work, dT, k_stages, lu, ipiv, rhs, p_local, t, dt_use, pbuf, hseed, zero):
         """One Rodas5P step of the main block from ``y``; leaves ``u + k_stages[7]`` as the candidate."""
         inv_dt = 1.0 / dt_use
@@ -823,8 +856,15 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                     for q in range(6):
                         hseed[k, c + q] = 0.0
 
+    # What is compiled on its own (inline="never"): the generated right-hand
+    # sides, the sparse solver, the Jacobian writers and the two steps (the
+    # dense-output reader and the Hermite writer, called once per main step,
+    # cost 5 percent of the solve as calls). numba deep-copies an inlined
+    # callee's IR at every call site at every level of the call tree, and
+    # these are the large ones; measured on DISCO-EB's 55-state system the
+    # calls cost the solve nothing and the cold build fell from about ten
+    # minutes to under forty seconds.
     jit_options: dict[str, Any] = {} if options.max_registers is None else {"max_registers": options.max_registers}
-    import os as _os
 
     if _os.environ.get("MODAX_SPLIT_DUMP_MLIR"):
         jit_options["dump_mlir"] = True
@@ -863,10 +903,10 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         g1 = cuda.local.array(size_d, np.float64)
         s20 = cuda.local.array(size_d, np.float64)
         s21 = cuda.local.array(size_d, np.float64)
-        node_t = cuda.local.array(DRIVER_NODES, np.float64)
-        node_th = cuda.local.array((DRIVER_NODES, size_d), np.float64)
-        node_g = cuda.local.array((DRIVER_NODES, size_d), np.float64)
-        node_s2 = cuda.local.array((DRIVER_NODES, size_d), np.float64)
+        node_t = cuda.local.array(N_NODES, np.float64)
+        node_th = cuda.local.array((N_NODES, size_d), np.float64)
+        node_g = cuda.local.array((N_NODES, size_d), np.float64)
+        node_s2 = cuda.local.array((N_NODES, size_d), np.float64)
         th_a = cuda.local.array(size_d, np.float64)
         g_a = cuda.local.array(size_d, np.float64)
         s2_a = cuda.local.array(size_d, np.float64)
@@ -969,13 +1009,13 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
             # its last node against that node's Jacobian (FSAL), accepted or
             # rejected by the driver's own error norm and controller.
             need = (running and node_t[n_nodes - 1] < t + dt and node_t[n_nodes - 1] < tf_local
-                    and n_nodes < DRIVER_NODES)
+                    and n_nodes < N_NODES)
             while cuda.any_sync(lane_mask, need):
                 # Every lane with room for a node steps with the warp, needed or
                 # not: lanes that only stepped when they had to reached their
                 # steps at different moments, and the warp ran the driver's code
                 # at nearly every main step.
-                if not (running and node_t[n_nodes - 1] < tf_local and n_nodes < DRIVER_NODES
+                if not (running and node_t[n_nodes - 1] < tf_local and n_nodes < N_NODES
                         and n_steps + n_steps_d < max_steps):
                     need = False
                     continue
@@ -1045,7 +1085,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                         node_s2[n_nodes, j] = s21[j]
                     n_nodes += 1
                 need = (accept_d and node_t[n_nodes - 1] < t + dt and node_t[n_nodes - 1] < tf_local
-                        and n_nodes < DRIVER_NODES and n_steps + n_steps_d < max_steps)
+                        and n_nodes < N_NODES and n_steps + n_steps_d < max_steps)
             if not running or n_nodes < 2:
                 continue  # this lane is done, or out of steps before its driver could move
 

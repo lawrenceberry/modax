@@ -259,15 +259,27 @@ def dense_lu_solver(n_vars: int):
 SEED_BATCH = 8
 
 
-def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, namespace):
+def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, namespace, inline="always", batch=None):
     """Generate the Jacobian writer with every colour's seed row spelled out.
 
     ``store_table`` is the layout's destination table, ``(row, colour) ->
     slot`` with ``-1`` for none, or ``None`` for the plain colour grid where
-    entry ``(row, g)`` sits at ``row * n_colours + g``.
+    entry ``(row, g)`` sits at ``row * n_colours + g``. The time sweep
+    (``df/dt`` into ``dT``) is one more direction of the same batched calls,
+    so with ``batch`` at least ``n_colours + 1`` the writer is a single call
+    of the derivative, and Enzyme lowers the primal for one arity instead of
+    one per batch size.
     """
     zero_row = n_colours
-    batch = SEED_BATCH
+    n_directions = n_colours + 1
+    if batch is None:
+        batch = SEED_BATCH
+    else:
+        # equal batches of at most ``batch`` directions, padded with zero
+        # directions, so that every call has one arity and Enzyme lowers the
+        # primal once (a lowering per arity is the expensive half of a build)
+        n_batches = -(-n_directions // min(int(batch), SEED_BATCH))
+        batch = -(-n_directions // n_batches)
 
     def slots_for(g):
         for row in range(n_vars):
@@ -278,6 +290,19 @@ def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, nam
                 if slot >= 0:
                     yield row, slot
 
+    # (seed row, time seed): the colours, then the time direction, then zero
+    # directions to fill the last batch (their results are not read)
+    directions = [(g, "0.0") for g in range(n_colours)] + [(zero_row, "1.0")]
+    directions += [(zero_row, "0.0")] * (-len(directions) % batch)
+
+    def stores(direction, value_of):
+        g, dt_seed = direction
+        if dt_seed == "1.0":
+            return [f"    dT[{row}] = {value_of(row)}" for row in range(n_vars)]
+        if g == zero_row:
+            return []  # padding
+        return [f"    lu[{slot}] = lu_dtype(-{value_of(row)})" for row, slot in slots_for(g)]
+
     lines = [
         "def write_negated_jacobian(y_local, t, p_row, lu, dT):",
         "    seed = cuda.const.array_like(colour_seeds)",
@@ -286,32 +311,23 @@ def _make_literal_seed_jacobian(*, n_vars, n_params, n_colours, store_table, nam
     ]
     if batch > 1:
         lines.append(f"    block = cuda.local.array(({batch}, {n_vars}), float64)")
-    for start in range(0, n_colours, batch):
-        group = list(range(start, min(start + batch, n_colours)))
+    for start in range(0, len(directions), batch):
+        group = directions[start : start + batch]
         if len(group) == 1:
-            g = group[0]
+            g, dt_seed = group[0]
             lines.append(
-                f"    tangent_of(column, y_local, t, p_row, seed[{g}, 0:{n_vars}], 0.0, "
+                f"    tangent_of(column, y_local, t, p_row, seed[{g}, 0:{n_vars}], {dt_seed}, "
                 f"seed[{zero_row}, 0:{n_params}])"
             )
-            for row, slot in slots_for(g):
-                lines.append(f"    lu[{slot}] = lu_dtype(-column[{row}])")
+            lines += stores(group[0], lambda row: f"column[{row}]")
         else:
             dirs = ", ".join(
-                f"seed[{g}, 0:{n_vars}], 0.0, seed[{zero_row}, 0:{n_params}]"
-                for g in group
+                f"seed[{g}, 0:{n_vars}], {dt_seed}, seed[{zero_row}, 0:{n_params}]" for g, dt_seed in group
             )
             lines.append(f"    tangent_of(block, y_local, t, p_row, {dirs})")
-            for k, g in enumerate(group):
-                for row, slot in slots_for(g):
-                    lines.append(f"    lu[{slot}] = lu_dtype(-block[{k}, {row}])")
-    lines += [
-        f"    tangent_of(column, y_local, t, p_row, seed[{zero_row}, 0:{n_vars}], 1.0, "
-        f"seed[{zero_row}, 0:{n_params}])",
-        f"    for row in range({n_vars}):",
-        "        dT[row] = column[row]",
-    ]
-    return compile_device_source("write_negated_jacobian", lines, namespace)
+            for k, direction in enumerate(group):
+                lines += stores(direction, lambda row, k=k: f"block[{k}, {row}]")
+    return compile_device_source("write_negated_jacobian", lines, namespace, inline=inline)
 
 
 @functools.cache
