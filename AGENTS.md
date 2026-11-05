@@ -585,6 +585,12 @@ touching the code.
   instead was a runaway once the step was clamped to a shrinking upstream
   step. On DISCO-EB at thermal weight 0.1 it costs 11 percent and takes P(k)
   from 5.5e-4 to 3.2e-4 of the weight-1 answer.
+- The inherited error counts in the upstream's proposal and, capped at 1,
+  in its controller history. Uncapped, ``SAFETY err^E1 ep1^E2`` stopped
+  contracting on a rejection once ``ep1 > 1`` (PI gains), and three
+  trajectories of a 128-cosmology CMB batch rejected the same recombination
+  step 20 000 times at ``z ~ 1000``; the block's own error alone in the
+  history contracted but cost DISCO-EB 20 percent (0.46 to 0.55 s).
 - **Sensitivities.** A block carries the parameter directions and the
   initial-state directions of its own and its upstream states (`dirs`,
   `pos`); its parameter seed for a direction carries the Hermite

@@ -1337,12 +1337,23 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(indent, f"err_norm = math.sqrt(err_local / {n_error})")
 
     def controller(b: int, h: str, indent: int, inherited: bool) -> None:
+        """The step proposal; an accepted step leaves ``min(safe_err, 1)`` in the controller's history.
+
+        The inherited error counts like the block's own in the proposal, and
+        in the history up to 1: a history entry above 1 (an accepted step
+        whose readers inherited more than the tolerance) stops a rejection's
+        proposal contracting (``SAFETY err^E1 ep1^E2`` with ``err > 1`` needs
+        ``ep1 <= 1``), and let a step be rejected at the same size for ever.
+        Keeping the block's own error alone in the history cost 20 percent
+        on DISCO-EB (smaller steps after every inherited-error-limited one).
+        """
         w(indent, "if math.isnan(err_norm) or err_norm > 1e18:")
-        w(indent + 1, "safe_err = 1e18")
+        w(indent + 1, "own_err = 1e18")
         w(indent, "elif err_norm == 0.0:")
-        w(indent + 1, "safe_err = 1e-18")
+        w(indent + 1, "own_err = 1e-18")
         w(indent, "else:")
-        w(indent + 1, "safe_err = err_norm")
+        w(indent + 1, "own_err = err_norm")
+        w(indent, "safe_err = own_err")
         if inherited:
             w(indent, "# the error its readers inherited over its last steps counts like its own")
             w(indent, f"if inh_{b} > safe_err:")
@@ -1410,7 +1421,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(i3, "n_steps += 1")
         w(i3, f"if acc_{b}:")
         w(i3 + 1, f"ep2_{b} = ep1_{b}")
-        w(i3 + 1, f"ep1_{b} = safe_err")
+        w(i3 + 1, f"ep1_{b} = min(safe_err, 1.0)")
         w(i2, f"if acc_{b}:")
         i3 = i2 + 1
         w(i3, f"t1_{b} = t0_{b} + h_{b}")
@@ -1484,7 +1495,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
     controller(s, "dt_use", 2, inherited=False)
     w(2, "if accept:")
     w(3, f"ep2_{s} = ep1_{s}")
-    w(3, f"ep1_{s} = safe_err")
+    w(3, f"ep1_{s} = own_err")
     w(2, "# a step cut short by the dense output's end does not lower the proposal")
     w(2, f"if accept and clamped and dt_new < dt_{s}:")
     w(3, f"dt_new = dt_{s}")
