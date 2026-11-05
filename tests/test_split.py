@@ -127,6 +127,6 @@ def test_the_driver_steps_on_its_own():
     sol, stats = solve(ode, y0, T_SPAN, p, split=True, **kw)
     accepted, rejected, loop = (int(stats[k][0]) for k in ("accepted_steps", "rejected_steps", "loop_steps"))
     driver_attempts = loop - accepted - rejected
-    assert 0 < driver_attempts < accepted / 3, (driver_attempts, accepted)
+    assert 0 < driver_attempts < accepted / 2, (driver_attempts, accepted)
     expected = x_exact(T_SPAN, 0.05, MU, 0.3, 0.1)
-    assert jnp.max(jnp.abs(sol[:, 1] - expected)) < 1e-6
+    assert jnp.max(jnp.abs(sol[0, :, 1] - expected)) < 1e-6

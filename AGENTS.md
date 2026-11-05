@@ -517,6 +517,58 @@ touching the code.
   per thread, so each writes its own local arrays with no barrier inside a
   device function its callers invoke under a divergent `if running`.
 
+### Splitting a one-way-coupled system (`split=True`, `modax/_split.py`)
+
+- `solve(..., sparsity=pattern, split=True)` reads the pattern as a graph,
+  takes its strongly connected components in topological order and collects
+  into a *driver* block every component that reads only components already
+  collected, while the block stays within `split_max_driver` states; the rest
+  is the *main* block. The driver is closed under dependence (a row that only
+  integrates driver states joins it). `split_blocks(pattern, n_vars)` shows
+  the split without compiling anything.
+- The driver steps on its own ahead of the main block, with its own error
+  norm and controller, and keeps a buffer of `DRIVER_NODES` nodes (state,
+  rate, `theta'' = J g + dg/dt`, and the same for its sensitivity rows). The
+  main block's step is clamped to the last node; the quintic Hermite over the
+  main step is built from the dense output's values and first two derivatives
+  at the step's ends, written into the thread's local parameter row, and the
+  generated `main_rhs` reads the driver states from it. Both generated
+  right-hand sides come from the user's `ode_fn`: zeros for the other block's
+  states (dead code after inlining) or the polynomial.
+- **Warp vote.** Lanes advance their drivers together (`cuda.any_sync` over
+  the warp's `lane_mask`; every lane with room in its buffer steps when any
+  lane needs to). Without it each lane advanced when its own main step ran
+  out of dense output, the warp executed the driver's code at nearly every
+  main step, and the saving over a lockstep split vanished (0.75 s against
+  0.62 s for DISCO-EB's 128 x 128 batch). Every lane stays in the main loop
+  until all are done so that every vote is reached by every lane in the mask.
+- The eight Rosenbrock stages of a block are one loop that dispatches to
+  literal-coefficient stage functions: numba's untyped inlining deep-copies
+  the inlined right-hand side at every call site at every level of the call
+  tree, and eight call sites per block cost a 50-state system ten minutes of
+  `copy.deepcopy`; one site per block builds in under three.
+- Forward sensitivities ride on both blocks; the main block's parameter seed
+  for a direction carries the Hermite coefficients of the driver's
+  sensitivity in that direction (`hseed`), so one sweep returns
+  `J_y S + J_p + df/dtheta S_theta`.
+- Write exponentials with a capped argument in a driver's providers: an
+  `exp` that overflows to `inf` makes the sweep's derivative `inf/inf = NaN`,
+  and a NaN error norm rejects the driver's step forever.
+
+### Kernel cache (`modax/_kernel_cache.py`)
+
+- `solve(..., cache=True)` keeps the compiled kernel on disk under numba's
+  cache (`modax/__pycache__`, or `NUMBA_CACHE_DIR`). numba's own index key
+  pickles the kernel's closure, and a pickled `MLIRDispatcher` carries a uuid
+  drawn afresh in every process, so that key never matched twice.
+  `content_digest` hashes what the code is built from instead -- bytecode,
+  constants, closure cells, the globals a function reads, arrays,
+  dispatchers' `py_func`s, numba-enzyme placeholders' primal attributes,
+  package versions -- and `ContentKeyedCache` puts the digest in the key. A
+  55-state DISCO-EB kernel then loads in about 5 s where the build takes
+  150 s. numba-enzyme has a cache of its own (keyed on the lowered IR), but
+  on a kernel-cache hit nothing is lowered at all.
+
 ### Kernel design
 
 - One CUDA thread per trajectory; per-trajectory adaptive stepping, so lanes in
