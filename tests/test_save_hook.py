@@ -5,14 +5,21 @@ accumulation it performs in-kernel must match the same accumulation done on the
 saved history afterwards. Checked here with a trapezoid integral of the state
 over the save grid, and with the state stored per save, both against the
 history of a plain solve; and ``save_history=False`` must still return the
-final state.
+final state. A joint solve asked for by its ``SensitivitySpec`` hands the hook
+the augmented state, so a hook can store a quantity and its derivative along
+the sensitivities, which is what makes a hooked solve differentiable.
 """
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from numba_cuda_mlir import cuda
 
+from modax._sensitivity import SensitivitySpec, split_augmented
 from modax.rodas5P import solve as rodas5P_solve
+
+jax.config.update("jax_enable_x64", True)
 
 requires_cuda = pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 
@@ -102,3 +109,78 @@ def test_save_history_false_needs_a_hook():
     y0, t_span, params = _problem()
     with pytest.raises(ValueError, match="save_history=False"):
         rodas5P_solve(damped_oscillator, y0, t_span, params, save_history=False)
+
+
+@requires_cuda
+def test_hook_sees_the_joint_state_of_a_sensitivity_solve():
+    """With ``sensitivity`` the hook reads ``[y, S]`` and can store a tangent.
+
+    The energy ``E = (y_1^2 + p_0 y_0^2) / 2`` and its derivative along the
+    parameter sensitivities, ``dE/dp_k = y_1 S_1k + p_0 y_0 S_0k + y_0^2
+    delta_0k / 2``, stored per save, against the plain solve's JVP rule.
+    """
+
+    y0, t_span, params = _problem()
+    # Out of step control, the joint solve takes the plain solve's steps.
+    spec = SensitivitySpec(2, 2, wrt_y0=False, wrt_params=True, error_control=False)
+    n_aug = spec.n_aug
+
+    def store_energy_and_tangent(save_idx, y, t, p_row, acc):
+        # The layout of _sensitivity: z[2 + k * 2 + r] = S[r, k].
+        energy = 0.5 * (y[1] * y[1] + p_row[0] * y[0] * y[0])
+        acc[3 * save_idx] = energy
+        for k in range(2):
+            d_energy = y[1] * y[2 + 2 * k + 1] + p_row[0] * y[0] * y[2 + 2 * k]
+            if k == 0:
+                d_energy += 0.5 * y[0] * y[0]
+            acc[3 * save_idx + 1 + k] = d_energy
+
+    settings = dict(rtol=1e-8, atol=1e-10, lu_precision="fp64")
+    final, acc = rodas5P_solve(
+        damped_oscillator,
+        y0,
+        t_span,
+        params,
+        save_hook=store_energy_and_tangent,
+        hook_size=3 * N_SAVE,
+        save_history=False,
+        sensitivity=spec,
+        **settings,
+    )
+    final, acc = np.asarray(final), np.asarray(acc).reshape(3, N_SAVE, 3)
+    assert final.shape == (3, 1, n_aug)
+
+    def energy_history(p):
+        hist = rodas5P_solve(damped_oscillator, y0, t_span, p, **settings)
+        return 0.5 * (hist[..., 1] ** 2 + p[:, None, 0] * hist[..., 0] ** 2)
+
+    expected = np.asarray(energy_history(jnp.asarray(params)))
+    d_expected = np.asarray(jax.jacfwd(energy_history)(jnp.asarray(params)))
+    np.testing.assert_allclose(acc[:, :, 0], expected, rtol=1e-12, atol=1e-15)
+    for k in range(2):
+        np.testing.assert_allclose(
+            acc[:, :, 1 + k],
+            np.stack([d_expected[i, :, i, k] for i in range(3)]),
+            rtol=1e-6,
+            atol=1e-9,
+        )
+
+    # The augmented history itself is what the hook read.
+    hist = rodas5P_solve(
+        damped_oscillator, y0, t_span, params, sensitivity=spec, **settings
+    )
+    state, sens = split_augmented(hist, spec)
+    np.testing.assert_allclose(np.asarray(state)[:, -1], final[:, 0, :2], atol=1e-13)
+    assert sens.shape == (3, N_SAVE, 2, 2)
+
+
+def test_sensitivity_spec_must_fit_the_problem():
+    y0, t_span, params = _problem()
+    with pytest.raises(ValueError, match="sensitivity spec"):
+        rodas5P_solve(
+            damped_oscillator,
+            y0,
+            t_span,
+            params,
+            sensitivity=SensitivitySpec(3, 2, wrt_y0=False, wrt_params=True),
+        )
