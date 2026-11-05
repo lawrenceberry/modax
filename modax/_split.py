@@ -434,7 +434,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         namespace=dict(cuda=cuda, float64=types.float64, tangent_of=main_tangent,
                        colour_seeds=main_structure.seed_table(n_params_local), clear_matrix=m_clear,
                        lu_dtype=lu_dtype),
-        inline="never", batch=main_structure.n_colours + 1,
+        inline="never", batch=main_structure.n_colours + 2, coupling=True,
     )
     write_driver_jacobian = R._make_literal_seed_jacobian(
         n_vars=n_drv, n_params=n_params_local, n_colours=d_structure.n_colours, store_table=d_store,
@@ -751,14 +751,15 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                 write_driver(u, t + t_after[s] * dt_use, p_local, work, pbuf, zero)
 
     @cuda.jit(device=True, inline="never")
-    def main_step(y, u, work, dT, k_stages, lu, ipiv, rhs, p_local, t, dt_use, pbuf, hseed, zero):
+    def main_step(y, u, work, dT, k_stages, lu, ipiv, rhs, p_local, t, dt_use, pbuf, hseed, zero, p_seed, coupling_err, jdiag):
         """One Rodas5P step of the main block from ``y``; leaves ``u + k_stages[7]`` as the candidate."""
         inv_dt = 1.0 / dt_use
         dtgamma_inv = inv_dt / GAMMA
         diag = cuda.const.array_like(m_diag)
-        write_main_jacobian(y, t, p_local, lu, dT)
+        write_main_jacobian(y, t, p_local, lu, dT, p_seed, coupling_err)
         write_main_sens_dt(y, t, p_local, dT, pbuf, hseed, zero)
         for d_ in range(n_main):
+            jdiag[d_] = -np.float64(lu[diag[d_]])  # the Jacobian's diagonal, before the step's 1/(h gamma)
             lu[diag[d_]] += lu_dtype(dtgamma_inv)
         m_factorize(lu, ipiv)
         # the right-hand side at the step's start, then after every stage but the last, from one call site
@@ -907,6 +908,10 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         node_th = cuda.local.array((N_NODES, size_d), np.float64)
         node_g = cuda.local.array((N_NODES, size_d), np.float64)
         node_s2 = cuda.local.array((N_NODES, size_d), np.float64)
+        node_err = cuda.local.array((N_NODES, n_drv), np.float64)  # the driver's error estimate of the step ending at a node
+        p_seed = cuda.local.array(P_LOCAL, np.float64)  # the driver's error through the Hermite block, as a direction
+        coupling_err = cuda.local.array(n_main, np.float64)  # df/dtheta . (driver's error), the main block's inherited error rate
+        jdiag = cuda.local.array(n_main, np.float64)  # the main block's Jacobian diagonal at the step's start
         th_a = cuda.local.array(size_d, np.float64)
         g_a = cuda.local.array(size_d, np.float64)
         s2_a = cuda.local.array(size_d, np.float64)
@@ -967,6 +972,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         err_prev2 = 1.0
         err_prev_d = 1.0
         err_prev2_d = 1.0
+        inherited = 0.0  # the main block's error inherited from the driver, since its last step
         tf_local = tf
         if tf_index >= 0:
             tf_local = params[i, tf_index]
@@ -986,6 +992,10 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
             node_th[0, j] = th[j]
             node_g[0, j] = g1[j]
             node_s2[0, j] = s21[j]
+        for j in range(n_drv):
+            node_err[0, j] = 0.0
+        for c in range(P_LOCAL):
+            p_seed[c] = 0.0
 
         if HAS_HOOK:
             for j in range(hook_size):
@@ -1062,6 +1072,10 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                         safe_err = 1e-18
                     else:
                         safe_err = err_norm
+                    # the main block's inherited error over the last driver
+                    # steps counts like the driver's own in the step proposal
+                    if inherited > safe_err:
+                        safe_err = inherited
                     factor = SAFETY * safe_err**e1 * err_prev_d**e2 * err_prev2_d**e3
                     if factor < FACTOR_MIN:
                         factor = FACTOR_MIN
@@ -1083,7 +1097,10 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                         node_th[n_nodes, j] = th1[j]
                         node_g[n_nodes, j] = g1[j]
                         node_s2[n_nodes, j] = s21[j]
+                    for j in range(n_drv):
+                        node_err[n_nodes, j] = math.fabs(kd[7, j])
                     n_nodes += 1
+                    inherited = 0.0
                 need = (accept_d and node_t[n_nodes - 1] < t + dt and node_t[n_nodes - 1] < tf_local
                         and n_nodes < N_NODES and n_steps + n_steps_d < max_steps)
             if not running or n_nodes < 2:
@@ -1103,7 +1120,38 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
             dense_driver(node_t, node_th, node_g, node_s2, n_nodes, t, th_a, g_a, s2_a)
             dense_driver(node_t, node_th, node_g, node_s2, n_nodes, t_end, th_b, g_b, s2_b)
             write_hermite(p_local, hseed, t, dt_use, th_a, g_a, s2_a, th_b, g_b, s2_b)
-            main_step(y, u, work, dT, k_stages, lu_buf, ipiv_buf, rhs_buf, p_local, t, dt_use, pbuf, hseed, zero)
+            # The driver's error over this step (the largest estimate of the
+            # driver steps it lies in), seeded as a constant shift of the
+            # Hermite block's values: the sweep returns df/dtheta . error.
+            for j in range(n_drv):
+                err_j = 0.0
+                for q in range(1, n_nodes):
+                    if node_t[q] > t + 1e-12 * max(1.0, math.fabs(t)) and node_t[q - 1] < t_end:
+                        err_j = max(err_j, node_err[q, j])
+                b = drv_col + 2 + 6 * j
+                p_seed[b] = err_j
+                p_seed[b + 3] = err_j
+            main_step(y, u, work, dT, k_stages, lu_buf, ipiv_buf, rhs_buf, p_local, t, dt_use, pbuf, hseed, zero, p_seed, coupling_err, jdiag)
+            # The main block's error inherited from the driver over the driver
+            # step this main step lies in: H df/dtheta . epsilon against the
+            # main rows' tolerance. It cannot be reduced by a shorter main step
+            # (the driver's error is already made), so it goes to the driver's
+            # controller: the next driver step shrinks until the hierarchy's
+            # increments are as accurate as its own.
+            q_in = 1
+            while q_in < n_nodes - 1 and node_t[q_in] <= t + 1e-12 * max(1.0, math.fabs(t)):
+                q_in += 1
+            h_cover = node_t[q_in] - node_t[q_in - 1]
+            # Over the driver step H the rate b = df/dtheta . epsilon moves a
+            # row by H b where the row is slow, and by b / |J_rr| where the row
+            # damps itself faster than that (the tight coupling): the diagonal
+            # of a Rosenbrock stage over H, 1 / (1/(H gamma) + |J_rr|), both.
+            for r in range(n_main):
+                scale = atol + rtol * math.fabs(y[r])
+                damping = 1.0 + h_cover * GAMMA * max(0.0, -jdiag[r])
+                e = weights[i, Mix[r]] * h_cover * math.fabs(coupling_err[r]) / (damping * scale)
+                if e > inherited:
+                    inherited = e
 
             # 3. its error norm
             err_local = 0.0
@@ -1201,6 +1249,8 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                             node_th[q, j] = node_th[q + 1, j]
                             node_g[q, j] = node_g[q + 1, j]
                             node_s2[q, j] = node_s2[q + 1, j]
+                        for j in range(n_drv):
+                            node_err[q, j] = node_err[q + 1, j]
                     n_nodes -= 1
             else:
                 rejected += 1

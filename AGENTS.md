@@ -535,6 +535,22 @@ touching the code.
   generated `main_rhs` reads the driver states from it. Both generated
   right-hand sides come from the user's `ode_fn`: zeros for the other block's
   states (dead code after inlining) or the polynomial.
+- **Inherited error.** The main block's estimate takes the driver's dense
+  output as exact, so the driver's error reaches the hierarchy unmeasured.
+  The main block's Jacobian sweep carries one more direction, the driver's
+  error estimate over the driver step seeded through the Hermite block, which
+  returns `b = df/dtheta . epsilon` for free; over the driver step `H` that
+  moves a slow row by `H b` and a self-damping row (the tight coupling) by
+  `b / |J_rr|`, so `H |b| / (1 + H gamma |J_rr|)` against the row's tolerance
+  is the inherited error. It goes into the *driver's* step proposal (the
+  largest since the driver's last step counts like the driver's own estimate),
+  never into the main norm: the driver's error is already made when the main
+  block sees it, and a term that does not shrink with the main step only makes
+  the main controller cut steps without end (ten times the steps when tried).
+  Passing `b` through the main block's own `M^-1` instead was a runaway once
+  the main step was clamped to a shrinking driver step. On DISCO-EB at thermal
+  weight 0.1 it costs 11 percent (0.45 to 0.50 s) and takes P(k) from 5.5e-4
+  to 3.2e-4 of the weight-1 answer.
 - **Warp vote.** Lanes advance their drivers together (`cuda.any_sync` over
   the warp's `lane_mask`; every lane with room in its buffer steps when any
   lane needs to). Without it each lane advanced when its own main step ran
