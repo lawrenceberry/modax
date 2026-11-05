@@ -1083,6 +1083,7 @@ def solve(
     save_hook: None = None,
     hook_size: int = 0,
     save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
 ) -> jax.Array: ...
 
 
@@ -1114,6 +1115,7 @@ def solve(
     save_hook: None = None,
     hook_size: int = 0,
     save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
 ) -> tuple[jax.Array, SolverStats]: ...
 
 
@@ -1145,6 +1147,7 @@ def solve(
     save_hook: SaveHook,
     hook_size: int = 0,
     save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
 ) -> tuple[jax.Array, jax.Array]: ...
 
 
@@ -1176,6 +1179,7 @@ def solve(
     save_hook: SaveHook,
     hook_size: int = 0,
     save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
 ) -> tuple[jax.Array, jax.Array, SolverStats]: ...
 
 
@@ -1207,6 +1211,7 @@ def solve(
     save_hook: SaveHook | None = None,
     hook_size: int = 0,
     save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
 ) -> SolveOutput | HookedOutput: ...
 
 
@@ -1237,6 +1242,7 @@ def solve(
     save_hook: SaveHook | None = None,
     hook_size: int = 0,
     save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
 ) -> SolveOutput | HookedOutput:
     """JAX-callable Rodas5P custom-kernel solve.
 
@@ -1418,6 +1424,17 @@ def solve(
     to the final state, shape ``(n, 1, n_vars)``. A solve with a hook returns
     ``(hist, hook_out)`` (plus the stats when asked) and supports neither
     ``jax.vmap`` nor differentiation.
+
+    ``sensitivity`` integrates the joint ``[y, S]`` system of that
+    :class:`~modax._sensitivity.SensitivitySpec` as the primal instead of
+    attaching the JVP rule: the history (or the final state) comes back
+    ``n_aug`` wide in the layout ``split_augmented`` reads, and a save hook
+    sees the augmented state, the state followed by one ``n_vars`` block per
+    direction. That is how a consumer evaluated inside the launch forms its own
+    tangents: a hook that stores both a quantity of the state and its
+    directional derivative along ``S`` gives a differentiable hooked solve, at
+    the cost of a joint launch and no history. ``y0`` is the plain initial
+    state; the spec's initial sensitivities are supplied here.
     """
     n_vars = jnp.shape(y0)[-1]
     options = KernelOptions(
@@ -1440,15 +1457,27 @@ def solve(
     )
     settings = SolveSettings(rtol, atol, first_step, max_steps, error_weights)
 
-    if save_hook is not None:
-        if hook_size <= 0:
-            raise ValueError("a save_hook needs a positive hook_size")
-        # The hook's accumulator is a second output the vmap and JVP rules do
-        # not know, so a hooked solve is the plain ensemble launch.
-        hist, hook_out, stats = _launch(ode_fn, y0, t_span, params, options, settings)
-        return (hist, hook_out, stats) if return_stats else (hist, hook_out)
-    if not save_history:
+    if save_hook is not None and hook_size <= 0:
+        raise ValueError("a save_hook needs a positive hook_size")
+    if save_hook is None and not save_history:
         raise ValueError("save_history=False needs a save_hook to consume the saves")
+    if sensitivity is not None:
+        n_params = jnp.shape(params)[-1]
+        if sensitivity.n_vars != n_vars or sensitivity.n_params != n_params:
+            raise ValueError(
+                f"the sensitivity spec is for {sensitivity.n_vars} variables and "
+                f"{sensitivity.n_params} parameters, the problem has {n_vars} and "
+                f"{n_params}"
+            )
+        options = replace(options, spec=sensitivity)
+    if save_hook is not None or sensitivity is not None:
+        # The hook's accumulator is a second output the vmap and JVP rules do
+        # not know, and a joint solve asked for by name is its own primal, so
+        # either is the plain ensemble launch.
+        hist, hook_out, stats = _launch(ode_fn, y0, t_span, params, options, settings)
+        if save_hook is None:
+            return (hist, stats) if return_stats else hist
+        return (hist, hook_out, stats) if return_stats else (hist, hook_out)
 
     # The JVP rule wraps the vmap-aware solvers rather than the other way
     # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
