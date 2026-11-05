@@ -117,3 +117,16 @@ def test_split_with_a_save_hook_sees_the_user_layout():
                       lu_precision="fp64", save_hook=hook, hook_size=2)
     hist = np.asarray(hist)
     assert np.allclose(np.asarray(acc)[0], hist[0].sum(axis=0), atol=1e-9)
+
+
+def test_the_driver_steps_on_its_own():
+    """A slow driver under a fast follower takes far fewer steps than the follower, at the same accuracy."""
+    y0 = jnp.array([0.3, 0.1])
+    p = jnp.array([0.05, MU])  # a decay a hundred times slower than the follower's relaxation
+    kw = dict(sparsity=PATTERN, rtol=1e-8, atol=1e-10, lu_precision="fp64", return_stats=True)
+    sol, stats = solve(ode, y0, T_SPAN, p, split=True, **kw)
+    accepted, rejected, loop = (int(stats[k][0]) for k in ("accepted_steps", "rejected_steps", "loop_steps"))
+    driver_attempts = loop - accepted - rejected
+    assert 0 < driver_attempts < accepted / 3, (driver_attempts, accepted)
+    expected = x_exact(T_SPAN, 0.05, MU, 0.3, 0.1)
+    assert jnp.max(jnp.abs(sol[:, 1] - expected)) < 1e-6

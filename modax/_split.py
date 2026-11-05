@@ -14,19 +14,23 @@ components already collected into one driver block, as long as it stays small,
 takes the rest as the main block, and integrates them in order inside one
 kernel:
 
-1. The driver takes a Rodas5P step of its own over the outer step, on a dense
-   matrix of its size, with a Jacobian that is always fresh (the end-point
-   Jacobian of one step is the start-point Jacobian of the next).
-2. Its values, first and second derivatives at both ends
+1. The driver runs ahead on Rodas5P steps of its own, on a dense matrix of
+   its size with a Jacobian that is always fresh (the end-point Jacobian of
+   one step is the start-point Jacobian of the next), accepted or rejected by
+   its own error norm and step controller. Its steps are as long as its own
+   dynamics allow, which for a smooth thermal history is many hierarchy steps.
+2. Its values, first and second derivatives at both ends of its current step
    (``theta'' = J theta' + dg/dt``) are written into the thread's local copy
    of the parameter row as a **quintic Hermite** block. The interpolant is
-   ``O(h^6)``, one order beyond the method's local error, so the main step
+   ``O(h^6)``, one order beyond the method's local error, so the main block
    keeps fifth order; a cubic would cost it one.
-3. The main block takes its Rodas5P step with the driver states replaced, in
-   a generated right-hand side, by that polynomial of ``t``. Its state
-   Jacobian has no driver columns; Enzyme's time sweep differentiates through
-   the polynomial, so ``df/dt`` carries ``df/dtheta theta'``.
-4. One error norm over both embedded estimates accepts or rejects both.
+3. The main block takes its Rodas5P steps inside the driver's interval (a
+   step is cut short at the interval's end, without lowering the next
+   proposal) with the driver states replaced, in a generated right-hand
+   side, by that polynomial of ``t``. Its state Jacobian has no driver
+   columns; Enzyme's time sweep differentiates through the polynomial, so
+   ``df/dt`` carries ``df/dtheta theta'``. Its error norm runs over its own
+   rows, so the driver's tolerance sets the driver's steps alone.
 
 Both block right-hand sides are generated from the user's single ``ode_fn``:
 the driver's returns its rows with the main states set to zero (dead code
@@ -56,10 +60,11 @@ import numpy as np
 from numba_cuda_mlir import cuda, types
 
 from modax._codegen import compile_device_source
+from modax._kernel_cache import enable_content_cache
 from modax._numba_common import as_cuda_device
 from modax._sensitivity import SensitivitySpec, make_second_tangent, make_tangent
 from modax._sparse_direct import sparse_direct_solver_for
-from modax._sparsity import dense_jacobian
+from modax._sparsity import colour_sparsity, dense_jacobian
 
 # --- the pattern's blocks ---------------------------------------------------------------
 
@@ -303,7 +308,8 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
     error_control = spec.error_control if spec is not None else True
     size_d = n_drv * (1 + n_sens_d)
     size_m = n_main * (1 + n_sens)
-    n_error = (n_vars + (n_sens * n_vars if error_control else 0))
+    n_error_m = n_main + (n_sens * n_main if error_control else 0)
+    n_error_d = n_drv + (n_sens_d * n_drv if error_control else 0)
     D_idx = np.asarray(D, dtype=np.int32)
     M_idx = np.asarray(M, dtype=np.int32)
     HSEED_ROWS = max(1, n_sens)
@@ -342,10 +348,22 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
     m_diag = np.asarray(main_structure.diagonal, dtype=np.int32)
     m_store = main_structure.store_slots()
     m_needs_clear = m_store is not None and m_lu_size > int((m_store >= 0).sum())
-    d_structure = dense_jacobian(n_drv)
+    # The driver's matrix is dense (a handful of states), but its Jacobian is
+    # coloured from the pattern all the same: a column nothing reads costs no
+    # sweep. The colour grid is mapped onto the dense row-major slots, and the
+    # slots no colour owns are cleared before each write.
     d_factorize, d_solve = R.dense_lu_solver(n_drv)
     d_lu_size = n_drv * n_drv
-    d_diag = np.asarray(d_structure.diagonal, dtype=np.int32)
+    if options.sparsity is None:
+        d_structure = dense_jacobian(n_drv)
+        d_store = None
+    else:
+        d_pattern = restrict_pattern(options.sparsity, D)
+        d_structure = colour_sparsity(d_pattern)
+        d_store = np.full(n_drv * d_structure.n_colours, -1, dtype=np.int32)
+        for row, cols in enumerate(d_pattern):
+            for col in cols:
+                d_store[row * d_structure.n_colours + d_structure.colour[col]] = row * n_drv + col
 
     if m_needs_clear:
 
@@ -362,7 +380,8 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
 
     @cuda.jit(device=True)
     def d_clear(lu):
-        pass
+        for i in range(d_lu_size):
+            lu[i] = 0.0
 
     write_main_jacobian = R._make_literal_seed_jacobian(
         n_vars=n_main, n_params=n_params_local, n_colours=main_structure.n_colours,
@@ -372,7 +391,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                        lu_dtype=lu_dtype),
     )
     write_driver_jacobian = R._make_literal_seed_jacobian(
-        n_vars=n_drv, n_params=n_params_local, n_colours=n_drv, store_table=None,
+        n_vars=n_drv, n_params=n_params_local, n_colours=d_structure.n_colours, store_table=d_store,
         namespace=dict(cuda=cuda, float64=types.float64, tangent_of=drv_tangent,
                        colour_seeds=d_structure.seed_table(n_params_local), clear_matrix=d_clear,
                        lu_dtype=np.float64),
@@ -474,7 +493,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
 
     # -- one Rosenbrock stage of a block (state rows, then sensitivity rows by forward substitution)
     def make_block(n, size, n_sens_b, solve_local, lu_dt, second, seed_fn, with_hseed):
-        """The stage, advance and solve device functions of one block."""
+        """The stage and advance device functions of one block."""
 
         if n_sens_b == 0:
 
@@ -532,6 +551,9 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         # ``work`` until their own solve -- as two loops, never as a branch
         # choosing between the two arrays, which the compiler turns into a
         # select of memref descriptors that the LLVM 7 translation cannot type.
+        # Every coefficient is a literal and every loop has a constant trip
+        # count, so each stage lowers to straight-line arithmetic; the stage
+        # number only picks the function.
         def make_stage(s):
             c_row = c_rows[s]
             d = d_row[s]
@@ -592,16 +614,55 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
 
             return advance
 
-        stages = tuple(make_stage(s) for s in range(8))
-        advances = tuple(make_advance(s) for s in range(5))
-        return stages, advances
+        s0, s1, s2, s3, s4, s5, s6, s7 = (make_stage(s) for s in range(8))
+        a0, a1, a2, a3, a4 = (make_advance(s) for s in range(5))
 
-    (ms0, ms1, ms2, ms3, ms4, ms5, ms6, ms7), (ma0, ma1, ma2, ma3, ma4) = make_block(
-        n_main, size_m, n_sens, m_solve, lu_dtype, main_second, seed_main, True
-    )
-    (ds0, ds1, ds2, ds3, ds4, ds5, ds6, ds7), (da0, da1, da2, da3, da4) = make_block(
-        n_drv, size_d, n_sens_d, d_solve, np.float64, drv_second, seed_driver, False
-    )
+        # The step is one loop over the stages with the block's right-hand
+        # side called at one place in it: unrolled into eight call sites, numba
+        # copied the inlined right-hand side eight times over at every level
+        # of the call tree, minutes of deep copies for a 50-state system. The
+        # stage number picks the literal stage function.
+        @cuda.jit(device=True)
+        def stage(s, lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero):
+            if s == 0:
+                s0(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+            elif s == 1:
+                s1(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+            elif s == 2:
+                s2(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+            elif s == 3:
+                s3(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+            elif s == 4:
+                s4(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+            elif s == 5:
+                s5(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+            elif s == 6:
+                s6(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+            else:
+                s7(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+
+        @cuda.jit(device=True)
+        def advance(s, u, y, k_stages):
+            """``u`` after stage ``s``: ``y + sum_k a[s, k] k_k`` for the first five, ``u + k_s`` after."""
+            if s == 0:
+                a0(u, y, k_stages)
+            elif s == 1:
+                a1(u, y, k_stages)
+            elif s == 2:
+                a2(u, y, k_stages)
+            elif s == 3:
+                a3(u, y, k_stages)
+            elif s == 4:
+                a4(u, y, k_stages)
+            else:
+                for j in range(size):
+                    u[j] += k_stages[s, j]
+
+        return stage, advance
+
+    m_stage, m_advance = make_block(n_main, size_m, n_sens, m_solve, lu_dtype, main_second, seed_main, True)
+    d_stage, d_advance = make_block(n_drv, size_d, n_sens_d, d_solve, np.float64, drv_second, seed_driver, False)
+    T_AFTER = np.asarray((C2, C3, C4, C5, 1.0, 1.0, 1.0, 0.0))  # the time of the state after stage s
 
     @cuda.jit(device=True)
     def driver_step(th, u, work, dT, kd, lu, ipiv, rhs, p_local, t, dt_use, pbuf, zero):
@@ -612,30 +673,12 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
             lu[d_ * n_drv + d_] += dtgamma_inv
         d_factorize(lu, ipiv)
         # work holds [g, S'] at th (FSAL)
-        ds0(lu, ipiv, rhs, kd, work, dT, th, p_local, t, dt_use, inv_dt, pbuf, zero, zero)
-        da0(u, th, kd)
-        write_driver(u, t + C2 * dt_use, p_local, work, pbuf, zero)
-        ds1(lu, ipiv, rhs, kd, work, dT, th, p_local, t, dt_use, inv_dt, pbuf, zero, zero)
-        da1(u, th, kd)
-        write_driver(u, t + C3 * dt_use, p_local, work, pbuf, zero)
-        ds2(lu, ipiv, rhs, kd, work, dT, th, p_local, t, dt_use, inv_dt, pbuf, zero, zero)
-        da2(u, th, kd)
-        write_driver(u, t + C4 * dt_use, p_local, work, pbuf, zero)
-        ds3(lu, ipiv, rhs, kd, work, dT, th, p_local, t, dt_use, inv_dt, pbuf, zero, zero)
-        da3(u, th, kd)
-        write_driver(u, t + C5 * dt_use, p_local, work, pbuf, zero)
-        ds4(lu, ipiv, rhs, kd, work, dT, th, p_local, t, dt_use, inv_dt, pbuf, zero, zero)
-        da4(u, th, kd)
-        write_driver(u, t + dt_use, p_local, work, pbuf, zero)
-        ds5(lu, ipiv, rhs, kd, work, dT, th, p_local, t, dt_use, inv_dt, pbuf, zero, zero)
-        for j in range(size_d):
-            u[j] += kd[5, j]
-        write_driver(u, t + dt_use, p_local, work, pbuf, zero)
-        ds6(lu, ipiv, rhs, kd, work, dT, th, p_local, t, dt_use, inv_dt, pbuf, zero, zero)
-        for j in range(size_d):
-            u[j] += kd[6, j]
-        write_driver(u, t + dt_use, p_local, work, pbuf, zero)
-        ds7(lu, ipiv, rhs, kd, work, dT, th, p_local, t, dt_use, inv_dt, pbuf, zero, zero)
+        t_after = cuda.const.array_like(T_AFTER)
+        for s in range(8):
+            d_stage(s, lu, ipiv, rhs, kd, work, dT, th, p_local, t, dt_use, inv_dt, pbuf, zero, zero)
+            if s < 7:
+                d_advance(s, u, th, kd)
+                write_driver(u, t + t_after[s] * dt_use, p_local, work, pbuf, zero)
 
     @cuda.jit(device=True)
     def main_step(y, u, work, dT, k_stages, lu, ipiv, rhs, p_local, t, dt_use, pbuf, hseed, zero):
@@ -648,31 +691,16 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         for d_ in range(n_main):
             lu[diag[d_]] += lu_dtype(dtgamma_inv)
         m_factorize(lu, ipiv)
-        write_main(y, t, p_local, work, pbuf, hseed, zero)
-        ms0(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
-        ma0(u, y, k_stages)
-        write_main(u, t + C2 * dt_use, p_local, work, pbuf, hseed, zero)
-        ms1(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
-        ma1(u, y, k_stages)
-        write_main(u, t + C3 * dt_use, p_local, work, pbuf, hseed, zero)
-        ms2(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
-        ma2(u, y, k_stages)
-        write_main(u, t + C4 * dt_use, p_local, work, pbuf, hseed, zero)
-        ms3(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
-        ma3(u, y, k_stages)
-        write_main(u, t + C5 * dt_use, p_local, work, pbuf, hseed, zero)
-        ms4(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
-        ma4(u, y, k_stages)
-        write_main(u, t + dt_use, p_local, work, pbuf, hseed, zero)
-        ms5(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+        # the right-hand side at the step's start, then after every stage but the last, from one call site
+        t_after = cuda.const.array_like(T_AFTER)
         for j in range(size_m):
-            u[j] += k_stages[5, j]
-        write_main(u, t + dt_use, p_local, work, pbuf, hseed, zero)
-        ms6(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
-        for j in range(size_m):
-            u[j] += k_stages[6, j]
-        write_main(u, t + dt_use, p_local, work, pbuf, hseed, zero)
-        ms7(lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+            u[j] = y[j]
+        write_main(u, t, p_local, work, pbuf, hseed, zero)
+        for s in range(8):
+            m_stage(s, lu, ipiv, rhs, k_stages, work, dT, y, p_local, t, dt_use, inv_dt, pbuf, hseed, zero)
+            if s < 7:
+                m_advance(s, u, y, k_stages)
+                write_main(u, t + t_after[s] * dt_use, p_local, work, pbuf, hseed, zero)
 
     @cuda.jit(device=True)
     def state_second_derivative(g, neg_a, dT, s2):
@@ -816,20 +844,31 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
         t = times[0]
         save_idx = 1
         dt = dt_init
+        dt_d = dt_init
         n_steps = 0
+        n_steps_d = 0
         accepted = 0
         rejected = 0
         err_prev = 1.0
         err_prev2 = 1.0
+        err_prev_d = 1.0
+        err_prev2_d = 1.0
         tf_local = tf
         if tf_index >= 0:
             tf_local = params[i, tf_index]
 
-        # the driver's start-point derivatives: Jacobian, joint rate, second derivatives
-        write_driver_jacobian(th, t, p_local, neg_a, dTd)
-        write_driver_sens_dt(th, t, p_local, dTd, pbuf, zero)
-        write_driver(th, t, p_local, g0, pbuf, zero)
-        second_derivatives(th, g0, neg_a, dTd, t, p_local, s20, pbuf, zero)
+        # The driver's own interval [t_d0, t_d1] with its state, rate, second
+        # derivative and Jacobian at both ends; empty to begin with, so the
+        # first main step waits for the first driver step.
+        t_d0 = t
+        t_d1 = t
+        h_d = 0.0
+        write_driver_jacobian(th, t, p_local, neg_a1, dTd1)
+        write_driver_sens_dt(th, t, p_local, dTd1, pbuf, zero)
+        write_driver(th, t, p_local, g1, pbuf, zero)
+        second_derivatives(th, g1, neg_a1, dTd1, t, p_local, s21, pbuf, zero)
+        for j in range(size_d):
+            th1[j] = th[j]
 
         if HAS_HOOK:
             for j in range(hook_size):
@@ -838,42 +877,90 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                 y_save[j] = y0[i, j]
             save_hook(0, y_save, times[0], p_local, hook_out[i])
 
-        while save_idx < n_save and t < tf_local and n_steps < max_steps:
+        while save_idx < n_save and t < tf_local and n_steps + n_steps_d < max_steps:
+            # 1. The driver runs ahead on steps of its own: when the main block
+            # has used its interval up, the next one starts where it ended,
+            # against the end-point Jacobian (FSAL), and is accepted or rejected
+            # by the driver's own error norm and controller.
+            if t >= t_d1 - 1e-12 * max(1.0, math.fabs(t_d1)) and t_d1 < tf_local:
+                for j in range(size_d):
+                    th[j] = th1[j]
+                    g0[j] = g1[j]
+                    s20[j] = s21[j]
+                    dTd[j] = dTd1[j]
+                for c in range(d_lu_size):
+                    neg_a[c] = neg_a1[c]
+                t_d0 = t_d1
+                while n_steps + n_steps_d < max_steps:
+                    h_d = dt_d
+                    if h_d > tf_local - t_d0:
+                        h_d = tf_local - t_d0
+                    if h_d < 1e-30:
+                        h_d = 1e-30
+                    for c in range(d_lu_size):
+                        lu_d[c] = neg_a[c]
+                    for j in range(size_d):
+                        workd[j] = g0[j]
+                    driver_step(th, ud, workd, dTd, kd, lu_d, ipiv_d, rhs_d, p_local, t_d0, h_d, pbuf, zero)
+                    for j in range(size_d):
+                        th1[j] = ud[j] + kd[7, j]
+                    err_local = 0.0
+                    for j in range(n_drv):
+                        scale = atol + rtol * max(math.fabs(th[j]), math.fabs(th1[j]))
+                        e = weights[i, Dix[j]] * kd[7, j] / scale
+                        err_local += e * e
+                    for kd_ in range(n_sens_d):
+                        k = d2dir[kd_]
+                        for j in range(n_drv):
+                            jj = n_drv + kd_ * n_drv + j
+                            scale = atol + rtol * max(math.fabs(th[jj]), math.fabs(th1[jj]))
+                            e = weights[i, n_vars + k * n_vars + Dix[j]] * kd[7, jj] / scale
+                            err_local += e * e
+                    err_norm = math.sqrt(err_local / n_error_d)
+                    accept_d = err_norm <= 1.0 and not math.isnan(err_norm)
+                    if math.isnan(err_norm) or err_norm > 1e18:
+                        safe_err = 1e18
+                    elif err_norm == 0.0:
+                        safe_err = 1e-18
+                    else:
+                        safe_err = err_norm
+                    factor = SAFETY * safe_err**e1 * err_prev_d**e2 * err_prev2_d**e3
+                    if factor < FACTOR_MIN:
+                        factor = FACTOR_MIN
+                    elif factor > FACTOR_MAX:
+                        factor = FACTOR_MAX
+                    dt_d = h_d * factor
+                    n_steps_d += 1
+                    if accept_d:
+                        err_prev2_d = err_prev_d
+                        err_prev_d = safe_err
+                        break
+                t_d1 = t_d0 + h_d
+                # its end-point derivatives, the next interval's start-point ones
+                write_driver_jacobian(th1, t_d1, p_local, neg_a1, dTd1)
+                write_driver_sens_dt(th1, t_d1, p_local, dTd1, pbuf, zero)
+                write_driver(th1, t_d1, p_local, g1, pbuf, zero)
+                second_derivatives(th1, g1, neg_a1, dTd1, t_d1, p_local, s21, pbuf, zero)
+                # 2. the Hermite block the main block reads over this interval
+                write_hermite(p_local, hseed, t_d0, h_d, th, g0, s20, th1, g1, s21)
+
+            # 3. The main block's step, within the driver's interval.
             dt_use = dt
-            if dt_use > tf_local - t:
-                dt_use = tf_local - t
+            clamped = False
+            if dt_use > t_d1 - t:
+                dt_use = t_d1 - t
+                clamped = True
             if dt_use < 1e-30:
                 dt_use = 1e-30
             t_end = t + dt_use
-
-            # 1. the driver over [t, t_end], against its fresh Jacobian
-            for c in range(d_lu_size):
-                lu_d[c] = neg_a[c]
-            for j in range(size_d):
-                workd[j] = g0[j]
-            driver_step(th, ud, workd, dTd, kd, lu_d, ipiv_d, rhs_d, p_local, t, dt_use, pbuf, zero)
-            for j in range(size_d):
-                th1[j] = ud[j] + kd[7, j]
-            # its end-point derivatives (next step's start-point ones, if accepted)
-            write_driver_jacobian(th1, t_end, p_local, neg_a1, dTd1)
-            write_driver_sens_dt(th1, t_end, p_local, dTd1, pbuf, zero)
-            write_driver(th1, t_end, p_local, g1, pbuf, zero)
-            second_derivatives(th1, g1, neg_a1, dTd1, t_end, p_local, s21, pbuf, zero)
-            # 2. the Hermite block the main block reads
-            write_hermite(p_local, hseed, t, dt_use, th, g0, s20, th1, g1, s21)
-            # 3. the main block
             main_step(y, u, work, dT, k_stages, lu_buf, ipiv_buf, rhs_buf, p_local, t, dt_use, pbuf, hseed, zero)
 
-            # 4. one error norm over both
+            # 4. its error norm
             err_local = 0.0
             for r in range(n_main):
                 y_new = u[r] + k_stages[7, r]
                 scale = atol + rtol * max(math.fabs(y[r]), math.fabs(y_new))
                 e = weights[i, Mix[r]] * k_stages[7, r] / scale
-                err_local += e * e
-            for j in range(n_drv):
-                scale = atol + rtol * max(math.fabs(th[j]), math.fabs(th1[j]))
-                e = weights[i, Dix[j]] * kd[7, j] / scale
                 err_local += e * e
             for k in range(n_sens):
                 for r in range(n_main):
@@ -882,14 +969,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                     scale = atol + rtol * max(math.fabs(y[jj]), math.fabs(y_new))
                     e = weights[i, n_vars + k * n_vars + Mix[r]] * k_stages[7, jj] / scale
                     err_local += e * e
-            for kd_ in range(n_sens_d):
-                k = d2dir[kd_]
-                for j in range(n_drv):
-                    jj = n_drv + kd_ * n_drv + j
-                    scale = atol + rtol * max(math.fabs(th[jj]), math.fabs(th1[jj]))
-                    e = weights[i, n_vars + k * n_vars + Dix[j]] * kd[7, jj] / scale
-                    err_local += e * e
-            err_norm = math.sqrt(err_local / n_error)
+            err_norm = math.sqrt(err_local / n_error_m)
             accept = err_norm <= 1.0 and not math.isnan(err_norm)
 
             if math.isnan(err_norm) or err_norm > 1e18:
@@ -906,13 +986,18 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                 factor = FACTOR_MIN
             elif factor > FACTOR_MAX:
                 factor = FACTOR_MAX
-            dt = dt_use * factor
+            dt_new = dt_use * factor
+            # a step cut short by the driver's interval does not lower the proposal
+            if accept and clamped and dt_new < dt:
+                dt_new = dt
+            dt = dt_new
 
             if accept:
                 t_old = t
                 while save_idx < n_save and times[save_idx] <= t_end + 1e-12 * max(1.0, math.fabs(times[save_idx])):
                     theta = (times[save_idx] - t_old) / dt_use
                     theta1 = 1.0 - theta
+                    theta_d = (times[save_idx] - t_d0) / h_d
                     # main block: the Rosenbrock continuous extension
                     for jj in range(size_m):
                         h1 = (25.948786856663858 * k_stages[0, jj] - 2.5579724845846235 * k_stages[1, jj]
@@ -936,9 +1021,9 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                             hist[i, save_idx, col] = val
                         if HAS_HOOK:
                             y_save[col] = val
-                    # driver block: the quintic Hermite of the state and its sensitivities
+                    # driver block: the quintic Hermite of the state and its sensitivities over its interval
                     for j in range(n_drv):
-                        val = quintic(th[j], g0[j], s20[j], th1[j], g1[j], s21[j], theta, dt_use)
+                        val = quintic(th[j], g0[j], s20[j], th1[j], g1[j], s21[j], theta_d, h_d)
                         if SAVE_HISTORY:
                             hist[i, save_idx, Dix[j]] = val
                         if HAS_HOOK:
@@ -950,7 +1035,7 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                             val = 0.0
                             if kd_ >= 0:
                                 jj = n_drv + kd_ * n_drv + j
-                                val = quintic(th[jj], g0[jj], s20[jj], th1[jj], g1[jj], s21[jj], theta, dt_use)
+                                val = quintic(th[jj], g0[jj], s20[jj], th1[jj], g1[jj], s21[jj], theta_d, h_d)
                             if SAVE_HISTORY:
                                 hist[i, save_idx, col] = val
                             if HAS_HOOK:
@@ -960,19 +1045,20 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                     save_idx += 1
                 for jj in range(size_m):
                     y[jj] = u[jj] + k_stages[7, jj]
-                for j in range(size_d):
-                    th[j] = th1[j]
-                    g0[j] = g1[j]
-                    s20[j] = s21[j]
-                    dTd[j] = dTd1[j]
-                for c in range(d_lu_size):
-                    neg_a[c] = neg_a1[c]
                 t += dt_use
                 accepted += 1
             else:
                 rejected += 1
             n_steps += 1
 
+        # the driver's state where the main block stopped
+        if h_d > 0.0:
+            theta_d = (t - t_d0) / h_d
+            for j in range(size_d):
+                ud[j] = quintic(th[j], g0[j], s20[j], th1[j], g1[j], s21[j], theta_d, h_d)
+        else:
+            for j in range(size_d):
+                ud[j] = th1[j]
         # save times past this trajectory's own end hold its final state
         while save_idx < n_save:
             for jj in range(size_m):
@@ -985,14 +1071,14 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                     y_save[col] = y[jj]
             for j in range(n_drv):
                 if SAVE_HISTORY:
-                    hist[i, save_idx, Dix[j]] = th[j]
+                    hist[i, save_idx, Dix[j]] = ud[j]
                 if HAS_HOOK:
-                    y_save[Dix[j]] = th[j]
+                    y_save[Dix[j]] = ud[j]
             for k in range(n_sens):
                 kd_ = cuda.const.array_like(dir_to_drv_t)[k]
                 for j in range(n_drv):
                     col = n_vars + k * n_vars + Dix[j]
-                    val = th[n_drv + kd_ * n_drv + j] if kd_ >= 0 else 0.0
+                    val = ud[n_drv + kd_ * n_drv + j] if kd_ >= 0 else 0.0
                     if SAVE_HISTORY:
                         hist[i, save_idx, col] = val
                     if HAS_HOOK:
@@ -1014,6 +1100,8 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
                     hist[i, 0, n_vars + k * n_vars + Dix[j]] = th[n_drv + kd_ * n_drv + j] if kd_ >= 0 else 0.0
         accepted_out[i] = accepted
         rejected_out[i] = rejected
-        loop_out[i] = n_steps
+        loop_out[i] = n_steps + n_steps_d  # the driver's attempts on top of the main block's
 
+    if options.cache:
+        enable_content_cache(kernel)
     return kernel, tpb

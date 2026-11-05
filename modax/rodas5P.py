@@ -35,6 +35,7 @@ from modax._sensitivity import (
     seed_table,
 )
 from modax._sparse_direct import sparse_direct_solver_for
+from modax._kernel_cache import enable_content_cache
 from modax._sparsity import dense_jacobian, normalize_sparsity
 
 # fmt: off
@@ -168,6 +169,10 @@ class KernelOptions:
     # that has no such structure, the plain kernel runs.
     split: bool = False
     split_max_driver: int = 16
+    # Keep the compiled kernel on disk, keyed by what it was built from
+    # (:mod:`modax._kernel_cache`), so a new process loads it instead of
+    # rebuilding it.
+    cache: bool = False
 
 
 @functools.cache
@@ -1010,6 +1015,8 @@ def _make_kernel(ode_fn, n_vars: int, n_params: int, options: KernelOptions):
         rejected_out[i] = rejected
         loop_out[i] = n_steps
 
+    if options.cache:
+        enable_content_cache(kernel)
     return kernel, tpb
 
 
@@ -1071,6 +1078,7 @@ def solve(
     save_history: bool = True,
     split: bool = False,
     split_max_driver: int = 16,
+    cache: bool = False,
 ):
     """JAX-callable Rodas5 custom-kernel solve.
 
@@ -1185,6 +1193,11 @@ def solve(
     block's size. Sensitivities, hooks and ``vmap`` work as without the split;
     the history keeps the state order given.
 
+    ``cache=True`` keeps the compiled kernel on disk (numba's cache directory,
+    beside this module unless ``NUMBA_CACHE_DIR`` says otherwise), keyed by
+    everything it was built from (:mod:`modax._kernel_cache`): a later process
+    loads it in about a second instead of rebuilding it.
+
     ``trajectories_per_block`` is one thread's worth of work each, defaulting to
     a warp; nothing on chip bounds it, since every per-trajectory buffer is
     thread-local. ``max_registers`` caps the
@@ -1225,6 +1238,7 @@ def solve(
         save_history=bool(save_history),
         split=bool(split),
         split_max_driver=int(split_max_driver),
+        cache=bool(cache),
     )
     settings = dict(
         rtol=rtol,
