@@ -58,6 +58,11 @@ binaries and provides the `numba_enzyme` import package, so upstream
 `numba-enzyme` must not be installed alongside it. See
 [wheels/README.md](https://github.com/lawrenceberry/modax/blob/main/wheels/README.md) for what is in the wheel and why.
 
+Any GPU of compute capability 7.0 or later runs it. On Blackwell (10.0 and
+up) the kernels and their Enzyme derivatives are compiled for `sm_90`, the
+newest target whose LLVM dialect Enzyme's LLVM 15 toolchain reads, and linked
+for the GPU itself; `NUMBA_ENZYME_CUDA_CC` overrides that target.
+
 <!-- --8<-- [end:install] -->
 
 ## Quickstart

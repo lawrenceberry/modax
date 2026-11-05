@@ -63,6 +63,7 @@ from numba_cuda_mlir.descriptor import MLIRDispatcher
 from numba_cuda_mlir.numba_cuda.typing.templates import Signature
 from numba_enzyme import jvp
 
+from modax._jax_numba_custom_call import compile_target
 from modax._numba_common import OdeFn, SolveOutput, Solver, as_cuda_device
 
 Tangent = Callable[..., None]
@@ -161,7 +162,12 @@ def make_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     derivative: seed ``(S_k, 0, e_k)`` and it comes out whole.  Assembling it
     from unit columns instead costs ``n_vars + 1`` sweeps where this costs one.
     """
-    return jvp(as_cuda_device(ode_fn), signature=_primal_signature(n_vars, n_params))
+    # For the kernel's own target (compile_target), so the two link on Blackwell.
+    return jvp(
+        as_cuda_device(ode_fn),
+        signature=_primal_signature(n_vars, n_params),
+        cc=compile_target(),
+    )
 
 
 @functools.cache
@@ -184,7 +190,12 @@ def make_second_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     which leaves the plain bilinear form.
     """
     signature = _primal_signature(n_vars, n_params)
-    return jvp(jvp(as_cuda_device(ode_fn), signature=signature), signature=signature)
+    cc = compile_target()
+    return jvp(
+        jvp(as_cuda_device(ode_fn), signature=signature, cc=cc),
+        signature=signature,
+        cc=cc,
+    )
 
 
 @functools.cache
