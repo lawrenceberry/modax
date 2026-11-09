@@ -728,15 +728,33 @@ def _explicit_functions(plan: _Plan, bp: _BlockPlan, write, tangent) -> dict[str
 
     @cuda.jit(device=True)
     def teig(u, g6, k):
-        """The largest eigenvalue magnitude, ``max_j |k7_j - k6_j| / |u_j - g6_j|`` (Hairer and Wanner II, p. 22)."""
+        """The largest eigenvalue magnitude, ``max_j |k7_j - k6_j| / |u_j - g6_j|`` (Hairer and Wanner II, p. 22).
+
+        A row whose rate differs while its state is the same to the last bit
+        counts as (practically) infinitely stiff, as OrdinaryDiffEq.jl's
+        division makes it: at a stability-limited step the two states can
+        agree to rounding while the stiff rows' rates do not.
+        """
         largest = 0.0
         for j in range(n):
-            d = math.fabs(u[j] - g6[j])
-            if d > 0.0:
-                ratio = math.fabs(k[6, j] - k[5, j]) / d
-                if ratio > largest:
-                    largest = ratio
+            # branch-free (the LLVM 7 translation rejects what numba makes of the branches):
+            # 0 where neither moved, huge where only the rate did
+            ratio = math.fabs(k[6, j] - k[5, j]) / max(math.fabs(u[j] - g6[j]), 1.0e-300)
+            if ratio > largest:
+                largest = ratio
         return largest
+
+    @cuda.jit(device=True)
+    def trate(u, g6, k, jdiag):
+        """Each row's restoring rate for the inherited error's damping, ``-|k7 - k6| / |u - g6|`` row by row.
+
+        The row's own share of the stiffness estimate, free from the step's
+        two stages at its end: a Tsit5 block has no Jacobian diagonal, and
+        without damping a stiff row's inherited error is overstated by
+        ``h |J_rr|``, which starves the upstream block of step size.
+        """
+        for j in range(n):
+            jdiag[j] = -math.fabs(k[6, j] - k[5, j]) / max(math.fabs(u[j] - g6[j]), 1.0e-300)
 
     @cuda.jit(device=True)
     def tcurv(y, g, t, p_local, s2, zero):
@@ -750,7 +768,7 @@ def _explicit_functions(plan: _Plan, bp: _BlockPlan, write, tangent) -> dict[str
 
         @cuda.jit(device=True)
         def tcoup(y, t, p_local, p_seed, coup, jdiag, pbuf, zero):
-            """The rates ``df/dq . eps`` at which each upstream's error enters, one sweep each; no damping."""
+            """The rates ``df/dq . eps`` at which each upstream's error enters, one sweep each."""
             column = cuda.local.array(n, types.float64)
             for e in range(n_reads):
                 for c in range(P_LOCAL):
@@ -758,8 +776,6 @@ def _explicit_functions(plan: _Plan, bp: _BlockPlan, write, tangent) -> dict[str
                 tangent(column, y, t, p_local, zero[0:n], 0.0, pbuf)
                 for r in range(n):
                     coup[e, r] = column[r]
-            for r in range(n):
-                jdiag[r] = 0.0
 
     else:
 
@@ -783,7 +799,7 @@ def _explicit_functions(plan: _Plan, bp: _BlockPlan, write, tangent) -> dict[str
             out[j] = y[j] + h * (b1 * k[0, j] + b2 * k[1, j] + b3 * k[2, j] + b4 * k[3, j]
                                  + b5 * k[4, j] + b6 * k[5, j] + b7 * k[6, j])
 
-    return {f"tstep_{b}": tstep, f"terr_{b}": terr, f"teig_{b}": teig, f"tcurv_{b}": tcurv,
+    return {f"tstep_{b}": tstep, f"terr_{b}": terr, f"teig_{b}": teig, f"trate_{b}": trate, f"tcurv_{b}": tcurv,
             f"tcoup_{b}": tcoup, f"tdense_{b}": tdense}
 
 
@@ -1761,6 +1777,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[
             w(indent + 1, f"erry_{b}[j] = te_{b}[j]")
             w(indent, f"tcurv_{b}(th1_{b}, g1_{b}, t1_{b}, p_local, s21_{b}, zero)")
             w(indent, f"tcoup_{b}(th1_{b}, t1_{b}, p_local, pseed_{b}, coup_{b}, jdiag_{b}, pbuf, zero)")
+            w(indent, f"trate_{b}(th1_{b}, tg6_{b}, tk_{b}, jdiag_{b})")
             if auto:
                 w(indent, f"eig_{b} = teig_{b}(th1_{b}, tg6_{b}, tk_{b})")
                 w(indent, f"jok_{b} = False")
@@ -1912,6 +1929,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[
             w(ind, f"tcoup_{s}(y_{s}, t, p_local, pseed_{s}, coup_{s}, jdiag_{s}, pbuf, zero)")
             w(ind, f"tstep_{s}(y_{s}, u_{s}, tg6_{s}, tk_{s}, tfb_{s}, p_local, t, dt_use, pbuf, hseed_{s}, zero)")
             w(ind, f"terr_{s}(tk_{s}, dt_use, te_{s})")
+            w(ind, f"trate_{s}(u_{s}, tg6_{s}, tk_{s}, jdiag_{s})")
             inherit(s, f"y_{s}", "t", ind)
             error_norm(s, f"y_{s}", lambda j: f"u_{s}[{j}]", lambda j: f"te_{s}[{j}]", ind)
         w(ind, "accept = err_norm <= 1.0 and not math.isnan(err_norm)")
