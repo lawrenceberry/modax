@@ -1158,7 +1158,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
             w(1, f"rhsb_{b} = cuda.local.array({n}, {'types.float32' if options.lu_precision == 'fp32' else 'types.float64'})")
             w(1, f"ipiv_{b} = cuda.local.array(ipiv_size_{b}, np.int32)")
             w(1, f"k_{b} = cuda.local.array((8, {size}), {'types.float32' if options.lu_precision == 'fp32' else 'types.float64'})")
-            for name in ("y", "u", "work", "dT"):
+            for name in ("y", "u", "work", "dT", "h3"):
                 w(1, f"{name}_{b} = cuda.local.array({size}, np.float64)")
             continue
         N = n_nodes[b]
@@ -1207,6 +1207,17 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
             w(2, f"k = dirs_{b}[kk]")
             w(2, f"for r in range({bp.n}):")
             w(3, f"{y}[{bp.n} + kk * {bp.n} + r] = y0[i, {n_vars} + k * {n_vars} + idx_{b}[r]]")
+    w(1, "# every block's error weights, read once into thread-local memory")
+    for bp in plan.blocks:
+        b = bp.b
+        w(1, f"wl_{b} = cuda.local.array({bp.size}, np.float64)")
+        w(1, f"for r in range({bp.n}):")
+        w(2, f"wl_{b}[r] = weights[i, idx_{b}[r]]")
+        if bp.ns:
+            w(1, f"for kk in range({bp.ns}):")
+            w(2, f"k = dirs_{b}[kk]")
+            w(2, f"for r in range({bp.n}):")
+            w(3, f"wl_{b}[{bp.n} + kk * {bp.n} + r] = weights[i, {n_vars} + k * {n_vars} + idx_{b}[r]]")
     if SAVE_HISTORY:
         w(1, f"for j in range({n_vars * (1 + n_sens)}):")
         w(2, "hist[i, 0, j] = y0[i, j]")
@@ -1223,6 +1234,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(1, f"dt_{b} = dt_init")
         w(1, f"ep1_{b} = 1.0")
         w(1, f"ep2_{b} = 1.0")
+        w(1, f"lep1_{b} = 0.0")
         if not bp.sink:
             w(1, f"inh_{b} = 0.0")
             w(1, f"nn_{b} = 1")
@@ -1311,9 +1323,13 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
             w(indent, f"for r in range({bp.n}):")
             w(indent + 1, f"scale = atol + rtol * math.fabs({y}[r])")
             w(indent + 1, f"damping = 1.0 + h_cover * GAMMA * max(0.0, -jdiag_{b}[r])")
-            w(indent + 1, f"e_inh = weights[i, idx_{b}[r]] * h_cover * math.fabs(coup_{b}[{e}, r]) / (damping * scale)")
-            w(indent + 1, f"if e_inh > inh_{u}:")
-            w(indent + 2, f"inh_{u} = e_inh")
+            w(indent + 1, "# the largest ratio, divided only when a row may beat the running maximum")
+            w(indent + 1, f"num = wl_{b}[r] * h_cover * math.fabs(coup_{b}[{e}, r])")
+            w(indent + 1, "den = damping * scale")
+            w(indent + 1, f"if num > inh_{u} * den:")
+            w(indent + 2, "e_inh = num / den")
+            w(indent + 2, f"if e_inh > inh_{u}:")
+            w(indent + 3, f"inh_{u} = e_inh")
 
     def error_norm(b: int, y_old: str, y_new_expr, k7_expr, indent: int) -> None:
         """``err_norm`` of block ``b`` over its rows and directions."""
@@ -1323,7 +1339,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(indent, f"for r in range({bp.n}):")
         w(indent + 1, f"y_new = {y_new_expr('r')}")
         w(indent + 1, f"scale = atol + rtol * max(math.fabs({y_old}[r]), math.fabs(y_new))")
-        w(indent + 1, f"e = weights[i, idx_{b}[r]] * {k7_expr('r')} / scale")
+        w(indent + 1, f"e = wl_{b}[r] * {k7_expr('r')} / scale")
         w(indent + 1, "err_local += e * e")
         if bp.ns:
             w(indent, f"for kk in range({bp.ns}):")
@@ -1332,7 +1348,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
             w(indent + 2, f"jj = {bp.n} + kk * {bp.n} + r")
             w(indent + 2, f"y_new = {y_new_expr('jj')}")
             w(indent + 2, f"scale = atol + rtol * max(math.fabs({y_old}[jj]), math.fabs(y_new))")
-            w(indent + 2, f"e = weights[i, {n_vars} + k * {n_vars} + idx_{b}[r]] * {k7_expr('jj')} / scale")
+            w(indent + 2, f"e = wl_{b}[jj] * {k7_expr('jj')} / scale")
             w(indent + 2, "err_local += e * e")
         w(indent, f"err_norm = math.sqrt(err_local / {n_error})")
 
@@ -1358,7 +1374,16 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
             w(indent, "# the error its readers inherited over its last steps counts like its own")
             w(indent, f"if inh_{b} > safe_err:")
             w(indent + 1, f"safe_err = inh_{b}")
-        w(indent, f"factor = SAFETY * safe_err**E1 * ep1_{b}**E2 * ep2_{b}**E3")
+        from modax import rodas5P as R
+        e1, e2, e3 = options.gains.exponents(R.ORDER)
+        if e3 == 0.0:
+            # err^E1 ep1^E2 as one exp of the logs, the history's log kept from its own step:
+            # a log and an exp a step where two double-precision pows cost twice that
+            w(indent, "lse = math.log(safe_err)")
+            w(indent, f"factor = SAFETY * math.exp(E1 * lse + E2 * lep1_{b})")
+        else:
+            w(indent, f"lse = math.log(safe_err)")
+            w(indent, f"factor = SAFETY * safe_err**E1 * ep1_{b}**E2 * ep2_{b}**E3")
         w(indent, "if factor < FACTOR_MIN:")
         w(indent + 1, "factor = FACTOR_MIN")
         w(indent, "elif factor > FACTOR_MAX:")
@@ -1422,6 +1447,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(i3, f"if acc_{b}:")
         w(i3 + 1, f"ep2_{b} = ep1_{b}")
         w(i3 + 1, f"ep1_{b} = min(safe_err, 1.0)")
+        w(i3 + 1, f"lep1_{b} = min(lse, 0.0)")
         w(i2, f"if acc_{b}:")
         i3 = i2 + 1
         w(i3, f"t1_{b} = t0_{b} + h_{b}")
@@ -1496,31 +1522,36 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
     w(2, "if accept:")
     w(3, f"ep2_{s} = ep1_{s}")
     w(3, f"ep1_{s} = own_err")
+    w(3, f"lep1_{s} = lse")
     w(2, "# a step cut short by the dense output's end does not lower the proposal")
     w(2, f"if accept and clamped and dt_new < dt_{s}:")
     w(3, f"dt_new = dt_{s}")
     w(2, f"dt_{s} = dt_new")
     w(2, "if accept:")
     w(3, "t_old = t")
+    w(3, "# the continuous extension's three stage combinations, once a step and only when it saves;")
+    w(3, "# work and dT are free until the next step rewrites them")
+    w(3, "if save_idx < n_save and times[save_idx] <= t_end + 1e-12 * max(1.0, math.fabs(times[save_idx])):")
+    w(4, f"for jj in range({S.size}):")
+    w(5, f"work_{s}[jj] = (25.948786856663858 * k_{s}[0, jj] - 2.5579724845846235 * k_{s}[1, jj]"
+         f" + 10.433815404888879 * k_{s}[2, jj] - 2.3679251022685204 * k_{s}[3, jj]"
+         f" + 0.524948541321073 * k_{s}[4, jj] + 1.1241088310450404 * k_{s}[5, jj]"
+         f" + 0.4272876194431874 * k_{s}[6, jj] - 0.17202221070155493 * k_{s}[7, jj])")
+    w(5, f"dT_{s}[jj] = (-9.91568850695171 * k_{s}[0, jj] - 0.9689944594115154 * k_{s}[1, jj]"
+         f" + 3.0438037242978453 * k_{s}[2, jj] - 24.495224566215796 * k_{s}[3, jj]"
+         f" + 20.176138334709044 * k_{s}[4, jj] + 15.98066361424651 * k_{s}[5, jj]"
+         f" - 6.789040303419874 * k_{s}[6, jj] - 6.710236069923372 * k_{s}[7, jj])")
+    w(5, f"h3_{s}[jj] = (11.419903575922262 * k_{s}[0, jj] + 2.8879645146136994 * k_{s}[1, jj]"
+         f" + 72.92137995996029 * k_{s}[2, jj] + 80.12511834622643 * k_{s}[3, jj]"
+         f" - 52.072871366152654 * k_{s}[4, jj] - 59.78993625266729 * k_{s}[5, jj]"
+         f" - 0.15582684282751913 * k_{s}[6, jj] + 4.883087185713722 * k_{s}[7, jj])")
     w(3, "while save_idx < n_save and times[save_idx] <= t_end + 1e-12 * max(1.0, math.fabs(times[save_idx])):")
     w(4, "theta = (times[save_idx] - t_old) / dt_use")
     w(4, "theta1 = 1.0 - theta")
     w(4, "# the sink: the Rosenbrock continuous extension")
     w(4, f"for jj in range({S.size}):")
-    w(5, f"h1 = (25.948786856663858 * k_{s}[0, jj] - 2.5579724845846235 * k_{s}[1, jj]"
-         f" + 10.433815404888879 * k_{s}[2, jj] - 2.3679251022685204 * k_{s}[3, jj]"
-         f" + 0.524948541321073 * k_{s}[4, jj] + 1.1241088310450404 * k_{s}[5, jj]"
-         f" + 0.4272876194431874 * k_{s}[6, jj] - 0.17202221070155493 * k_{s}[7, jj])")
-    w(5, f"h2 = (-9.91568850695171 * k_{s}[0, jj] - 0.9689944594115154 * k_{s}[1, jj]"
-         f" + 3.0438037242978453 * k_{s}[2, jj] - 24.495224566215796 * k_{s}[3, jj]"
-         f" + 20.176138334709044 * k_{s}[4, jj] + 15.98066361424651 * k_{s}[5, jj]"
-         f" - 6.789040303419874 * k_{s}[6, jj] - 6.710236069923372 * k_{s}[7, jj])")
-    w(5, f"h3 = (11.419903575922262 * k_{s}[0, jj] + 2.8879645146136994 * k_{s}[1, jj]"
-         f" + 72.92137995996029 * k_{s}[2, jj] + 80.12511834622643 * k_{s}[3, jj]"
-         f" - 52.072871366152654 * k_{s}[4, jj] - 59.78993625266729 * k_{s}[5, jj]"
-         f" - 0.15582684282751913 * k_{s}[6, jj] + 4.883087185713722 * k_{s}[7, jj])")
     w(5, f"y_new = u_{s}[jj] + k_{s}[7, jj]")
-    w(5, f"val = theta1 * y_{s}[jj] + theta * (y_new + theta1 * (h1 + theta * (h2 + theta * h3)))")
+    w(5, f"val = theta1 * y_{s}[jj] + theta * (y_new + theta1 * (work_{s}[jj] + theta * (dT_{s}[jj] + theta * h3_{s}[jj])))")
     w(5, f"kk = jj // {S.n}")
     w(5, f"r = jj - kk * {S.n}")
     w(5, f"col = idx_{s}[r] if kk == 0 else {n_vars} + dirs_{s}[kk - 1] * {n_vars} + idx_{s}[r]")
