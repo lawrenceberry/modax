@@ -13,4 +13,13 @@ def __getattr__(name: str):
         from modax import _hierarchy
 
         return getattr(_hierarchy, name)
+    # How a block steps (modax._methods), and the solve that takes one.
+    if name in ("Rodas5P", "Tsit5", "Auto"):
+        from modax import _methods
+
+        return getattr(_methods, name)
+    if name == "solve":
+        from modax._solve import solve
+
+        return solve
     raise AttributeError(name)

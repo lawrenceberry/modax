@@ -37,6 +37,15 @@ polynomial of ``t`` and nothing else. The nodes a reader has passed are
 dropped; how far ahead a block may run is bounded by its ring
 (:data:`NODES`, fewer with sensitivities).
 
+Methods. Each block steps with its own method (:mod:`modax._methods`):
+Rodas5P, Tsit5, or ``Auto``, which switches between the two on a stiffness
+estimate. The nodes are the same whatever the method: a Tsit5 block's rate at
+a node is its last stage (first same as last) and its second derivative one
+forward sweep along ``(y', 1)``; the rates at which an upstream's error
+enters a Tsit5 reader come from one sweep per upstream, with no damping.
+Under ``Auto`` the warp, not the lane, picks the method of each step: Rodas5P
+when any lane about to step wants it.
+
 The warp decides when a block advances: whenever any lane's reader needs
 more of an upstream block, every lane with room in its ring steps that block
 too. Left to themselves the lanes would reach their upstream steps at
@@ -83,9 +92,11 @@ import numpy as np
 from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.descriptor import MLIRDispatcher
 
+from modax import tsit5 as T
 from modax._codegen import compile_device_source
 from modax._kernel_cache import enable_content_cache
-from modax._numba_common import SAFETY, as_cuda_device
+from modax._methods import TSIT5_STABILITY_SIZE, Auto, Method, Rodas5P, Tsit5
+from modax._numba_common import SAFETY, PIDGains, as_cuda_device
 from modax._sensitivity import (
     SensitivitySpec,
     make_quantity_second_tangent,
@@ -116,7 +127,9 @@ class Block:
     blocks reading this one see; ``None`` publishes the states themselves.
     ``sparsity`` is the pattern of ``rhs`` with respect to the block's own
     states (dense when ``None``). ``reads`` are other blocks; a block read by
-    two others is integrated once.
+    two others is integrated once. ``method`` is how the block steps
+    (:class:`~modax.Rodas5P`, :class:`~modax.Tsit5` or :class:`~modax.Auto`);
+    ``None`` takes the solve's.
     """
 
     rhs: Callable[..., tuple[float, ...]]
@@ -126,6 +139,9 @@ class Block:
     n_outputs: int | None = None
     sparsity: Sparsity | None = None
     name: str = ""
+    # How the block steps (:mod:`modax._methods`): ``Rodas5P()``, ``Tsit5()`` or
+    # ``Auto(Tsit5(), Rodas5P())``; ``None`` takes the solve's method.
+    method: Method | None = None
     # Internal: ``rhs(y, t, p)`` reads its upstream's Hermite blocks from the
     # local parameter row itself (laid out as :func:`hermite_slot`), so the
     # kernel calls it without a generated wrapper. The pattern split generates
@@ -139,6 +155,8 @@ class Block:
             raise ValueError("a block publishing its states has n_outputs = n")
         if self.outputs is not None and not self.n_outputs:
             raise ValueError("a block with an outputs function needs n_outputs")
+        if self.method is not None and not isinstance(self.method, (Rodas5P, Tsit5, Auto)):
+            raise TypeError(f"a block's method is Rodas5P, Tsit5 or Auto, got {self.method!r}")
         object.__setattr__(self, "reads", tuple(self.reads))
         if self.sparsity is not None:
             object.__setattr__(self, "sparsity", normalize_sparsity(self.sparsity, self.n))
@@ -331,6 +349,61 @@ class _Plan:
 
     def hcols(self, b: int) -> int:
         return sum(6 * self.blocks[u].m for u in self.blocks[b].reads)
+
+
+@dataclass(frozen=True)
+class _Method:
+    """A block's method resolved against the solve: which steps it takes, with what options."""
+
+    kind: str  # "rodas", "tsit5" or "auto"
+    lu_fp32: bool  # the Rodas5P factorisation in single precision
+    rodas_gains: PIDGains
+    tsit_gains: PIDGains
+    auto: Auto | None = None
+
+    @property
+    def implicit(self) -> bool:
+        return self.kind in ("rodas", "auto")
+
+    @property
+    def explicit(self) -> bool:
+        return self.kind in ("tsit5", "auto")
+
+    @property
+    def switch(self) -> Auto:
+        """The ``Auto`` options of a switching block."""
+        assert self.auto is not None, "only an Auto block switches"
+        return self.auto
+
+
+def resolve_method(bp: _BlockPlan, options) -> _Method:
+    """``bp``'s method: its own, else the solve's ``default_method``, else Rodas5P; ``None`` options from the solve."""
+    method = bp.block.method or getattr(options, "default_method", None) or Rodas5P()
+    rodas = method.stiff if isinstance(method, Auto) else (method if isinstance(method, Rodas5P) else None)
+    tsit = method.nonstiff if isinstance(method, Auto) else (method if isinstance(method, Tsit5) else None)
+    kind = "auto" if isinstance(method, Auto) else ("rodas" if rodas is not None else "tsit5")
+    name = bp.block.name or f"block {bp.b}"
+    if kind != "rodas" and bp.ns > 0:
+        raise NotImplementedError(
+            f"{name}: forward sensitivities through an explicit ({type(method).__name__}) block are not implemented"
+        )
+    lu = rodas.lu_precision if rodas is not None else None
+    if bp.sink:
+        lu_fp32 = (lu or options.lu_precision) == "fp32"
+    else:
+        if lu == "fp32":
+            raise ValueError(
+                f"{name}: a block others read factorises in double precision (its node Jacobian is reused); "
+                "lu_precision='fp32' applies to the final block only"
+            )
+        lu_fp32 = False
+    return _Method(
+        kind=kind,
+        lu_fp32=lu_fp32,
+        rodas_gains=(rodas.gains if rodas is not None and rodas.gains is not None else options.gains),
+        tsit_gains=(tsit.gains if tsit is not None and tsit.gains is not None else options.gains),
+        auto=method if isinstance(method, Auto) else None,
+    )
 
 
 def hermite_slot(hslot: int, j: int) -> int:
@@ -566,12 +639,160 @@ def _jacobian_times(bp: _BlockPlan, structure, namespace) -> MLIRDispatcher:
     return compile_device_source("jacobian_times", lines, namespace)
 
 
-def _block_functions(plan: _Plan, bp: _BlockPlan, options, R) -> dict[str, Any]:
+def _jacobian_inf_norm(bp: _BlockPlan, structure) -> MLIRDispatcher:
+    """``||J||_inf`` from the block's negated Jacobian in its slots: its largest absolute row sum."""
+    n = bp.n
+    pattern = bp.pattern if bp.pattern is not None else tuple(tuple(range(n)) for _ in range(n))
+    lines = ["def jacobian_inf_norm(neg_a):", "    largest = 0.0"]
+    for r in range(n):
+        if not pattern[r]:
+            continue
+        terms = " + ".join(f"math.fabs(np.float64(neg_a[{structure.slot(r, c)}]))" for c in pattern[r])
+        lines += [f"    row = {terms}", "    if row > largest:", "        largest = row"]
+    lines.append("    return largest")
+    return compile_device_source("jacobian_inf_norm", lines, {"math": math, "np": np})
+
+
+def _explicit_functions(plan: _Plan, bp: _BlockPlan, write, tangent) -> dict[str, Any]:
+    """The device functions of a block's Tsit5 steps (no directions: ``bp.ns == 0``).
+
+    ``k`` is ``(7, n)``: row 0 holds ``f(t, y)`` on entry (first same as
+    last: the previous step's row 6, or the node's rate), rows 1..6 the
+    stages, row 6 the rate at the candidate ``u``. The step is one loop over
+    the stages with the right-hand side called at one place, as Rodas5P's is.
+    """
+    b, n = bp.b, bp.n
+    P_LOCAL = plan.p_local
+    n_reads = len(bp.reads)
+    rows = _rows((
+        (T.A21,),
+        (T.A31, T.A32),
+        (T.A41, T.A42, T.A43),
+        (T.A51, T.A52, T.A53, T.A54),
+        (T.A61, T.A62, T.A63, T.A64, T.A65),
+        (T.B1, T.B2, T.B3, T.B4, T.B5, T.B6),
+    ))
+    c_t = np.asarray((T.C2, T.C3, T.C4, T.C5, T.C6, T.C7))
+
+    def make_combine(s):
+        row = rows[s - 1]
+
+        @cuda.jit(device=True)
+        def combine(u, y, k, h):
+            for j in range(n):
+                acc = row[0] * k[0, j]
+                for r in range(1, s):
+                    acc += row[r] * k[r, j]
+                u[j] = y[j] + h * acc
+
+        return combine
+
+    c1, c2, c3, c4, c5, c6 = (make_combine(s) for s in range(1, 7))
+
+    @cuda.jit(device=True)
+    def combine(s, u, y, k, h):
+        if s == 1:
+            c1(u, y, k, h)
+        elif s == 2:
+            c2(u, y, k, h)
+        elif s == 3:
+            c3(u, y, k, h)
+        elif s == 4:
+            c4(u, y, k, h)
+        elif s == 5:
+            c5(u, y, k, h)
+        else:
+            c6(u, y, k, h)
+
+    @cuda.jit(device=True, inline="never")
+    def tstep(y, u, g6, k, fbuf, p_local, t, h, pbuf, hseed, zero):
+        """One Tsit5 step from ``(t, y)`` with ``k[0] = f(t, y)``: the candidate in ``u``, its rate in ``k[6]``."""
+        cs = cuda.const.array_like(c_t)
+        for s in range(1, 7):
+            combine(s, u, y, k, h)
+            if s == 5:
+                for j in range(n):
+                    g6[j] = u[j]  # the sixth stage's state, at t + h like the candidate
+            write(u, t + cs[s - 1] * h, p_local, fbuf, pbuf, hseed, zero)
+            for j in range(n):
+                k[s, j] = fbuf[j]
+
+    E = (T.E1, T.E2, T.E3, T.E4, T.E5, T.E6, T.E7)
+
+    @cuda.jit(device=True)
+    def terr(k, h, err):
+        """The embedded error estimate, ``h sum_i e_i k_i``."""
+        for j in range(n):
+            err[j] = h * (E[0] * k[0, j] + E[1] * k[1, j] + E[2] * k[2, j] + E[3] * k[3, j]
+                          + E[4] * k[4, j] + E[5] * k[5, j] + E[6] * k[6, j])
+
+    @cuda.jit(device=True)
+    def teig(u, g6, k):
+        """The largest eigenvalue magnitude, ``max_j |k7_j - k6_j| / |u_j - g6_j|`` (Hairer and Wanner II, p. 22)."""
+        largest = 0.0
+        for j in range(n):
+            d = math.fabs(u[j] - g6[j])
+            if d > 0.0:
+                ratio = math.fabs(k[6, j] - k[5, j]) / d
+                if ratio > largest:
+                    largest = ratio
+        return largest
+
+    @cuda.jit(device=True)
+    def tcurv(y, g, t, p_local, s2, zero):
+        """``y'' = J y' + df/dt`` at a node, one forward sweep along ``(y', 1)``."""
+        column = cuda.local.array(n, types.float64)
+        tangent(column, y, t, p_local, g[0:n], 1.0, zero[0:P_LOCAL])
+        for r in range(n):
+            s2[r] = column[r]
+
+    if n_reads > 0:
+
+        @cuda.jit(device=True)
+        def tcoup(y, t, p_local, p_seed, coup, jdiag, pbuf, zero):
+            """The rates ``df/dq . eps`` at which each upstream's error enters, one sweep each; no damping."""
+            column = cuda.local.array(n, types.float64)
+            for e in range(n_reads):
+                for c in range(P_LOCAL):
+                    pbuf[c] = p_seed[e, c]
+                tangent(column, y, t, p_local, zero[0:n], 0.0, pbuf)
+                for r in range(n):
+                    coup[e, r] = column[r]
+            for r in range(n):
+                jdiag[r] = 0.0
+
+    else:
+
+        @cuda.jit(device=True)
+        def tcoup(y, t, p_local, p_seed, coup, jdiag, pbuf, zero):
+            pass
+
+    @cuda.jit(device=True)
+    def tdense(y, k, h, theta, out):
+        """Tsit5's continuous extension at ``t + theta h``."""
+        b1 = -1.0530884977290216 * theta * (theta - 1.3299890189751412) * (
+            theta * theta - 1.4364028541716351 * theta + 0.7139816917074209)
+        b2 = 0.1017 * theta * theta * (theta * theta - 2.1966568338249754 * theta + 1.2949852507374631)
+        b3 = 2.490627285651252793 * theta * theta * (
+            theta * theta - 2.38535645472061657 * theta + 1.57803468208092486)
+        b4 = -16.54810288924490272 * (theta - 1.21712927295533244) * (theta - 0.61620406037800089) * theta * theta
+        b5 = 47.37952196281928122 * (theta - 1.203071208372362603) * (theta - 0.658047292653547382) * theta * theta
+        b6 = -34.87065786149660974 * (theta - 1.2) * (theta - 0.666666666666666667) * theta * theta
+        b7 = 2.5 * (theta - 1.0) * (theta - 0.6) * theta * theta
+        for j in range(n):
+            out[j] = y[j] + h * (b1 * k[0, j] + b2 * k[1, j] + b3 * k[2, j] + b4 * k[3, j]
+                                 + b5 * k[4, j] + b6 * k[5, j] + b7 * k[6, j])
+
+    return {f"tstep_{b}": tstep, f"terr_{b}": terr, f"teig_{b}": teig, f"tcurv_{b}": tcurv,
+            f"tcoup_{b}": tcoup, f"tdense_{b}": tdense}
+
+
+def _block_functions(plan: _Plan, bp: _BlockPlan, options, R, meth: _Method) -> dict[str, Any]:
     """The device functions of one block, named with its index, for the kernel's namespace."""
     b, n, size, ns, m, mq = bp.b, bp.n, bp.size, bp.ns, bp.m, bp.mq
     P_LOCAL = plan.p_local
     n_reads = len(bp.reads)
-    lu_dtype = np.float32 if (bp.sink and options.lu_precision == "fp32") else np.float64
+    lu_dtype = np.float32 if meth.lu_fp32 else np.float64
     rhs = _wrap_rhs(plan, bp)
     out_fn = _wrap_outputs(plan, bp)
     tangent = make_tangent(rhs, n, P_LOCAL)
@@ -579,60 +800,6 @@ def _block_functions(plan: _Plan, bp: _BlockPlan, options, R) -> dict[str, Any]:
     rhs_device = as_cuda_device(rhs)
     out_tangent = make_quantity_tangent(out_fn, m, n, P_LOCAL) if out_fn is not None else None
     out_second = make_quantity_second_tangent(out_fn, m, n, P_LOCAL) if (out_fn is not None) else None
-
-    # -- the matrix ---------------------------------------------------------------------
-    if bp.pattern is None or (not bp.sink and n <= options.split_max_driver):
-        structure = colour_sparsity(bp.pattern) if bp.pattern is not None else dense_jacobian(n)
-        factorize, solve_local = R.dense_lu_solver(n)
-        ipiv_size = n
-        store = None
-        if bp.pattern is not None:
-            # coloured from the pattern onto the dense row-major slots; the
-            # slots no colour owns are cleared before each write
-            store = np.full(n * structure.n_colours, -1, dtype=np.int32)
-            for row, cols in enumerate(bp.pattern):
-                for col in cols:
-                    store[row * structure.n_colours + structure.colour[col]] = row * n + col
-        lu_size = n * n
-        diagonal = tuple(r * n + r for r in range(n))
-        needs_clear = store is not None
-
-        class _Dense:
-            def slot(self, r, c):
-                return r * n + c
-
-        slots = _Dense()
-    else:
-        solver = sparse_direct_solver_for(bp.pattern, options.ordering, "never")
-        structure = solver.compressed
-        factorize, solve_local = solver.factorize_local, solver.solve_local
-        ipiv_size = solver.ipiv_size
-        store = structure.store_slots()
-        lu_size = structure.size
-        diagonal = structure.diagonal
-        needs_clear = store is not None and lu_size > int((store >= 0).sum())
-        slots = structure
-    diag_t = np.asarray(diagonal, dtype=np.int32)
-
-    if needs_clear:
-
-        @cuda.jit(device=True)
-        def clear(lu):
-            for i in range(lu_size):
-                lu[i] = lu_dtype(0.0)
-
-    else:
-
-        @cuda.jit(device=True)
-        def clear(lu):
-            pass
-
-    jac = R._make_literal_seed_jacobian(
-        n_vars=n, n_params=P_LOCAL, n_colours=structure.n_colours, store_table=store,
-        namespace=dict(cuda=cuda, float64=types.float64, tangent_of=tangent,
-                       colour_seeds=structure.seed_table(P_LOCAL), clear_matrix=clear, lu_dtype=lu_dtype),
-        inline="never", batch=structure.n_colours + 1 + n_reads, coupling=n_reads,
-    )
 
     # -- seeds: a unit parameter vector plus the upstream sensitivities' Hermite coefficients
     dirs_t = np.asarray(bp.dirs if bp.dirs else (-1,), dtype=np.int32)
@@ -707,6 +874,155 @@ def _block_functions(plan: _Plan, bp: _BlockPlan, options, R) -> dict[str, Any]:
         @cuda.jit(device=True)
         def sens_dt(z, t, p_local, dT, pbuf, hseed, zero):
             pass
+
+    def add_outputs(functions: dict[str, Any]) -> dict[str, Any]:
+        """The published quantities' functions at a node, added to ``functions``."""
+        # -- the published quantities at a node ---------------------------------------------
+        if out_fn is not None:
+            out_device = as_cuda_device(out_fn)
+            curv_left = np.asarray(_CURV_LEFT)
+            curv_right = np.asarray(_CURV_RIGHT)
+
+            @cuda.jit(device=True)
+            def outputs_primal(th, g, s2, t, p_local, Q, Q1, Q2, zero):
+                """The quantities and their first and second time derivatives at a node."""
+                values = out_device(th, t, p_local)
+                for j in range(m):
+                    Q[j] = values[j]
+                column = cuda.local.array(m, types.float64)
+                out_tangent(column, th, t, p_local, g[0:n], 1.0, zero[0:P_LOCAL])
+                for j in range(m):
+                    Q1[j] = column[j]
+                # D2 o[(g, 1, 0), (g, 1, 0)] + D o[(y'', 0, 0)]
+                out_second(column, th, t, p_local, g[0:n], 1.0, zero[0:P_LOCAL],
+                           g[0:n], 1.0, zero[0:P_LOCAL], s2[0:n], 0.0, zero[0:P_LOCAL])
+                for j in range(m):
+                    Q2[j] = column[j]
+
+            @cuda.jit(device=True)
+            def outputs_error(th, t, p_local, err_y, p_seed, errq, zero):
+                """The quantities' error ``D o[(eps_y, 0, eps_upstream)]`` from the block's and its upstream's."""
+                column = cuda.local.array(m, types.float64)
+                out_tangent(column, th, t, p_local, err_y, 0.0, p_seed)
+                for j in range(m):
+                    errq[j] = column[j]
+
+            if ns > 0:
+
+                @cuda.jit(device=True)
+                def outputs_sens(th, g, t, p_local, Q, Q1, pbuf, hseed, zero):
+                    """Every direction's quantity sensitivity and its rate at ``(th, g, t)``."""
+                    column = cuda.local.array(m, types.float64)
+                    for kk in range(ns):
+                        base = n + kk * n
+                        qb = m + kk * m
+                        seed(kk, pbuf, hseed)
+                        out_tangent(column, th, t, p_local, th[base : base + n], 0.0, pbuf)
+                        for j in range(m):
+                            Q[qb + j] = column[j]
+                        # D2 o[(S_k, 0, e_k), (g, 1, 0)] + D o[(S_k', 0, 0)]
+                        out_second(column, th, t, p_local, th[base : base + n], 0.0, pbuf,
+                                   g[0:n], 1.0, zero[0:P_LOCAL], g[base : base + n], 0.0, zero[0:P_LOCAL])
+                        for j in range(m):
+                            Q1[qb + j] = column[j]
+
+                @cuda.jit(device=True)
+                def outputs_curvature(nQ, nQ1, qa, Qm, Q1m, Qb, Q1b, h, nQ2, nQ2l, qb):
+                    """The sensitivities' curvatures at the ends of the piece from node ``qa`` to node ``qb``.
+
+                    From the quintic through their values and rates at the piece's
+                    start (node ``qa``), midpoint and end (``Qb``, ``Q1b``): the
+                    start's curvature replaces node ``qa``'s right-hand one, the
+                    end's becomes node ``qb``'s left-hand one.
+                    """
+                    cl = cuda.const.array_like(curv_left)
+                    cr = cuda.const.array_like(curv_right)
+                    for j in range(m, mq):
+                        d0 = nQ[qa, j]
+                        d1 = h * nQ1[qa, j]
+                        d2 = Qm[j]
+                        d3 = h * Q1m[j]
+                        d4 = Qb[j]
+                        d5 = h * Q1b[j]
+                        nQ2[qa, j] = (cl[0] * d0 + cl[1] * d1 + cl[2] * d2 + cl[3] * d3 + cl[4] * d4 + cl[5] * d5) / (h * h)
+                        nQ2l[qb, j] = (cr[0] * d0 + cr[1] * d1 + cr[2] * d2 + cr[3] * d3 + cr[4] * d4 + cr[5] * d5) / (h * h)
+
+                functions[f"outputs_sens_{b}"] = outputs_sens
+                functions[f"outputs_curvature_{b}"] = outputs_curvature
+
+            functions[f"outputs_primal_{b}"] = outputs_primal
+            functions[f"outputs_error_{b}"] = outputs_error
+        return functions
+
+    explicit = _explicit_functions(plan, bp, write, tangent) if meth.explicit else {}
+    if meth.kind == "tsit5":
+        functions = {f"write_{b}": write, f"seed_{b}": seed, f"sens_dt_{b}": sens_dt, f"size_{b}": size,
+                     f"lu_size_{b}": 1, f"ipiv_{b}": 1, **explicit}
+        return functions if bp.sink else add_outputs(functions)
+
+    # -- the matrix ---------------------------------------------------------------------
+    if bp.pattern is None or (not bp.sink and n <= options.split_max_driver):
+        structure = colour_sparsity(bp.pattern) if bp.pattern is not None else dense_jacobian(n)
+        factorize, solve_local = R.dense_lu_solver(n)
+        ipiv_size = n
+        store = None
+        if bp.pattern is not None:
+            # coloured from the pattern onto the dense row-major slots; the
+            # slots no colour owns are cleared before each write
+            store = np.full(n * structure.n_colours, -1, dtype=np.int32)
+            for row, cols in enumerate(bp.pattern):
+                for col in cols:
+                    store[row * structure.n_colours + structure.colour[col]] = row * n + col
+        lu_size = n * n
+        diagonal = tuple(r * n + r for r in range(n))
+        needs_clear = store is not None
+
+        class _Dense:
+            def slot(self, r, c):
+                return r * n + c
+
+        slots = _Dense()
+    else:
+        solver = sparse_direct_solver_for(bp.pattern, options.ordering, "never")
+        structure = solver.compressed
+        factorize, solve_local = solver.factorize_local, solver.solve_local
+        ipiv_size = solver.ipiv_size
+        store = structure.store_slots()
+        lu_size = structure.size
+        diagonal = structure.diagonal
+        needs_clear = store is not None and lu_size > int((store >= 0).sum())
+        slots = structure
+    diag_t = np.asarray(diagonal, dtype=np.int32)
+
+    if needs_clear:
+
+        @cuda.jit(device=True)
+        def clear(lu):
+            for i in range(lu_size):
+                lu[i] = lu_dtype(0.0)
+
+    else:
+
+        @cuda.jit(device=True)
+        def clear(lu):
+            pass
+
+    jac = R._make_literal_seed_jacobian(
+        n_vars=n, n_params=P_LOCAL, n_colours=structure.n_colours, store_table=store,
+        namespace=dict(cuda=cuda, float64=types.float64, tangent_of=tangent,
+                       colour_seeds=structure.seed_table(P_LOCAL), clear_matrix=clear, lu_dtype=lu_dtype),
+        inline="never", batch=structure.n_colours + 1 + n_reads, coupling=n_reads,
+    )
+
+    AUTO = meth.kind == "auto"
+    if AUTO:
+        jinf = _jacobian_inf_norm(bp, slots)
+    else:
+        # numba types the branch that never runs: a stub keeps the norm out of the build
+
+        @cuda.jit(device=True)
+        def jinf(neg_a):
+            return 0.0
 
     # -- one Rodas5P step ---------------------------------------------------------------
     c_rows = _rows(((), (R.C21,), (R.C31, R.C32), (R.C41, R.C42, R.C43), (R.C51, R.C52, R.C53, R.C54),
@@ -864,12 +1180,14 @@ def _block_functions(plan: _Plan, bp: _BlockPlan, options, R) -> dict[str, Any]:
         if n_reads > 0:
 
             @cuda.jit(device=True, inline="never")
-            def step(y, u, work, dT, k_stages, lu, ipiv, rhs_buf, p_local, t, dt_use, pbuf, hseed, zero, p_seed, coup, jdiag):
+            def step(y, u, work, dT, k_stages, lu, ipiv, rhs_buf, p_local, t, dt_use, pbuf, hseed, zero, p_seed, coup, jdiag, jn):
                 """One Rodas5P step from ``y``; leaves ``u + k_stages[7]`` as the candidate."""
                 inv_dt = 1.0 / dt_use
                 dtgamma_inv = inv_dt / GAMMA
                 diag = cuda.const.array_like(diag_t)
                 jac(y, t, p_local, lu, dT, p_seed, coup)
+                if AUTO:
+                    jn[0] = jinf(lu)  # ||J||_inf, the stiffness estimate, before the step's 1/(h gamma)
                 sens_dt(y, t, p_local, dT, pbuf, hseed, zero)
                 for d_ in range(n):
                     jdiag[d_] = -np.float64(lu[diag[d_]])  # the Jacobian's diagonal, before the step's 1/(h gamma)
@@ -888,11 +1206,13 @@ def _block_functions(plan: _Plan, bp: _BlockPlan, options, R) -> dict[str, Any]:
         else:
 
             @cuda.jit(device=True, inline="never")
-            def step(y, u, work, dT, k_stages, lu, ipiv, rhs_buf, p_local, t, dt_use, pbuf, hseed, zero, p_seed, coup, jdiag):
+            def step(y, u, work, dT, k_stages, lu, ipiv, rhs_buf, p_local, t, dt_use, pbuf, hseed, zero, p_seed, coup, jdiag, jn):
                 inv_dt = 1.0 / dt_use
                 dtgamma_inv = inv_dt / GAMMA
                 diag = cuda.const.array_like(diag_t)
                 jac(y, t, p_local, lu, dT)
+                if AUTO:
+                    jn[0] = jinf(lu)
                 sens_dt(y, t, p_local, dT, pbuf, hseed, zero)
                 for d_ in range(n):
                     lu[diag[d_]] += lu_dtype(dtgamma_inv)
@@ -907,7 +1227,8 @@ def _block_functions(plan: _Plan, bp: _BlockPlan, options, R) -> dict[str, Any]:
                         advance(s, u, y, k_stages)
                         write(u, t + t_after[s] * dt_use, p_local, work, pbuf, hseed, zero)
 
-        return {f"step_{b}": step, f"size_{b}": size, f"lu_size_{b}": lu_size, f"ipiv_{b}": ipiv_size}
+        return {f"step_{b}": step, f"write_{b}": write, f"seed_{b}": seed, f"size_{b}": size,
+                f"lu_size_{b}": lu_size, f"ipiv_{b}": ipiv_size, **explicit}
 
     # -- a block with nodes: FSAL step, second derivatives, published quantities -----------
     @cuda.jit(device=True, inline="never")
@@ -969,86 +1290,10 @@ def _block_functions(plan: _Plan, bp: _BlockPlan, options, R) -> dict[str, Any]:
     functions = {
         f"step_{b}": step, f"write_{b}": write, f"sens_dt_{b}": sens_dt, f"second_{b}": second_derivatives,
         f"node_jac_{b}": node_jacobian, f"seed_{b}": seed, f"size_{b}": size, f"lu_size_{b}": lu_size,
-        f"ipiv_{b}": ipiv_size,
+        f"ipiv_{b}": ipiv_size, f"jinf_{b}": jinf, **explicit,
     }
 
-    # -- the published quantities at a node ---------------------------------------------
-    if out_fn is not None:
-        out_device = as_cuda_device(out_fn)
-        curv_left = np.asarray(_CURV_LEFT)
-        curv_right = np.asarray(_CURV_RIGHT)
-
-        @cuda.jit(device=True)
-        def outputs_primal(th, g, s2, t, p_local, Q, Q1, Q2, zero):
-            """The quantities and their first and second time derivatives at a node."""
-            values = out_device(th, t, p_local)
-            for j in range(m):
-                Q[j] = values[j]
-            column = cuda.local.array(m, types.float64)
-            out_tangent(column, th, t, p_local, g[0:n], 1.0, zero[0:P_LOCAL])
-            for j in range(m):
-                Q1[j] = column[j]
-            # D2 o[(g, 1, 0), (g, 1, 0)] + D o[(y'', 0, 0)]
-            out_second(column, th, t, p_local, g[0:n], 1.0, zero[0:P_LOCAL],
-                       g[0:n], 1.0, zero[0:P_LOCAL], s2[0:n], 0.0, zero[0:P_LOCAL])
-            for j in range(m):
-                Q2[j] = column[j]
-
-        @cuda.jit(device=True)
-        def outputs_error(th, t, p_local, err_y, p_seed, errq, zero):
-            """The quantities' error ``D o[(eps_y, 0, eps_upstream)]`` from the block's and its upstream's."""
-            column = cuda.local.array(m, types.float64)
-            out_tangent(column, th, t, p_local, err_y, 0.0, p_seed)
-            for j in range(m):
-                errq[j] = column[j]
-
-        if ns > 0:
-
-            @cuda.jit(device=True)
-            def outputs_sens(th, g, t, p_local, Q, Q1, pbuf, hseed, zero):
-                """Every direction's quantity sensitivity and its rate at ``(th, g, t)``."""
-                column = cuda.local.array(m, types.float64)
-                for kk in range(ns):
-                    base = n + kk * n
-                    qb = m + kk * m
-                    seed(kk, pbuf, hseed)
-                    out_tangent(column, th, t, p_local, th[base : base + n], 0.0, pbuf)
-                    for j in range(m):
-                        Q[qb + j] = column[j]
-                    # D2 o[(S_k, 0, e_k), (g, 1, 0)] + D o[(S_k', 0, 0)]
-                    out_second(column, th, t, p_local, th[base : base + n], 0.0, pbuf,
-                               g[0:n], 1.0, zero[0:P_LOCAL], g[base : base + n], 0.0, zero[0:P_LOCAL])
-                    for j in range(m):
-                        Q1[qb + j] = column[j]
-
-            @cuda.jit(device=True)
-            def outputs_curvature(nQ, nQ1, qa, Qm, Q1m, Qb, Q1b, h, nQ2, nQ2l, qb):
-                """The sensitivities' curvatures at the ends of the piece from node ``qa`` to node ``qb``.
-
-                From the quintic through their values and rates at the piece's
-                start (node ``qa``), midpoint and end (``Qb``, ``Q1b``): the
-                start's curvature replaces node ``qa``'s right-hand one, the
-                end's becomes node ``qb``'s left-hand one.
-                """
-                cl = cuda.const.array_like(curv_left)
-                cr = cuda.const.array_like(curv_right)
-                for j in range(m, mq):
-                    d0 = nQ[qa, j]
-                    d1 = h * nQ1[qa, j]
-                    d2 = Qm[j]
-                    d3 = h * Q1m[j]
-                    d4 = Qb[j]
-                    d5 = h * Q1b[j]
-                    nQ2[qa, j] = (cl[0] * d0 + cl[1] * d1 + cl[2] * d2 + cl[3] * d3 + cl[4] * d4 + cl[5] * d5) / (h * h)
-                    nQ2l[qb, j] = (cr[0] * d0 + cr[1] * d1 + cr[2] * d2 + cr[3] * d3 + cr[4] * d4 + cr[5] * d5) / (h * h)
-
-            functions[f"outputs_sens_{b}"] = outputs_sens
-            functions[f"outputs_curvature_{b}"] = outputs_curvature
-
-        functions[f"outputs_primal_{b}"] = outputs_primal
-        functions[f"outputs_error_{b}"] = outputs_error
-
-    return functions
+    return add_outputs(functions)
 
 
 def _hermite_writer(plan: _Plan, u: int, b: int) -> MLIRDispatcher:
@@ -1103,8 +1348,10 @@ class _Source:
             self.lines.append(("    " * indent + line) if line else "")
 
 
-def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
+def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[_Method, ...]) -> str:
     """The kernel's source: every block's buffers, the advance loops, the sink's step and the saves."""
+    from modax import rodas5P as R
+
     S = plan.blocks[-1]
     n_vars, n_params, P = plan.n_vars, plan.n_params, plan.p_local
     n_sens = plan.n_sens
@@ -1153,22 +1400,35 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(1, f"for e in range({max(1, nr)}):")
         w(2, f"for c in range({P}):")
         w(3, f"pseed_{b}[e, c] = 0.0")
+        meth = methods[b]
+        if meth.explicit:
+            w(1, f"tk_{b} = cuda.local.array((7, {n}), np.float64)")
+            for name in ("tg6", "tfb", "te"):
+                w(1, f"{name}_{b} = cuda.local.array({n}, np.float64)")
         if bp.sink:
-            w(1, f"lu_{b} = cuda.local.array(lu_size_{b}, {'types.float32' if options.lu_precision == 'fp32' else 'types.float64'})")
-            w(1, f"rhsb_{b} = cuda.local.array({n}, {'types.float32' if options.lu_precision == 'fp32' else 'types.float64'})")
-            w(1, f"ipiv_{b} = cuda.local.array(ipiv_size_{b}, np.int32)")
-            w(1, f"k_{b} = cuda.local.array((8, {size}), {'types.float32' if options.lu_precision == 'fp32' else 'types.float64'})")
-            for name in ("y", "u", "work", "dT", "h3"):
+            if meth.implicit:
+                lu_t = "types.float32" if meth.lu_fp32 else "types.float64"
+                w(1, f"lu_{b} = cuda.local.array(lu_size_{b}, {lu_t})")
+                w(1, f"rhsb_{b} = cuda.local.array({n}, {lu_t})")
+                w(1, f"ipiv_{b} = cuda.local.array(ipiv_size_{b}, np.int32)")
+                w(1, f"k_{b} = cuda.local.array((8, {size}), {lu_t})")
+                w(1, f"jn_{b} = cuda.local.array(1, np.float64)")
+                for name in ("work", "dT", "h3"):
+                    w(1, f"{name}_{b} = cuda.local.array({size}, np.float64)")
+            for name in ("y", "u"):
                 w(1, f"{name}_{b} = cuda.local.array({size}, np.float64)")
             continue
         N = n_nodes[b]
-        w(1, f"lu_{b} = cuda.local.array(lu_size_{b}, np.float64)")
-        w(1, f"nega_{b} = cuda.local.array(lu_size_{b}, np.float64)")
-        w(1, f"nega1_{b} = cuda.local.array(lu_size_{b}, np.float64)")
-        w(1, f"rhsb_{b} = cuda.local.array({n}, np.float64)")
-        w(1, f"ipiv_{b} = cuda.local.array(ipiv_size_{b}, np.int32)")
-        w(1, f"k_{b} = cuda.local.array((8, {size}), np.float64)")
-        for name in ("th", "th1", "u", "work", "g0", "g1", "s20", "s21", "dT0", "dT1", "ya", "ga", "s2a", "yb", "gb", "s2b"):
+        if meth.implicit:
+            w(1, f"lu_{b} = cuda.local.array(lu_size_{b}, np.float64)")
+            w(1, f"nega_{b} = cuda.local.array(lu_size_{b}, np.float64)")
+            w(1, f"nega1_{b} = cuda.local.array(lu_size_{b}, np.float64)")
+            w(1, f"rhsb_{b} = cuda.local.array({n}, np.float64)")
+            w(1, f"ipiv_{b} = cuda.local.array(ipiv_size_{b}, np.int32)")
+            w(1, f"k_{b} = cuda.local.array((8, {size}), np.float64)")
+            for name in ("work", "dT0", "dT1"):
+                w(1, f"{name}_{b} = cuda.local.array({size}, np.float64)")
+        for name in ("th", "th1", "u", "g0", "g1", "s20", "s21", "ya", "ga", "s2a", "yb", "gb", "s2b"):
             w(1, f"{name}_{b} = cuda.local.array({size}, np.float64)")
         w(1, f"nt_{b} = cuda.local.array({N}, np.float64)")
         for name in ("ny", "ng", "ns2"):
@@ -1235,6 +1495,17 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(1, f"ep1_{b} = 1.0")
         w(1, f"ep2_{b} = 1.0")
         w(1, f"lep1_{b} = 0.0")
+        meth = methods[b]
+        if meth.kind == "auto":
+            first = bool(meth.switch.stiff_first)
+            w(1, f"# {block_name(b)} switches between Tsit5 and Rodas5P: the lane's wish, the warp's choice")
+            w(1, f"want_{b} = {first}")
+            w(1, f"mode_{b} = {first}")
+            w(1, f"cnt_{b} = 0")
+            w(1, f"eig_{b} = 0.0")
+            w(1, f"jok_{b} = {first}")
+        if meth.explicit and bp.sink:
+            w(1, f"tok_{b} = False  # whether tk_{b}[0] holds f(t, y)")
         if not bp.sink:
             w(1, f"inh_{b} = 0.0")
             w(1, f"nn_{b} = 1")
@@ -1257,10 +1528,15 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         b = bp.b
         w(1, f"# {block_name(b)}: its first node")
         hermite_from_single_node(b, 1)
-        w(1, f"node_jac_{b}(th_{b}, t, p_local, nega1_{b}, dT1_{b}, pseed_{b}, coup_{b}, jdiag_{b})")
-        w(1, f"sens_dt_{b}(th_{b}, t, p_local, dT1_{b}, pbuf, hseed_{b}, zero)")
-        w(1, f"write_{b}(th_{b}, t, p_local, g1_{b}, pbuf, hseed_{b}, zero)")
-        w(1, f"second_{b}(th_{b}, g1_{b}, nega1_{b}, dT1_{b}, t, p_local, s21_{b}, pbuf, hseed_{b}, zero)")
+        meth = methods[b]
+        if meth.kind == "rodas" or (meth.kind == "auto" and meth.switch.stiff_first):
+            w(1, f"node_jac_{b}(th_{b}, t, p_local, nega1_{b}, dT1_{b}, pseed_{b}, coup_{b}, jdiag_{b})")
+            w(1, f"sens_dt_{b}(th_{b}, t, p_local, dT1_{b}, pbuf, hseed_{b}, zero)")
+            w(1, f"write_{b}(th_{b}, t, p_local, g1_{b}, pbuf, hseed_{b}, zero)")
+            w(1, f"second_{b}(th_{b}, g1_{b}, nega1_{b}, dT1_{b}, t, p_local, s21_{b}, pbuf, hseed_{b}, zero)")
+        else:
+            w(1, f"write_{b}(th_{b}, t, p_local, g1_{b}, pbuf, hseed_{b}, zero)")
+            w(1, f"tcurv_{b}(th_{b}, g1_{b}, t, p_local, s21_{b}, zero)")
         w(1, f"for j in range({bp.size}):")
         w(2, f"th1_{b}[j] = th_{b}[j]")
         w(2, f"ny_{b}[0, j] = th_{b}[j]")
@@ -1352,7 +1628,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
             w(indent + 2, "err_local += e * e")
         w(indent, f"err_norm = math.sqrt(err_local / {n_error})")
 
-    def controller(b: int, h: str, indent: int, inherited: bool) -> None:
+    def controller(b: int, h: str, indent: int, inherited: bool, kind: str = "r") -> None:
         """The step proposal; an accepted step leaves ``min(safe_err, 1)`` in the controller's history.
 
         The inherited error counts like the block's own in the proposal, and
@@ -1374,21 +1650,120 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
             w(indent, "# the error its readers inherited over its last steps counts like its own")
             w(indent, f"if inh_{b} > safe_err:")
             w(indent + 1, f"safe_err = inh_{b}")
-        from modax import rodas5P as R
-        e1, e2, e3 = options.gains.exponents(R.ORDER)
+        meth = methods[b]
+        gains, order = (meth.rodas_gains, R.ORDER) if kind == "r" else (meth.tsit_gains, T.ORDER)
+        e1, e2, e3 = gains.exponents(order)
+        c = f"{b}{kind}"
         if e3 == 0.0:
             # err^E1 ep1^E2 as one exp of the logs, the history's log kept from its own step:
             # a log and an exp a step where two double-precision pows cost twice that
             w(indent, "lse = math.log(safe_err)")
-            w(indent, f"factor = SAFETY * math.exp(E1 * lse + E2 * lep1_{b})")
+            w(indent, f"factor = SAFETY * math.exp(E1_{c} * lse + E2_{c} * lep1_{b})")
         else:
             w(indent, f"lse = math.log(safe_err)")
-            w(indent, f"factor = SAFETY * safe_err**E1 * ep1_{b}**E2 * ep2_{b}**E3")
-        w(indent, "if factor < FACTOR_MIN:")
-        w(indent + 1, "factor = FACTOR_MIN")
-        w(indent, "elif factor > FACTOR_MAX:")
-        w(indent + 1, "factor = FACTOR_MAX")
+            w(indent, f"factor = SAFETY * safe_err**E1_{c} * ep1_{b}**E2_{c} * ep2_{b}**E3_{c}")
+        w(indent, f"if factor < FMIN_{c}:")
+        w(indent + 1, f"factor = FMIN_{c}")
+        w(indent, f"elif factor > FMAX_{c}:")
+        w(indent + 1, f"factor = FMAX_{c}")
         w(indent, f"dt_new = {h} * factor")
+
+    def by_mode(b: int, indent: int, emit) -> None:
+        """``emit(kind, indent)`` for the block's method; under Auto both, chosen by the warp's mode."""
+        kind = methods[b].kind
+        if kind == "rodas":
+            emit("r", indent)
+        elif kind == "tsit5":
+            emit("t", indent)
+        else:
+            # two ifs, not if/else: an else touching the same arrays as its if
+            # becomes a select of memref descriptors the LLVM 7 translation rejects
+            w(indent, f"if mode_{b}:")
+            emit("r", indent + 1)
+            w(indent, f"if not mode_{b}:")
+            emit("t", indent + 1)
+
+    def auto_vote(b: int, ready: str, indent: int) -> None:
+        """The warp's method for the next step: Rodas5P if any lane about to step wants it.
+
+        Separate ifs throughout, no else and no conditional expressions: the
+        LLVM 7 translation rejects what numba makes of them here.
+        """
+        a = methods[b].switch
+        w(indent, f"vote_{b} = False")
+        w(indent, f"if cuda.any_sync(lane_mask, ({ready}) and want_{b}):")
+        w(indent + 1, f"vote_{b} = True")
+        w(indent, f"if vote_{b} and not mode_{b}:")
+        w(indent + 1, f"dt_{b} = dt_{b} * {float(a.dtfac)!r}")
+        w(indent, f"if mode_{b} and not vote_{b}:")
+        w(indent + 1, f"dt_{b} = dt_{b} / {float(a.dtfac)!r}")
+        w(indent, f"mode_{b} = vote_{b}")
+
+    def auto_update(b: int, indent: int) -> None:
+        """After an accepted step: count stiff and non-stiff steps in a row, and turn the lane's wish over."""
+        a = methods[b].switch
+        w(indent, "# stiff: an explicit step of the next size would leave Tsit5's stability region")
+        w(indent, f"stiffness = eig_{b} * dt_{b} / {TSIT5_STABILITY_SIZE!r}")
+        w(indent, f"stol = {float(a.nonstifftol)!r}")
+        w(indent, f"if mode_{b}:")
+        w(indent + 1, f"stol = {float(a.stifftol)!r}")
+        w(indent, "if stiffness > stol:")
+        w(indent + 1, f"if cnt_{b} < 0:")
+        w(indent + 2, f"cnt_{b} = 0")
+        w(indent + 1, f"cnt_{b} += 1")
+        w(indent, "if not (stiffness > stol):")
+        w(indent + 1, f"if cnt_{b} > 0:")
+        w(indent + 2, f"cnt_{b} = 0")
+        w(indent + 1, f"cnt_{b} -= 1")
+        w(indent, f"if cnt_{b} > {int(a.maxstiffstep)}:")
+        w(indent + 1, f"want_{b} = True")
+        w(indent, f"if cnt_{b} < -{int(a.maxnonstiffstep)}:")
+        w(indent + 1, f"want_{b} = False")
+
+    def attempt_upstream(b: int, kind: str, indent: int) -> None:
+        """One step from ``th_b`` over ``h_b``: the candidate in ``th1_b``, ``err_norm``, ``acc_b`` and ``dt_new``."""
+        bp = plan.blocks[b]
+        if kind == "r":
+            w(indent, f"for c in range(lu_size_{b}):")
+            w(indent + 1, f"lu_{b}[c] = nega_{b}[c]")
+            w(indent, f"for j in range({bp.size}):")
+            w(indent + 1, f"work_{b}[j] = g0_{b}[j]")
+            w(indent, f"step_{b}(th_{b}, u_{b}, work_{b}, dT0_{b}, k_{b}, lu_{b}, ipiv_{b}, rhsb_{b}, p_local, t0_{b}, h_{b}, pbuf, hseed_{b}, zero)")
+            w(indent, f"for j in range({bp.size}):")
+            w(indent + 1, f"th1_{b}[j] = u_{b}[j] + k_{b}[7, j]")
+            error_norm(b, f"th_{b}", lambda j: f"th1_{b}[{j}]", lambda j: f"k_{b}[7, {j}]", indent)
+        else:
+            w(indent, f"for j in range({bp.n}):")
+            w(indent + 1, f"tk_{b}[0, j] = g0_{b}[j]  # first same as last: the node's rate")
+            w(indent, f"tstep_{b}(th_{b}, th1_{b}, tg6_{b}, tk_{b}, tfb_{b}, p_local, t0_{b}, h_{b}, pbuf, hseed_{b}, zero)")
+            w(indent, f"terr_{b}(tk_{b}, h_{b}, te_{b})")
+            error_norm(b, f"th_{b}", lambda j: f"th1_{b}[{j}]", lambda j: f"te_{b}[{j}]", indent)
+        w(indent, f"acc_{b} = err_norm <= 1.0 and not math.isnan(err_norm)")
+        controller(b, f"h_{b}", indent, inherited=True, kind=kind)
+
+    def node_upstream(b: int, kind: str, indent: int) -> None:
+        """At an accepted step's end ``(t1_b, th1_b)``: the rate, the second derivative, the coupling, the error."""
+        bp = plan.blocks[b]
+        auto = methods[b].kind == "auto"
+        if kind == "r":
+            w(indent, f"node_jac_{b}(th1_{b}, t1_{b}, p_local, nega1_{b}, dT1_{b}, pseed_{b}, coup_{b}, jdiag_{b})")
+            w(indent, f"sens_dt_{b}(th1_{b}, t1_{b}, p_local, dT1_{b}, pbuf, hseed_{b}, zero)")
+            w(indent, f"write_{b}(th1_{b}, t1_{b}, p_local, g1_{b}, pbuf, hseed_{b}, zero)")
+            w(indent, f"second_{b}(th1_{b}, g1_{b}, nega1_{b}, dT1_{b}, t1_{b}, p_local, s21_{b}, pbuf, hseed_{b}, zero)")
+            w(indent, f"for j in range({bp.n}):")
+            w(indent + 1, f"erry_{b}[j] = k_{b}[7, j]")
+            if auto:
+                w(indent, f"eig_{b} = jinf_{b}(nega1_{b})")
+                w(indent, f"jok_{b} = True")
+        else:
+            w(indent, f"for j in range({bp.n}):")
+            w(indent + 1, f"g1_{b}[j] = tk_{b}[6, j]")
+            w(indent + 1, f"erry_{b}[j] = te_{b}[j]")
+            w(indent, f"tcurv_{b}(th1_{b}, g1_{b}, t1_{b}, p_local, s21_{b}, zero)")
+            w(indent, f"tcoup_{b}(th1_{b}, t1_{b}, p_local, pseed_{b}, coup_{b}, jdiag_{b}, pbuf, zero)")
+            if auto:
+                w(indent, f"eig_{b} = teig_{b}(th1_{b}, tg6_{b}, tk_{b})")
+                w(indent, f"jok_{b} = False")
 
     # -- advance block b until its nodes reach `target`, stepping its upstream first --
     def advance(b: int, target: str, active: str, indent: int) -> None:
@@ -1403,17 +1778,32 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(i1, f"acc_{b} = False")
         for u in bp.reads:
             advance(u, f"nt_{b}[nn_{b} - 1] + dt_{b}", f"go_{b}", i1)
+        meth = methods[b]
         ready = " and ".join([f"go_{b}"] + [f"nn_{u} >= 2" for u in bp.reads])
-        w(i1, f"if {ready}:")
+        w(i1, f"rdy_{b} = {ready}")
+        if meth.kind == "auto":
+            auto_vote(b, f"rdy_{b}", i1)
+        w(i1, f"if rdy_{b}:")
         i2 = i1 + 1
         w(i2, f"t0_{b} = nt_{b}[nn_{b} - 1]")
+        if meth.kind == "auto":
+            w(i2, f"if mode_{b} and not jok_{b}:")
+            w(i2 + 1, "# switched to Rodas5P: the node's Jacobian, which Tsit5 steps never formed")
+            w(i2 + 1, f"node_jac_{b}(th1_{b}, t0_{b}, p_local, nega1_{b}, dT1_{b}, pseed_{b}, coup_{b}, jdiag_{b})")
+            w(i2 + 1, f"jok_{b} = True")
         w(i2, f"for j in range({bp.size}):")
         w(i2 + 1, f"th_{b}[j] = th1_{b}[j]")
         w(i2 + 1, f"g0_{b}[j] = g1_{b}[j]")
         w(i2 + 1, f"s20_{b}[j] = s21_{b}[j]")
-        w(i2 + 1, f"dT0_{b}[j] = dT1_{b}[j]")
-        w(i2, f"for c in range(lu_size_{b}):")
-        w(i2 + 1, f"nega_{b}[c] = nega1_{b}[c]")
+        if meth.implicit:
+            ii = i2
+            if meth.kind == "auto":
+                w(i2, f"if mode_{b}:")
+                ii = i2 + 1
+            w(ii, f"for j in range({bp.size}):")
+            w(ii + 1, f"dT0_{b}[j] = dT1_{b}[j]")
+            w(ii, f"for c in range(lu_size_{b}):")
+            w(ii + 1, f"nega_{b}[c] = nega1_{b}[c]")
         w(i2, f"h_{b} = dt_{b}")
         w(i2, f"while not acc_{b} and n_steps < max_steps:")
         i3 = i2 + 1
@@ -1428,16 +1818,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(i3, f"if h_{b} < 1e-30:")
         w(i3 + 1, f"h_{b} = 1e-30")
         read_upstream(b, f"t0_{b}", f"h_{b}", i3)
-        w(i3, f"for c in range(lu_size_{b}):")
-        w(i3 + 1, f"lu_{b}[c] = nega_{b}[c]")
-        w(i3, f"for j in range({bp.size}):")
-        w(i3 + 1, f"work_{b}[j] = g0_{b}[j]")
-        w(i3, f"step_{b}(th_{b}, u_{b}, work_{b}, dT0_{b}, k_{b}, lu_{b}, ipiv_{b}, rhsb_{b}, p_local, t0_{b}, h_{b}, pbuf, hseed_{b}, zero)")
-        w(i3, f"for j in range({bp.size}):")
-        w(i3 + 1, f"th1_{b}[j] = u_{b}[j] + k_{b}[7, j]")
-        error_norm(b, f"th_{b}", lambda j: f"th1_{b}[{j}]", lambda j: f"k_{b}[7, {j}]", i3)
-        w(i3, f"acc_{b} = err_norm <= 1.0 and not math.isnan(err_norm)")
-        controller(b, f"h_{b}", i3, inherited=True)
+        by_mode(b, i3, lambda kind, ind: attempt_upstream(b, kind, ind))
         if bp.reads:
             w(i3, "# a step cut short by an upstream's dense output does not lower the proposal")
             w(i3, f"if acc_{b} and clamped_{b} and dt_new < dt_{b}:")
@@ -1451,18 +1832,14 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(i2, f"if acc_{b}:")
         i3 = i2 + 1
         w(i3, f"t1_{b} = t0_{b} + h_{b}")
-        w(i3, f"node_jac_{b}(th1_{b}, t1_{b}, p_local, nega1_{b}, dT1_{b}, pseed_{b}, coup_{b}, jdiag_{b})")
-        w(i3, f"sens_dt_{b}(th1_{b}, t1_{b}, p_local, dT1_{b}, pbuf, hseed_{b}, zero)")
-        w(i3, f"write_{b}(th1_{b}, t1_{b}, p_local, g1_{b}, pbuf, hseed_{b}, zero)")
-        w(i3, f"second_{b}(th1_{b}, g1_{b}, nega1_{b}, dT1_{b}, t1_{b}, p_local, s21_{b}, pbuf, hseed_{b}, zero)")
+        by_mode(b, i3, lambda kind, ind: node_upstream(b, kind, ind))
         w(i3, f"nt_{b}[nn_{b}] = t1_{b}")
         w(i3, f"for j in range({bp.size}):")
         w(i3 + 1, f"ny_{b}[nn_{b}, j] = th1_{b}[j]")
         w(i3 + 1, f"ng_{b}[nn_{b}, j] = g1_{b}[j]")
         w(i3 + 1, f"ns2_{b}[nn_{b}, j] = s21_{b}[j]")
         w(i3, f"for j in range({bp.n}):")
-        w(i3 + 1, f"erry_{b}[j] = k_{b}[7, j]")
-        w(i3 + 1, f"nerr_{b}[nn_{b}, j] = k_{b}[7, j]")
+        w(i3 + 1, f"nerr_{b}[nn_{b}, j] = erry_{b}[j]")
         if not bp.identity:
             w(i3, f"outputs_primal_{b}(th1_{b}, g1_{b}, s21_{b}, t1_{b}, p_local, qa_{b}, qa1_{b}, qa2_{b}, zero)")
             if bp.ns > 0:
@@ -1490,6 +1867,8 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
         w(i3, f"nn_{b} += 1")
         w(i3, f"inh_{b} = 0.0")
         inherit(b, f"th1_{b}", f"t0_{b}", i3)
+        if meth.kind == "auto":
+            auto_update(b, i3)
         w(i1, f"need_{b} = acc_{b} and nt_{b}[nn_{b} - 1] < {target} and nt_{b}[nn_{b} - 1] < tf_local and nn_{b} < {N} and n_steps < max_steps")
 
     # -- the main loop: the sink's steps --
@@ -1501,8 +1880,12 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
     w(3, "break")
     for u in S.reads:
         advance(u, f"t + dt_{s}", "running", 2)
+    sm = methods[s]
     ready = " and ".join(["running"] + [f"nn_{u} >= 2" for u in S.reads])
-    w(2, f"if not ({ready}):")
+    w(2, f"srdy = {ready}")
+    if sm.kind == "auto":
+        auto_vote(s, "srdy", 2)
+    w(2, "if not srdy:")
     w(3, "continue  # this lane is done, or out of steps before its upstream could move")
     w(2, f"dt_use = dt_{s}")
     w(2, "clamped = False")
@@ -1514,11 +1897,27 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
     w(3, "dt_use = 1e-30")
     w(2, "t_end = t + dt_use")
     read_upstream(s, "t", "dt_use", 2)
-    w(2, f"step_{s}(y_{s}, u_{s}, work_{s}, dT_{s}, k_{s}, lu_{s}, ipiv_{s}, rhsb_{s}, p_local, t, dt_use, pbuf, hseed_{s}, zero, pseed_{s}, coup_{s}, jdiag_{s})")
-    inherit(s, f"y_{s}", "t", 2)
-    error_norm(s, f"y_{s}", lambda j: f"u_{s}[{j}] + k_{s}[7, {j}]", lambda j: f"k_{s}[7, {j}]", 2)
-    w(2, "accept = err_norm <= 1.0 and not math.isnan(err_norm)")
-    controller(s, "dt_use", 2, inherited=False)
+
+    def attempt_sink(kind: str, ind: int) -> None:
+        if kind == "r":
+            w(ind, f"step_{s}(y_{s}, u_{s}, work_{s}, dT_{s}, k_{s}, lu_{s}, ipiv_{s}, rhsb_{s}, p_local, t, dt_use, pbuf, hseed_{s}, zero, pseed_{s}, coup_{s}, jdiag_{s}, jn_{s})")
+            inherit(s, f"y_{s}", "t", ind)
+            error_norm(s, f"y_{s}", lambda j: f"u_{s}[{j}] + k_{s}[7, {j}]", lambda j: f"k_{s}[7, {j}]", ind)
+        else:
+            w(ind, f"if not tok_{s}:")
+            w(ind + 1, f"write_{s}(y_{s}, t, p_local, tfb_{s}, pbuf, hseed_{s}, zero)")
+            w(ind + 1, f"for j in range({S.n}):")
+            w(ind + 2, f"tk_{s}[0, j] = tfb_{s}[j]")
+            w(ind + 1, f"tok_{s} = True")
+            w(ind, f"tcoup_{s}(y_{s}, t, p_local, pseed_{s}, coup_{s}, jdiag_{s}, pbuf, zero)")
+            w(ind, f"tstep_{s}(y_{s}, u_{s}, tg6_{s}, tk_{s}, tfb_{s}, p_local, t, dt_use, pbuf, hseed_{s}, zero)")
+            w(ind, f"terr_{s}(tk_{s}, dt_use, te_{s})")
+            inherit(s, f"y_{s}", "t", ind)
+            error_norm(s, f"y_{s}", lambda j: f"u_{s}[{j}]", lambda j: f"te_{s}[{j}]", ind)
+        w(ind, "accept = err_norm <= 1.0 and not math.isnan(err_norm)")
+        controller(s, "dt_use", ind, inherited=False, kind=kind)
+
+    by_mode(s, 2, attempt_sink)
     w(2, "if accept:")
     w(3, f"ep2_{s} = ep1_{s}")
     w(3, f"ep1_{s} = own_err")
@@ -1529,36 +1928,74 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
     w(2, f"dt_{s} = dt_new")
     w(2, "if accept:")
     w(3, "t_old = t")
-    w(3, "# the continuous extension's three stage combinations, once a step and only when it saves;")
-    w(3, "# work and dT are free until the next step rewrites them")
-    w(3, "if save_idx < n_save and times[save_idx] <= t_end + 1e-12 * max(1.0, math.fabs(times[save_idx])):")
-    w(4, f"for jj in range({S.size}):")
-    w(5, f"work_{s}[jj] = (25.948786856663858 * k_{s}[0, jj] - 2.5579724845846235 * k_{s}[1, jj]"
-         f" + 10.433815404888879 * k_{s}[2, jj] - 2.3679251022685204 * k_{s}[3, jj]"
-         f" + 0.524948541321073 * k_{s}[4, jj] + 1.1241088310450404 * k_{s}[5, jj]"
-         f" + 0.4272876194431874 * k_{s}[6, jj] - 0.17202221070155493 * k_{s}[7, jj])")
-    w(5, f"dT_{s}[jj] = (-9.91568850695171 * k_{s}[0, jj] - 0.9689944594115154 * k_{s}[1, jj]"
-         f" + 3.0438037242978453 * k_{s}[2, jj] - 24.495224566215796 * k_{s}[3, jj]"
-         f" + 20.176138334709044 * k_{s}[4, jj] + 15.98066361424651 * k_{s}[5, jj]"
-         f" - 6.789040303419874 * k_{s}[6, jj] - 6.710236069923372 * k_{s}[7, jj])")
-    w(5, f"h3_{s}[jj] = (11.419903575922262 * k_{s}[0, jj] + 2.8879645146136994 * k_{s}[1, jj]"
-         f" + 72.92137995996029 * k_{s}[2, jj] + 80.12511834622643 * k_{s}[3, jj]"
-         f" - 52.072871366152654 * k_{s}[4, jj] - 59.78993625266729 * k_{s}[5, jj]"
-         f" - 0.15582684282751913 * k_{s}[6, jj] + 4.883087185713722 * k_{s}[7, jj])")
+
+    def store_sink(value: str, ind: int) -> None:
+        w(ind, f"kk = jj // {S.n}")
+        w(ind, f"r = jj - kk * {S.n}")
+        w(ind, f"col = idx_{s}[r] if kk == 0 else {n_vars} + dirs_{s}[kk - 1] * {n_vars} + idx_{s}[r]")
+        if SAVE_HISTORY:
+            w(ind, f"hist[i, save_idx, col] = {value}")
+        if HAS_HOOK:
+            w(ind, f"y_save[col] = {value}")
+
+    def extension_coefficients(kind: str, ind: int) -> None:
+        if kind != "r":
+            return
+        w(ind, "# the continuous extension's three stage combinations, once a step and only when it saves;")
+        w(ind, "# work and dT are free until the next step rewrites them")
+        w(ind, "if save_idx < n_save and times[save_idx] <= t_end + 1e-12 * max(1.0, math.fabs(times[save_idx])):")
+        w(ind + 1, f"for jj in range({S.size}):")
+        w(ind + 2, f"work_{s}[jj] = (25.948786856663858 * k_{s}[0, jj] - 2.5579724845846235 * k_{s}[1, jj]"
+              f" + 10.433815404888879 * k_{s}[2, jj] - 2.3679251022685204 * k_{s}[3, jj]"
+              f" + 0.524948541321073 * k_{s}[4, jj] + 1.1241088310450404 * k_{s}[5, jj]"
+              f" + 0.4272876194431874 * k_{s}[6, jj] - 0.17202221070155493 * k_{s}[7, jj])")
+        w(ind + 2, f"dT_{s}[jj] = (-9.91568850695171 * k_{s}[0, jj] - 0.9689944594115154 * k_{s}[1, jj]"
+              f" + 3.0438037242978453 * k_{s}[2, jj] - 24.495224566215796 * k_{s}[3, jj]"
+              f" + 20.176138334709044 * k_{s}[4, jj] + 15.98066361424651 * k_{s}[5, jj]"
+              f" - 6.789040303419874 * k_{s}[6, jj] - 6.710236069923372 * k_{s}[7, jj])")
+        w(ind + 2, f"h3_{s}[jj] = (11.419903575922262 * k_{s}[0, jj] + 2.8879645146136994 * k_{s}[1, jj]"
+              f" + 72.92137995996029 * k_{s}[2, jj] + 80.12511834622643 * k_{s}[3, jj]"
+              f" - 52.072871366152654 * k_{s}[4, jj] - 59.78993625266729 * k_{s}[5, jj]"
+              f" - 0.15582684282751913 * k_{s}[6, jj] + 4.883087185713722 * k_{s}[7, jj])")
+
+    def sink_save(kind: str, ind: int) -> None:
+        if kind == "r":
+            w(ind, "# the sink: the Rosenbrock continuous extension")
+            w(ind, f"for jj in range({S.size}):")
+            w(ind + 1, f"y_new = u_{s}[jj] + k_{s}[7, jj]")
+            w(ind + 1, f"val = theta1 * y_{s}[jj] + theta * (y_new + theta1 * (work_{s}[jj] + theta * (dT_{s}[jj] + theta * h3_{s}[jj])))")
+            store_sink("val", ind + 1)
+        else:
+            w(ind, "# the sink: Tsit5's continuous extension")
+            w(ind, f"tdense_{s}(y_{s}, tk_{s}, dt_use, theta, tfb_{s})")
+            w(ind, f"for jj in range({S.size}):")
+            store_sink(f"tfb_{s}[jj]", ind + 1)
+
+    def advance_sink(kind: str, ind: int) -> None:
+        auto = sm.kind == "auto"
+        if kind == "r":
+            if auto:
+                w(ind, f"eig_{s} = jn_{s}[0]")
+                w(ind, f"tok_{s} = False")
+            w(ind, f"for jj in range({S.size}):")
+            w(ind + 1, f"y_{s}[jj] = u_{s}[jj] + k_{s}[7, jj]")
+        else:
+            if auto:
+                w(ind, f"eig_{s} = teig_{s}(u_{s}, tg6_{s}, tk_{s})")
+            w(ind, f"for jj in range({S.size}):")
+            w(ind + 1, f"y_{s}[jj] = u_{s}[jj]")
+            w(ind, f"for jj in range({S.n}):")
+            w(ind + 1, f"tk_{s}[0, jj] = tk_{s}[6, jj]  # first same as last")
+
+    if sm.kind == "rodas":
+        extension_coefficients("r", 3)
+    elif sm.kind == "auto":
+        w(3, f"if mode_{s}:")
+        extension_coefficients("r", 4)
     w(3, "while save_idx < n_save and times[save_idx] <= t_end + 1e-12 * max(1.0, math.fabs(times[save_idx])):")
     w(4, "theta = (times[save_idx] - t_old) / dt_use")
     w(4, "theta1 = 1.0 - theta")
-    w(4, "# the sink: the Rosenbrock continuous extension")
-    w(4, f"for jj in range({S.size}):")
-    w(5, f"y_new = u_{s}[jj] + k_{s}[7, jj]")
-    w(5, f"val = theta1 * y_{s}[jj] + theta * (y_new + theta1 * (work_{s}[jj] + theta * (dT_{s}[jj] + theta * h3_{s}[jj])))")
-    w(5, f"kk = jj // {S.n}")
-    w(5, f"r = jj - kk * {S.n}")
-    w(5, f"col = idx_{s}[r] if kk == 0 else {n_vars} + dirs_{s}[kk - 1] * {n_vars} + idx_{s}[r]")
-    if SAVE_HISTORY:
-        w(5, "hist[i, save_idx, col] = val")
-    if HAS_HOOK:
-        w(5, "y_save[col] = val")
+    by_mode(s, 4, sink_save)
     for bp in plan.blocks:
         if bp.sink:
             continue
@@ -1569,10 +2006,11 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...]) -> str:
     if HAS_HOOK:
         w(4, "save_hook(save_idx, y_save, times[save_idx], p_local, hook_out[i])")
     w(4, "save_idx += 1")
-    w(3, f"for jj in range({S.size}):")
-    w(4, f"y_{s}[jj] = u_{s}[jj] + k_{s}[7, jj]")
+    by_mode(s, 3, advance_sink)
     w(3, "t += dt_use")
     w(3, "accepted += 1")
+    if sm.kind == "auto":
+        auto_update(s, 3)
     w(3, "# drop the nodes the sink has passed")
     for bp in plan.blocks:
         if bp.sink:
@@ -1687,13 +2125,22 @@ def make_hierarchy_kernel(
         cuda=cuda, np=np, types=types, math=math, SAFETY=SAFETY, GAMMA=R.GAMMA,
         FACTOR_MIN=R.FACTOR_MIN, FACTOR_MAX=R.FACTOR_MAX, TPB=tpb,
     )
-    namespace["E1"], namespace["E2"], namespace["E3"] = options.gains.exponents(R.ORDER)
+    methods = tuple(resolve_method(bp, options) for bp in plan.blocks)
+    for bp, meth in zip(plan.blocks, methods):
+        # each block's controller: its method's error order, gains and step-ratio bounds
+        for kind, gains, order, fmin, fmax in (
+            ("r", meth.rodas_gains, R.ORDER, R.FACTOR_MIN, R.FACTOR_MAX),
+            ("t", meth.tsit_gains, T.ORDER, T.FACTOR_MIN, T.FACTOR_MAX),
+        ):
+            c = f"{bp.b}{kind}"
+            namespace[f"E1_{c}"], namespace[f"E2_{c}"], namespace[f"E3_{c}"] = gains.exponents(order)
+            namespace[f"FMIN_{c}"], namespace[f"FMAX_{c}"] = fmin, fmax
     if options.save_hook is not None:
         namespace["save_hook"] = as_cuda_device(options.save_hook)
     n_nodes = tuple(NODES if (spec is None or bp.ns == 0) else NODES_SENS for bp in plan.blocks)
     for bp in plan.blocks:
         b = bp.b
-        namespace.update(_block_functions(plan, bp, options, R))
+        namespace.update(_block_functions(plan, bp, options, R, methods[b]))
         if not bp.sink:
             namespace[f"dense_y_{b}"] = dense_eval_fn(bp.size)
             namespace[f"dense_q_{b}"] = dense_eval_fn(bp.mq) if bp.m else None
@@ -1705,7 +2152,7 @@ def make_hierarchy_kernel(
         for u in bp.reads:
             namespace[f"hermite_{u}_{b}"] = _hermite_writer(plan, u, b)
     # const arrays are read through cuda.const.array_like(name) in the source
-    source = _emit_kernel(plan, options, n_nodes)
+    source = _emit_kernel(plan, options, n_nodes, methods)
     source = _const_reads(source, [f"idx_{b}" for b in range(len(plan.blocks))]
                           + [f"dirs_{b}" for b in range(len(plan.blocks))]
                           + [f"pos_{b}" for b in range(len(plan.blocks))])

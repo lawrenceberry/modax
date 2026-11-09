@@ -7,8 +7,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from modax import solve
 from modax._hierarchy import Block, Hierarchy
-from modax.rodas5P import solve
 
 jax.config.update("jax_enable_x64", True)
 cuda = pytest.importorskip("numba_cuda_mlir")
@@ -82,7 +82,11 @@ def test_the_sensitivities_match_the_joint_solve():
 
         return np.asarray(jax.jvp(at, (P,), (dp,))[1])
 
-    for dp in (jnp.array([[1.0, 0.0, 0.0]] * 2), jnp.array([[0.0, 1.0, 0.0]] * 2), jnp.array([[0.0, 0.0, 1.0]] * 2)):
+    for dp in (
+        jnp.array([[1.0, 0.0, 0.0]] * 2),
+        jnp.array([[0.0, 1.0, 0.0]] * 2),
+        jnp.array([[0.0, 0.0, 1.0]] * 2),
+    ):
         split = tangent(CHAIN, dp)
         whole = tangent(joint, dp)
         assert np.abs(split - whole).max() < 1e-6 * max(1.0, np.abs(whole).max())
@@ -92,6 +96,13 @@ def test_every_block_steps_on_its_own():
     _, stats = solve(CHAIN, Y0, T_SPAN, P, return_stats=True, **TOL)
     _, joint_stats = solve(joint, Y0, T_SPAN, P, return_stats=True, **TOL)
     # the root's steps are counted in loop_steps on top of the sink's accepted and rejected ones
-    extra = np.asarray(stats["loop_steps"]) - np.asarray(stats["accepted_steps"]) - np.asarray(stats["rejected_steps"])
+    extra = (
+        np.asarray(stats["loop_steps"])
+        - np.asarray(stats["accepted_steps"])
+        - np.asarray(stats["rejected_steps"])
+    )
     assert (extra > 0).all()
-    assert (np.asarray(stats["accepted_steps"]) <= np.asarray(joint_stats["accepted_steps"]) * 1.5).all()
+    assert (
+        np.asarray(stats["accepted_steps"])
+        <= np.asarray(joint_stats["accepted_steps"]) * 1.5
+    ).all()

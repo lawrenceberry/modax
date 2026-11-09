@@ -770,6 +770,12 @@ def solve(
     call bit for bit -- at the cost of nothing tying the sensitivities' accuracy
     to ``rtol``.
     """
+    from modax._hierarchy import as_hierarchy
+
+    if as_hierarchy(ode_fn) is not None:
+        raise TypeError(
+            "tsit5.solve takes a plain right-hand side; solve a Block or Hierarchy with modax.solve"
+        )
 
     options = KernelOptions(PIDGains(pcoeff, icoeff, dcoeff), backend)
     settings = SolveSettings(rtol, atol, first_step, max_steps, error_weights)

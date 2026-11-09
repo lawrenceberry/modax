@@ -33,6 +33,7 @@ from modax._jax_common import (
 )
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
 from modax._kernel_cache import enable_content_cache
+from modax._methods import Method
 from modax._numba_common import (
     HOOK_OUT_ARGTYPE,
     SOLVER_ARGTYPES,
@@ -215,6 +216,9 @@ class KernelOptions:
     split: bool = False
     split_max_driver: int = 16
     cache: bool = False
+    # A hierarchy's blocks without a method of their own step with this one
+    # (:mod:`modax._methods`); ``None`` is Rodas5P with the options above.
+    default_method: Method | None = None
 
 
 @functools.cache
@@ -1502,12 +1506,91 @@ def solve(
     built for the kernel's own target, so a caller need not differentiate them
     itself.
 
+    ``ode_fn`` is a plain right-hand side: a :class:`~modax.Block` or
+    :class:`~modax.Hierarchy`, and the methods its blocks step with, go
+    through :func:`modax.solve`.
+
     ``split=True`` reads the pattern's one-way coupling: a leading block of
     states nothing downstream feeds back into (at most ``split_max_driver``
     of them) is integrated on steps of its own ahead of the rest, which reads
     it as a quintic Hermite interpolant (:mod:`modax._split`). ``cache=True``
     keeps the compiled kernel on disk, keyed by everything it was built from
     (:mod:`modax._kernel_cache`), so a later process loads it in a second.
+    """
+    if as_hierarchy(ode_fn) is not None:
+        raise TypeError(
+            "rodas5P.solve takes a plain right-hand side; solve a Block or Hierarchy with modax.solve"
+        )
+    return _solve(
+        ode_fn,
+        y0,
+        t_span,
+        params,
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
+        return_stats=return_stats,
+        error_weights=error_weights,
+        pcoeff=pcoeff,
+        icoeff=icoeff,
+        dcoeff=dcoeff,
+        lu_precision=lu_precision,
+        trajectories_per_block=trajectories_per_block,
+        sens_error_control=sens_error_control,
+        sens_param_columns=sens_param_columns,
+        sparsity=sparsity,
+        ordering=ordering,
+        tf_index=tf_index,
+        max_registers=max_registers,
+        array_rhs=array_rhs,
+        save_hook=save_hook,
+        hook_size=hook_size,
+        save_history=save_history,
+        sensitivity=sensitivity,
+        split=split,
+        split_max_driver=split_max_driver,
+        cache=cache,
+    )
+
+
+def _solve(
+    ode_fn: OdeFn,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    rtol: float = 1e-8,
+    atol: float = 1e-10,
+    first_step: float | None = None,
+    max_steps: int = 100000,
+    return_stats: bool = False,
+    error_weights: ArrayLike | None = None,
+    pcoeff: float = 0.0,
+    icoeff: float = 1.0,
+    dcoeff: float = 0.0,
+    lu_precision: LUPrecision = "fp32",
+    trajectories_per_block: int | None = None,
+    sens_error_control: bool = True,
+    sens_param_columns: Sequence[int] | None = None,
+    sparsity: Sparsity | None = None,
+    ordering: Ordering = "amd",
+    tf_index: int | None = None,
+    max_registers: int | None = None,
+    array_rhs: ArrayRhs | None = None,
+    save_hook: SaveHook | None = None,
+    hook_size: int = 0,
+    save_history: bool = True,
+    sensitivity: SensitivitySpec | None = None,
+    split: bool = False,
+    split_max_driver: int = 16,
+    cache: bool = False,
+    method: Method | None = None,
+) -> SolveOutput | HookedOutput:
+    """:func:`solve` for a plain system, a :class:`~modax.Block` or a :class:`~modax.Hierarchy` (typed as ``OdeFn``).
+
+    The hierarchy path behind :func:`modax.solve`: ``method`` is how the
+    blocks that name none step (:mod:`modax._methods`; ``None`` is Rodas5P).
     """
     n_vars = jnp.shape(y0)[-1]
     hierarchy = as_hierarchy(ode_fn)
@@ -1536,6 +1619,7 @@ def solve(
         split=bool(split),
         split_max_driver=int(split_max_driver),
         cache=bool(cache),
+        default_method=method,
     )
     settings = SolveSettings(rtol, atol, first_step, max_steps, error_weights)
 
