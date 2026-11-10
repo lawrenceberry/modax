@@ -4,7 +4,7 @@ If your problem is stiff in some regions and non-stiff in others, you can use `A
 
 ## Stiffness switching
 
-After every accepted step, the block estimates its
+After every attempted step, accepted or rejected, the block estimates its
 Jacobian's largest eigenvalue magnitude. Tsit5 gets it for free from its last
 two stages, $\max_j |k_{7,j} - k_{6,j}| / |y_{n+1,j} - g_{6,j}|$ (Hairer and
 Wanner II, p. 22). Rodas5P uses $\|J\|_\infty$. A step is stiff when the
@@ -12,7 +12,7 @@ estimate times the next step size exceeds 0.9 of Tsit5's stability size.
 
 More than `maxstiffstep` (10) stiff steps in a row switch the block to
 Rodas5P and double the step (`dtfac`). More than `maxnonstiffstep` (3)
-non-stiff steps switch it back and halve the step.
+non-stiff steps switch it back and halve the step, including rejected attempts.
 On the GPU, the entire 32 thread warp steps with Rodas5P if any lane requires it.
 
 ## Why is this helpful?

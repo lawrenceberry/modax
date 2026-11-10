@@ -54,8 +54,9 @@ TSIT5_STABILITY_SIZE = 3.5068
 class Auto:
     """Explicit while the block is not stiff, implicit while it is.
 
-    The switch is OrdinaryDiffEq.jl's ``AutoSwitch``. After every accepted
-    step the block estimates the largest eigenvalue magnitude of its
+    The switch is OrdinaryDiffEq.jl's ``AutoSwitch``. After every attempted
+    step, accepted or rejected (as OrdinaryDiffEq.jl's ``choose_algorithm!``
+    runs in each step's footer), the block estimates the largest eigenvalue magnitude of its
     Jacobian: from an explicit step at no cost, as ``max_j |k7_j - k6_j| /
     |y_new,j - g6_j|`` over the two stages Tsit5 evaluates at the step's end
     (Hairer and Wanner II, p. 22, in the infinity norm); from an implicit step

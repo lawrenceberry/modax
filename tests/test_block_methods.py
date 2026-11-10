@@ -130,6 +130,36 @@ def test_auto_switches_to_rodas_where_the_problem_turns_stiff():
     assert steps["auto"] < steps["tsit5"] / 5, steps
 
 
+def stiff_quantity(y, t, p):
+    return (y[0],)
+
+
+def follower(y, t, p, q):
+    """A slow reader of the stiffening block's state."""
+    return (-(y[0] - q[0]),)
+
+
+def test_an_upstream_auto_block_switches_where_its_problem_turns_stiff():
+    """An upstream block starting explicit counts its rejected attempts too and gets out of Tsit5.
+
+    Rejected attempts count towards the switch (OrdinaryDiffEq.jl's
+    ``choose_algorithm!`` runs in every step's footer), and a lane that comes
+    to want Rodas5P inside the retry loop leaves it so its warp can vote again,
+    rather than rejecting at Tsit5's stability limit until ``max_steps``.
+    """
+    root = Block(stiffening, 1, outputs=stiff_quantity, n_outputs=1, name="root", method=Auto())
+    sink = Block(follower, 1, reads=(root,), name="sink")
+    y0 = jnp.array([[1.0, 1.0]] * 32)
+    hist, stats = modax.solve(
+        Hierarchy(sink, layout=(root, sink)), y0, STIFF_T, STIFF_P,
+        rtol=1e-6, atol=1e-9, max_steps=20000, return_stats=True,
+    )
+    hist = np.asarray(hist)
+    assert np.abs(hist[:, :, 0] - np.cos(STIFF_T)).max() < 1e-4
+    assert np.isfinite(hist).all()
+    assert int(np.asarray(stats["loop_steps"]).max()) < 2000, stats
+
+
 def test_explicit_blocks_refuse_sensitivities():
     def at(p):
         return modax.solve(chain(Tsit5()), Y0, T_SPAN, p, **TOL)

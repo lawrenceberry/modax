@@ -1716,7 +1716,8 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[
         w(indent, f"mode_{b} = vote_{b}")
 
     def auto_update(b: int, indent: int) -> None:
-        """After an accepted step: count stiff and non-stiff steps in a row, and turn the lane's wish over."""
+        """After every attempt, accepted or not (OrdinaryDiffEq.jl's ``choose_algorithm!`` runs in each
+        step's footer): count stiff and non-stiff steps in a row, and turn the lane's wish over."""
         a = methods[b].switch
         w(indent, "# stiff: an explicit step of the next size would leave Tsit5's stability region")
         w(indent, f"stiffness = eig_{b} * dt_{b} / {TSIT5_STABILITY_SIZE!r}")
@@ -1793,6 +1794,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[
         w(i1, "# every lane with room steps with the warp, needed or not, so the lanes stay together")
         w(i1, f"go_{b} = {active} and nt_{b}[nn_{b} - 1] < tf_local and nn_{b} < {N} and n_steps < max_steps")
         w(i1, f"acc_{b} = False")
+        w(i1, f"bail_{b} = False")
         for u in bp.reads:
             advance(u, f"nt_{b}[nn_{b} - 1] + dt_{b}", f"go_{b}", i1)
         meth = methods[b]
@@ -1822,7 +1824,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[
             w(ii, f"for c in range(lu_size_{b}):")
             w(ii + 1, f"nega_{b}[c] = nega1_{b}[c]")
         w(i2, f"h_{b} = dt_{b}")
-        w(i2, f"while not acc_{b} and n_steps < max_steps:")
+        w(i2, f"while not acc_{b} and not bail_{b} and n_steps < max_steps:")
         i3 = i2 + 1
         w(i3, f"h_{b} = dt_{b}")
         w(i3, f"clamped_{b} = False")
@@ -1842,6 +1844,15 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[
             w(i3 + 1, f"dt_new = dt_{b}")
         w(i3, f"dt_{b} = dt_new")
         w(i3, "n_steps += 1")
+        if meth.kind == "auto":
+            w(i3, "# a rejected attempt counts towards the switch too; an explicit lane that now")
+            w(i3, "# wants the implicit method leaves the retry loop so the warp can vote again")
+            w(i3, f"if not acc_{b}:")
+            w(i3 + 1, f"if not mode_{b}:")
+            w(i3 + 2, f"eig_{b} = teig_{b}(th1_{b}, tg6_{b}, tk_{b})")
+            auto_update(b, i3 + 1)
+            w(i3 + 1, f"if want_{b} and not mode_{b}:")
+            w(i3 + 2, f"bail_{b} = True")
         w(i3, f"if acc_{b}:")
         w(i3 + 1, f"ep2_{b} = ep1_{b}")
         w(i3 + 1, f"ep1_{b} = min(safe_err, 1.0)")
@@ -1886,7 +1897,7 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[
         inherit(b, f"th1_{b}", f"t0_{b}", i3)
         if meth.kind == "auto":
             auto_update(b, i3)
-        w(i1, f"need_{b} = acc_{b} and nt_{b}[nn_{b} - 1] < {target} and nt_{b}[nn_{b} - 1] < tf_local and nn_{b} < {N} and n_steps < max_steps")
+        w(i1, f"need_{b} = (acc_{b} or bail_{b}) and nt_{b}[nn_{b} - 1] < {target} and nt_{b}[nn_{b} - 1] < tf_local and nn_{b} < {N} and n_steps < max_steps")
 
     # -- the main loop: the sink's steps --
     s = S.b
@@ -2055,6 +2066,13 @@ def _emit_kernel(plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[
         w(4, f"nn_{b} -= 1")
     w(2, "else:")
     w(3, "rejected += 1")
+    if sm.kind == "auto":
+        w(3, "# a rejected attempt counts towards the switch too (its estimate is the attempt's own)")
+        w(3, f"if mode_{s}:")
+        w(4, f"eig_{s} = jn_{s}[0]")
+        w(3, f"if not mode_{s}:")
+        w(4, f"eig_{s} = teig_{s}(u_{s}, tg6_{s}, tk_{s})")
+        auto_update(s, 3)
     w(2, "n_steps += 1")
 
     # -- after the loop: the blocks' states where the sink stopped --
