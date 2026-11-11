@@ -86,7 +86,7 @@ import math
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 import numpy as np
 from numba_cuda_mlir import cuda, types
@@ -119,6 +119,9 @@ from modax._sparsity import (
     dense_jacobian,
     normalize_sparsity,
 )
+
+if TYPE_CHECKING:
+    from modax._split import SplitHierarchy
 
 # --- the user's description -----------------------------------------------------------
 
@@ -226,6 +229,50 @@ class Hierarchy:
     @property
     def n_vars(self) -> int:
         return sum(block.n for block in self.blocks)
+
+    @staticmethod
+    def from_sparsity(
+        ode_fn: Callable[..., tuple[float, ...]],
+        n: int,
+        sparsity: Sparsity,
+        max_driver: int = 16,
+    ) -> SplitHierarchy:
+        """Split one system into a driver block and a main block along its sparsity pattern.
+
+        The pattern, read as a graph, has strongly connected components in
+        topological order. Those that read only components already taken
+        join the *driver* while it holds at most ``max_driver`` states; the
+        rest is the *main* block, which reads the driver. Pass the result to
+        :func:`modax.solve` in place of ``ode_fn``: the driver steps on its
+        own ahead of the main block, which reads it as a quintic Hermite
+        interpolant of ``t``, with the driver's error handed down. Blocks
+        step with the solve's ``method``. The state, the history and the
+        error weights keep ``ode_fn``'s order.
+
+        Args:
+            ode_fn: The whole system's right-hand side, ``(y, t, p) -> tuple``.
+            n: Its number of states.
+            sparsity: Its Jacobian's pattern, as :func:`modax.solve` takes it.
+            max_driver: The most states the driver may hold.
+
+        Returns:
+            A ``SplitHierarchy``, whose ``driver`` and ``main`` give the
+            states each block holds.
+
+        Raises:
+            ValueError: The pattern has no one-way-coupled leading block within
+                ``max_driver`` states.
+        """
+        from modax._split import SplitHierarchy, analyse_blocks
+
+        pattern = normalize_sparsity(sparsity, n)
+        split = analyse_blocks(pattern, max_driver)
+        if split is None:
+            raise ValueError(
+                "the pattern has no leading block of at most "
+                f"{max_driver} states that nothing else feeds back into"
+            )
+        return SplitHierarchy(ode_fn, n, pattern, max_driver, split)
 
     def index(self, block: Block) -> int:
         return self.blocks.index(block)

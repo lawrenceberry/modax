@@ -199,10 +199,15 @@ y = modax.solve(ode_fn, y0, t_span, params, method=modax.Tsit5(backend="local"))
 `modax.solve` (`modax/_solve.py`) has an explicit signature and no `**kwargs`.
 A method's numerics live on its object (`modax/_methods.py`): `Rodas5P`'s
 `lu_precision`, `gains` and `ordering`, `Tsit5`'s `gains` and `backend`.
-Arguments only Rodas5P supports (`sparsity`, the save hook, `split`, `cache`,
-...) raise under `Tsit5`. `modax.rodas5P.solve` and `modax.tsit5.solve` are
-the per-method solvers underneath, with the flat keyword arguments; the
-benchmarks, examples and most tests call them directly.
+Two kernels sit under it: Rodas5P's, which also runs hierarchies (and so
+Tsit5 and `Auto` blocks), and the plain Tsit5 kernel, which has no save hook,
+`tf_index`, `cache` or launch tuning. A plain Tsit5 solve that asks for one of
+those is routed to a one-block hierarchy, as a plain `Auto` solve always is;
+Tsit5 ignores `sparsity`. `array_rhs` is the one option only a plain Rodas5P
+solve takes, and it raises elsewhere. `modax.rodas5P.solve` and
+`modax.tsit5.solve` are the per-method solvers underneath, with the flat
+keyword arguments (including `split=True`); the benchmarks, examples and most
+tests call them directly.
 
 `y0` is `(n_vars,)` or `(N, n_vars)`; `params` is `(n_params,)` or
 `(N, n_params)`; the result is `(N, n_save, n_vars)`. `return_stats=True` adds a
@@ -565,18 +570,20 @@ touching the code.
   per thread, so each writes its own local arrays with no barrier inside a
   device function its callers invoke under a divergent `if running`.
 
-### Hierarchies of one-way-coupled blocks (`modax/_hierarchy.py`, `split=True`)
+### Hierarchies of one-way-coupled blocks (`modax/_hierarchy.py`, `Hierarchy.from_sparsity`)
 
 - `Block(rhs, n, reads=(...), outputs=..., n_outputs=..., sparsity=...)` and
   `Hierarchy(root, layout=None)` (exported from `modax`) describe a DAG of
   blocks: a block's `rhs(y, t, p[, q])` takes the quantities the blocks it
   reads publish (`q`, block after block), and publishes through `outputs(y,
   t, p[, q])` (its states when `None`). `solve(Hierarchy(root), ...)` takes
-  the blocks' states upstream first (or in `layout`'s order). `solve(...,
-  sparsity=pattern, split=True)` (`modax/_split.py`) finds a two-block
-  hierarchy from a single `ode_fn`: the strongly connected components of the
-  pattern, in topological order, that read only components already taken,
-  within `split_max_driver` states, publish their states (the *driver*);
+  the blocks' states upstream first (or in `layout`'s order).
+  `modax.solve(Hierarchy.from_sparsity(ode_fn, n, pattern, max_driver), ...)`
+  (`modax/_split.py`; `modax.rodas5P.solve(..., split=True)` underneath)
+  finds a two-block hierarchy from a single `ode_fn`: the strongly connected
+  components of the pattern, in topological order, that read only
+  components already taken, within `max_driver` states, publish their
+  states (the *driver*);
   the rest reads them. The driver is closed under dependence (a row that only
   integrates driver states joins it). `split_blocks(pattern, n_vars)` shows
   the split without compiling anything. Both generated right-hand sides come

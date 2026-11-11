@@ -45,3 +45,16 @@ main = Block(boltzmann, 51, reads=(background, thermal), sparsity=pattern,
 
 sol = modax.solve(Hierarchy(main), y0, t_span, params, rtol=1e-4, atol=1e-4)
 ```
+
+A system written as one right-hand side can be split for you along its
+sparsity pattern. `Hierarchy.from_sparsity` takes the leading states that
+nothing else feeds back into, up to `max_driver` of them, as a driver block
+and the rest as a main block that reads it:
+
+```python
+split = Hierarchy.from_sparsity(ode_fn, n_vars, pattern, max_driver=16)
+split.driver, split.main                    # which states each block holds
+sol = modax.solve(split, y0, t_span, params)  # y0 and the history in ode_fn's order
+```
+
+It raises if the pattern has no such block.

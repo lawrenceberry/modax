@@ -7,6 +7,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import modax
+from modax import Hierarchy, Rodas5P, Tsit5
 from modax.rodas5P import solve, split_blocks
 
 jax.config.update("jax_enable_x64", True)
@@ -174,3 +176,28 @@ def test_the_driver_steps_on_its_own():
     assert 0 < driver_attempts < accepted / 2, (driver_attempts, accepted)
     expected = x_exact(T_SPAN, 0.05, MU, 0.3, 0.1)
     assert jnp.max(jnp.abs(sol[0, :, 1] - expected)) < 1e-6
+
+
+def test_from_sparsity_is_the_split_solve():
+    y0 = jnp.array([[0.3, 0.1]])
+    p = jnp.array([[LAM, MU]])
+    split = Hierarchy.from_sparsity(ode, 2, PATTERN)
+    assert (split.driver, split.main) == ((0,), (1,))
+    kw = dict(rtol=1e-8, atol=1e-10)
+    old = np.asarray(
+        solve(
+            ode, y0, T_SPAN, p, sparsity=PATTERN, split=True, lu_precision="fp64", **kw
+        )
+    )
+    new = np.asarray(
+        modax.solve(split, y0, T_SPAN, p, method=Rodas5P(lu_precision="fp64"), **kw)
+    )
+    np.testing.assert_array_equal(old, new)
+    # the blocks step with the solve's method, whatever it is
+    explicit = np.asarray(modax.solve(split, y0, T_SPAN, p, method=Tsit5(), **kw))
+    assert np.abs(explicit - new).max() < 1e-6
+
+
+def test_from_sparsity_refuses_a_pattern_that_does_not_split():
+    with pytest.raises(ValueError, match="nothing else feeds back"):
+        Hierarchy.from_sparsity(ode, 2, np.ones((2, 2)))

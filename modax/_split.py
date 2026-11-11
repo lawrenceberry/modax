@@ -9,7 +9,8 @@ Einstein-Boltzmann hierarchy is the case this was built for (five states that
 every photon multipole reads and that read nothing back), but nothing here
 knows that: the split is found from the pattern alone.
 
-With ``split=True`` the Rodas5P solve collects the components that read only
+``Hierarchy.from_sparsity`` (or ``split=True`` on :func:`modax.rodas5P.solve`)
+collects the components that read only
 components already collected into one driver block, as long as it stays
 small, and takes the rest as the main block. The two are integrated by the
 hierarchy kernel of :mod:`modax._hierarchy` as a two-block
@@ -107,6 +108,56 @@ def analyse_blocks(
         return None
     main = sorted(set(range(len(pattern))) - driver)
     return BlockSplit(tuple(sorted(driver)), tuple(main), tuple(levels))
+
+
+@dataclass(frozen=True, eq=False)
+class SplitHierarchy:
+    """A system split along its sparsity pattern, from :meth:`Hierarchy.from_sparsity <modax.Hierarchy.from_sparsity>`.
+
+    :func:`modax.solve` integrates it as two blocks: the *driver*, the leading
+    states nothing else feeds back into, on steps of its own, and the *main*
+    block, which reads the driver as a quintic Hermite interpolant of ``t``.
+    Both right-hand sides are generated from the one ``ode_fn``, and the
+    state keeps the user's order: ``driver`` and ``main`` are indices into it.
+    """
+
+    ode_fn: object
+    n: int
+    sparsity: tuple[tuple[int, ...], ...]
+    max_driver: int
+    split: BlockSplit
+
+    @property
+    def n_vars(self) -> int:
+        return self.n
+
+    def mask(self):
+        """The pattern as an ``(n, n)`` boolean mask, the form a solve takes."""
+        import numpy as np
+
+        mask = np.zeros((self.n, self.n), dtype=bool)
+        for row, cols in enumerate(self.sparsity):
+            mask[row, list(cols)] = True
+        return mask
+
+    @property
+    def driver(self) -> tuple[int, ...]:
+        return self.split.driver
+
+    @property
+    def main(self) -> tuple[int, ...]:
+        return self.split.main
+
+    def __hash__(self) -> int:
+        return hash((id(self.ode_fn), self.sparsity, self.max_driver))
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, SplitHierarchy)
+            and other.ode_fn is self.ode_fn
+            and other.sparsity == self.sparsity
+            and other.max_driver == self.max_driver
+        )
 
 
 def restrict_pattern(pattern, indices: tuple[int, ...]) -> tuple[tuple[int, ...], ...]:

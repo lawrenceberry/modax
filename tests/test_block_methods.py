@@ -238,13 +238,39 @@ def test_the_method_carries_its_own_options():
     np.testing.assert_array_equal(tsit["shared"], tsit["local"])
 
 
-def test_tsit5_refuses_the_rodas5p_only_options():
-    with pytest.raises(ValueError, match="Tsit5 does not take sparsity"):
-        modax.solve(
-            decay, DECAY_Y0, T_SPAN, DECAY_P, method=Tsit5(), sparsity=np.eye(2)
-        )
-    with pytest.raises(ValueError, match="cache"):
-        modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, method=Tsit5(), cache=True)
+def test_a_plain_tsit5_solve_ignores_sparsity():
+    kw = dict(method=Tsit5(), rtol=1e-9, atol=1e-11)
+    plain = np.asarray(modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, **kw))
+    with_pattern = modax.solve(
+        decay, DECAY_Y0, T_SPAN, DECAY_P, sparsity=np.eye(2), **kw
+    )
+    np.testing.assert_array_equal(plain, np.asarray(with_pattern))
+
+
+def test_a_plain_tsit5_solve_takes_a_save_hook_on_the_hierarchy_kernel():
+    """A hook routes a plain Tsit5 solve to a one-block hierarchy, still Tsit5."""
+    weights = cuda.to_device(np.full(T_SPAN.size, 1.0))
+
+    def total(save_idx, y, t, p_row, acc):
+        acc[0] += weights[save_idx] * y[0]
+
+    kw = dict(method=Tsit5(), rtol=1e-9, atol=1e-11)
+    hist = np.asarray(modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, **kw))
+    hooked, acc = modax.solve(
+        decay, DECAY_Y0, T_SPAN, DECAY_P, save_hook=total, hook_size=1, **kw
+    )
+    assert np.abs(np.asarray(hooked) - hist).max() < 1e-8
+    np.testing.assert_allclose(
+        np.asarray(acc)[:, 0], hist[:, :, 0].sum(axis=1), rtol=1e-8
+    )
+
+
+def test_array_rhs_is_for_a_plain_rodas5p_solve_only():
+    for method in (Tsit5(), Auto()):
+        with pytest.raises(ValueError, match="array_rhs"):
+            modax.solve(
+                decay, DECAY_Y0, T_SPAN, DECAY_P, method=method, array_rhs=decay
+            )
 
 
 def test_method_options_are_checked():
