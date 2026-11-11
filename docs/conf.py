@@ -26,6 +26,8 @@ extensions = [
 ]
 
 exclude_patterns = ["_build"]
+# layout.html there removes the theme's top navbar.
+templates_path = ["_templates"]
 
 # -- MyST ---------------------------------------------------------------------
 

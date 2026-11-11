@@ -1,0 +1,6 @@
+{#- Drop pydata-sphinx-theme's top navbar. sphinx-book-theme 1.4 fills it
+    with a search button and sidebar toggles that the left sidebar's search
+    field and the article header's toggles already provide (1.1, which the
+    JAX docs pin, rendered it empty). -#}
+{% extends "!layout.html" %}
+{% block docs_navbar %}{% endblock docs_navbar %}
