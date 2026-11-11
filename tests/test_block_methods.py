@@ -185,6 +185,15 @@ def test_an_upstream_block_factorises_in_double():
         modax.solve(chain(Rodas5P(lu_precision="fp32")), Y0, T_SPAN, P, **SOLVE_TOL)
 
 
+def test_the_solves_precision_skips_upstream_blocks(whole):
+    """A solve-level fp32 LU reaches the final block only."""
+    method = Rodas5P(lu_precision="fp32")
+    split = np.asarray(
+        modax.solve(chain(), Y0, T_SPAN, P, method=method, rtol=1e-9, atol=1e-11)
+    )
+    assert np.abs(split - whole).max() < 1e-5
+
+
 def test_a_method_is_checked():
     with pytest.raises(TypeError):
         Block(rhs_a, 1, method="tsit5")

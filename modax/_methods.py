@@ -173,8 +173,8 @@ class Auto:
 Method = Rodas5P | Tsit5 | Auto
 
 
-def method_parts(method: Method) -> tuple[Rodas5P | None, Tsit5 | None]:
-    """``method``'s implicit and explicit methods, ``None`` where it has none."""
+def method_parts(method: Method | None) -> tuple[Rodas5P | None, Tsit5 | None]:
+    """``method``'s implicit and explicit methods, ``None`` where it has none (or is ``None``)."""
     if isinstance(method, Auto):
         return method.stiff, method.nonstiff
     return (

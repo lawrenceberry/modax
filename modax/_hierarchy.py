@@ -462,7 +462,10 @@ def resolve_method(bp: _BlockPlan, options) -> _Method:
         raise NotImplementedError(
             f"{name}: forward sensitivities through an explicit ({type(method).__name__}) block are not implemented"
         )
-    lu = option_or(rodas, "lu_precision", None)
+    # Only the block's own method may ask an upstream block for fp32: the
+    # solve's precision applies to the final block alone.
+    own, _ = method_parts(bp.block.method)
+    lu = option_or(own, "lu_precision", None)
     if bp.sink:
         lu_fp32 = (lu or options.lu_precision) == "fp32"
     else:
