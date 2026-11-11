@@ -19,6 +19,7 @@ site does not repeat them.
   <a href="https://pypi.org/project/modax-solvers/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/modax-solvers"></a>
   <a href="https://docs.jax.dev/"><img alt="JAX" src="https://img.shields.io/badge/JAX-compatible-3f51b5"></a>
   <a href="https://arxiv.org/abs/2609.35661"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2609.35661-b31b1b.svg"></a>
+  <a href="https://www.conventionalcommits.org/en/v1.0.0/"><img alt="Conventional Commits" src="https://img.shields.io/badge/Conventional%20Commits-1.0.0-%23FE5196?logo=conventionalcommits&logoColor=white"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
 </p>
 

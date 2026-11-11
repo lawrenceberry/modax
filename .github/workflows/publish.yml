@@ -1,40 +1,77 @@
 name: publish
 
-# Every push to main, as asked. PyPI refuses a version it already has, so the
-# upload is `skip-existing`: a push that does not change `version` in
-# pyproject.toml uploads nothing and stays green, and the release happens on
-# the push that bumps it. (Tagging is the conventional trigger for this, and
-# `on: release` is a two-line change if that reads better later.)
+# python-semantic-release on every push to main: it reads the Conventional
+# Commits since the last `v*` tag and, if any of them warrants a release
+# (`feat`, `fix`, `perf`, or a breaking change), bumps `version` in
+# pyproject.toml, updates CHANGELOG.md and uv.lock, commits, tags, builds and
+# makes a GitHub release. A push with nothing releasable (`docs`, `ci`,
+# `chore`, ...) does nothing. The configuration is `[tool.semantic_release]`
+# in pyproject.toml.
+#
+# The file name and the `pypi` environment are what PyPI's trusted publisher
+# is registered against; rename either and the upload is rejected.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
+    # Two releases racing would both compute the same next version.
+    concurrency:
+      group: ${{ github.workflow }}-release-${{ github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write   # push the release commit and tag, create the release
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
         with:
-          enable-cache: true
-      - name: Build the sdist and wheel
-        run: uv build
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0   # the whole history and tags, to find the last release
+      # Release exactly the commit that triggered this run, even if main has
+      # moved on since; semantic-release then refuses to push over the newer
+      # commits rather than releasing something untested.
+      - name: Pin the branch to the workflow's commit
+        run: git reset --hard ${{ github.sha }}
+
+      - name: Version, changelog, tag and build
+        id: release
+        uses: python-semantic-release/python-semantic-release@v10.7.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          git_committer_name: github-actions
+          git_committer_email: 41898282+github-actions[bot]@users.noreply.github.com
+
+      - uses: astral-sh/setup-uv@v6
+        if: steps.release.outputs.released == 'true'
       - name: Check the metadata PyPI will read
+        if: steps.release.outputs.released == 'true'
         run: uvx twine check --strict dist/*
+
+      - name: Attach the distributions to the GitHub release
+        if: steps.release.outputs.released == 'true'
+        uses: python-semantic-release/publish-action@v10.7.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.release.outputs.tag }}
+
       - uses: actions/upload-artifact@v4
+        if: steps.release.outputs.released == 'true'
         with:
           name: dist
           path: dist/
 
   publish:
-    needs: build
+    needs: release
+    if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     # Trusted publishing: PyPI mints a short-lived token for this workflow from
     # the OIDC identity below, so there is no API token in the repository's
-    # secrets to leak or rotate. It needs a publisher configured on the PyPI
-    # side first -- project, owner, repository, this workflow's filename and
-    # this environment -- or the upload is rejected.
+    # secrets to leak or rotate.
     environment:
       name: pypi
       url: https://pypi.org/p/modax-solvers
@@ -46,5 +83,3 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true

@@ -78,7 +78,16 @@ Four workflows, all in `.github/workflows/`:
   the coverage of the host-side remainder, rising to the real figure on the
   first run with a device.
 - **`docs.yml`** — the site, below.
-- **`publish.yml`** — the PyPI release.
+- **`publish.yml`** — the PyPI release, by python-semantic-release
+  (`[tool.semantic_release]` in `pyproject.toml`). Every push to `main` reads
+  the Conventional Commits since the last `v*` tag; a `feat`, `fix`, `perf`
+  or breaking change bumps `version`, updates `CHANGELOG.md` and the
+  project's entry in `uv.lock`, commits as `chore(release): vX.Y.Z`, tags,
+  builds and uploads by trusted publishing. Anything else releases nothing.
+  So **do not bump `version` by hand**, and since the commit message decides
+  the release, the `conventional-pre-commit` hook guards it. PyPI's trusted
+  publisher is registered against this file's name and the `pypi`
+  environment.
 
 `ty` is scoped to `modax/` by `[tool.ty.src]` in `pyproject.toml`, which is
 what both CI and the pre-commit hook read (the hook is deliberately passed no
