@@ -20,9 +20,3 @@
 :language: text
 ```
 :::
-
-## Acknowledgements
-
-The authors of modax thank the open-source developers of JAX, Numba-CUDA-MLIR, diffrax,
-torchdiffeq and DiffEqGPU.jl, whose work provided both a foundational
-reference and points of comparison for this new library.
