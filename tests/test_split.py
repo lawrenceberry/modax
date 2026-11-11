@@ -10,7 +10,9 @@ import pytest
 from modax.rodas5P import solve, split_blocks
 
 jax.config.update("jax_enable_x64", True)
-cuda = pytest.importorskip("numba_cuda_mlir")
+cuda = pytest.importorskip("numba_cuda_mlir.cuda")
+
+pytestmark = pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 
 LAM, MU = 1.0, 25.0
 PATTERN = np.array([[0, 0], [1, 0], [1, 1]])

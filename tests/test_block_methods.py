@@ -13,7 +13,9 @@ from modax.rodas5P import solve as rodas_solve
 from modax.tsit5 import solve as tsit_solve
 
 jax.config.update("jax_enable_x64", True)
-cuda = pytest.importorskip("numba_cuda_mlir")
+cuda = pytest.importorskip("numba_cuda_mlir.cuda")
+
+pytestmark = pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 
 T_SPAN = np.linspace(0.0, 3.0, 7)
 TOL = dict(rtol=1e-9, atol=1e-11, lu_precision="fp64")
