@@ -5,6 +5,27 @@ Releases are cut by python-semantic-release from the Conventional Commits on
 
 <!-- version list -->
 
+## v0.2.1 (2026-11-11)
+
+### Documentation
+
+- Move the acknowledgements under the citation
+  ([`4843d6d`](https://github.com/lawrenceberry/modax/commit/4843d6dae68f55acc00cfc85f61a176fb7cbcdb0))
+
+- Rewrite the docstrings plainly
+  ([`766f10f`](https://github.com/lawrenceberry/modax/commit/766f10f3e42702297b60058c8027ba57268dddcc))
+
+### Performance Improvements
+
+- Compile a plain Auto solve once
+  ([`ee43847`](https://github.com/lawrenceberry/modax/commit/ee438470e2a381f610d6862428c64a40bcb279fe))
+
+### Refactoring
+
+- Remove duplicated host-side code
+  ([`cc9b74c`](https://github.com/lawrenceberry/modax/commit/cc9b74cf4e54d1c531b67b0167f8287ebc679639))
+
+
 ## v0.2.0 (2026-11-11)
 
 ### Build System
