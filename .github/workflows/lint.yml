@@ -1,8 +1,9 @@
 name: lint
 
-# Its own workflow rather than a job inside `ci`, because a workflow is the
-# unit GitHub renders a status badge for: this is what the "lint" badge in the
-# README reports. Nothing here needs a GPU or the CUDA toolchain.
+# ruff's formatting and lint checks. Its own workflow rather than a job in
+# `tests.yml` because GitHub renders a status badge per workflow: this is what
+# the "lint" badge in the README reports. Type checking is `types.yml`, for the
+# same reason. Nothing here needs a GPU or the CUDA toolchain.
 on:
   push:
     branches: [main]
@@ -32,20 +33,3 @@ jobs:
         # `--output-format=github` turns each finding into an annotation on the
         # offending line rather than a line of log to go hunting through.
         run: uvx ruff@${{ env.RUFF_VERSION }} check --output-format=github .
-
-  types:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - name: Install the project
-        # ty resolves third-party imports out of an environment, so the
-        # dependencies have to be there even though nothing is executed and no
-        # GPU is present. The default (CPU) extra is enough for that.
-        run: uv sync --frozen
-      - name: Type check
-        # Scoped to `modax/` by `[tool.ty.src]` in pyproject.toml, which is
-        # also what the pre-commit hook obeys.
-        run: uv run --no-sync ty check --output-format concise

@@ -53,15 +53,19 @@ uv run --no-sync sphinx-build -W docs docs/_build/html   # as CI builds it
 
 ## CI
 
-Four workflows, all in `.github/workflows/`:
+Five workflows, all in `.github/workflows/`:
 
-- **`lint.yml`** — `ruff format --check`, `ruff check` and `ty check`, on
-  every push to `main` and every pull request. Its own workflow rather than a
-  job in `tests.yml` because GitHub renders a status badge per *workflow*,
-  and the README carries one for it. The ruff version is pinned in the
-  workflow's `env` and again as the `rev` in `.pre-commit-config.yaml`; bump
-  the two together, or a commit that passes locally can fail in CI over
-  formatting alone.
+- **`lint.yml`** — `ruff format --check` and `ruff check`, on every push to
+  `main` and every pull request. Its own workflow rather than a job in
+  `tests.yml` because GitHub renders a status badge per *workflow*, and the
+  README carries one for it. The ruff version is pinned in the workflow's
+  `env` and again as the `rev` in `.pre-commit-config.yaml`; bump the two
+  together, or a commit that passes locally can fail in CI over formatting
+  alone.
+- **`types.yml`** — `ty check`, same triggers, with a badge of its own. It
+  installs the project without the dev group (`--no-default-groups`, about
+  a quarter of the full environment) and runs ty from `uvx`, pinned in the
+  workflow's `env` like ruff and kept in step with the pre-commit `rev`.
 - **`tests.yml`** — the test suite under `pytest --cov`, same triggers. It
   runs on the runner named by the **repository variable `GPU_RUNNER`**:
   GitHub's GPU-enabled larger runners take a label chosen when the runner

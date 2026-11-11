@@ -1,0 +1,38 @@
+name: types
+
+# ty over `modax/`. Its own workflow, apart from `lint.yml`, so the README
+# can carry a badge for it. Nothing here needs a GPU or the CUDA toolchain.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: types-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned so a ty release cannot turn main red on its own. Keep in step with
+  # the `rev` in .pre-commit-config.yaml and the floor in pyproject.toml.
+  TY_VERSION: "0.0.83"
+
+jobs:
+  ty:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install the project
+        # ty resolves third-party imports out of an environment, so modax's
+        # runtime dependencies have to be there even though nothing is
+        # executed. The dev group is not (its benchmark and example baselines
+        # are 5 GB of torch and friends, and ty checks `modax/` only), which is
+        # why ty itself comes from uvx below rather than from that group.
+        run: uv sync --frozen --no-default-groups
+      - name: Type check
+        # Scoped to `modax/` by `[tool.ty.src]` in pyproject.toml, which is
+        # also what the pre-commit hook obeys.
+        run: uvx ty@${{ env.TY_VERSION }} check --python .venv --output-format concise

@@ -14,6 +14,7 @@ site does not repeat them.
   <a href="https://github.com/lawrenceberry/modax/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/lawrenceberry/modax/actions/workflows/tests.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/lawrenceberry/modax/actions/workflows/tests.yml"><img alt="coverage" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Flawrenceberry%2Fb451e14a9620fabb0d49c345f13b5414%2Fraw%2Fmodax-coverage.json"></a>
   <a href="https://github.com/lawrenceberry/modax/actions/workflows/lint.yml"><img alt="lint" src="https://github.com/lawrenceberry/modax/actions/workflows/lint.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/lawrenceberry/modax/actions/workflows/types.yml"><img alt="types" src="https://github.com/lawrenceberry/modax/actions/workflows/types.yml/badge.svg?branch=main"></a>
   <a href="https://pypi.org/project/modax-solvers/"><img alt="PyPI" src="https://img.shields.io/pypi/v/modax-solvers"></a>
   <a href="https://pypi.org/project/modax-solvers/"><img alt="Downloads" src="https://img.shields.io/pypi/dm/modax-solvers"></a>
   <a href="https://pypi.org/project/modax-solvers/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/modax-solvers"></a>
