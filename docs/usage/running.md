@@ -26,7 +26,7 @@ y = solve(
 # y has shape (N, n_save, n_vars)
 ```
 
-Importing `modax` enables JAX float64. All arguments and their defaults are documented in the [API reference](../api/solvers.md).
+Importing `modax` enables JAX float64. All arguments and their defaults are documented in the [API reference](../api/solve.md).
 
 ## Initial state, integration timespan and parameters
 

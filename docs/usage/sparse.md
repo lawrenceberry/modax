@@ -28,10 +28,8 @@ the kernel does not branch between them.
 
 | Module | What it does |
 |--------|--------------|
-| [`modax._sparsity`][] | colours the pattern's column intersection graph and defines `CompressedJacobian`, the layout the Enzyme sweeps write into |
-| [`modax._sparse_direct`][] | orders the pattern, factorises it symbolically, and compiles the sparse LU and triangular solves for that structure |
-
-Both are documented under [API reference / Internals](../api/internals.md).
+| `modax/_sparsity.py` | colours the pattern's column intersection graph and defines `CompressedJacobian`, the layout the Enzyme sweeps write into |
+| `modax/_sparse_direct.py` | orders the pattern, factorises it symbolically, and compiles the sparse LU and triangular solves for that structure |
 
 ## Ordering
 

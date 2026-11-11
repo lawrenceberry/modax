@@ -108,6 +108,7 @@ benchmarks/van-der-pol
 :hidden:
 :caption: API Reference
 
-api/solvers
-api/internals
+api/solve
+api/tsit5
+api/rodas5P
 ```

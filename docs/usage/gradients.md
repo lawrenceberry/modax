@@ -18,7 +18,7 @@ work, inside `jit` and `vmap` as usual. Derivatives are computed only when a
 differentiation transform requests them, so an undifferentiated `solve(...)`
 runs the same kernel as before at no additional cost.
 
-Sensitivity analysis is implemented in [`modax._sensitivity`][].
+Sensitivity analysis is implemented in `modax/_sensitivity.py`.
 
 ## Forward sensitivity analysis
 
