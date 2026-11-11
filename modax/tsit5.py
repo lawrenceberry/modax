@@ -1,4 +1,4 @@
-"""Tsit5 custom kernel using numba-cuda: one thread per trajectory, storage on chip or local."""
+"""The Tsit5 kernel: one thread per trajectory, stage vectors in shared or local memory."""
 
 from __future__ import annotations
 
@@ -129,12 +129,12 @@ _SHARED_MAX_ENSEMBLE = 16384
 
 @dataclass(frozen=True)
 class KernelOptions:
-    """What a solve asks of the kernel besides ``ode_fn`` and the shapes.
+    """The kernel options a solve sets besides ``ode_fn`` and the shapes.
 
-    ``backend`` is resolved against the ensemble by
-    :py:obj:`uses_shared <modax.tsit5.KernelOptions.uses_shared>` before a kernel is
-    built, so the compiled kernels are keyed on the gains, the spec and the
-    resolved storage rather than on this object.
+    :py:obj:`uses_shared <modax.tsit5.KernelOptions.uses_shared>` resolves
+    ``backend`` against the ensemble before it builds any kernel, so the kernel
+    caches key on the gains, the spec and the resolved storage, not on this
+    object.
     """
 
     gains: PIDGains = PIDGains()
@@ -142,7 +142,12 @@ class KernelOptions:
     spec: SensitivitySpec | None = None
 
     def uses_shared(self, n: int, n_system: int) -> bool:
-        """Whether an ensemble of ``n`` systems of ``n_system`` components runs the shared-memory kernel."""
+        """Return whether ``n`` systems of ``n_system`` components run the shared-memory kernel.
+
+        Raises:
+            ValueError: If ``backend`` is unknown, or is ``"shared"`` for a
+                system of more than 16 components.
+        """
         if self.backend == "local":
             return False
         if self.backend == "shared":
@@ -164,9 +169,8 @@ class KernelOptions:
 def clear_caches() -> None:
     """Drop the compiled kernels.
 
-    Useful when sweeping problem sizes in a single process: each unique
-    ``n_vars`` compiles a separate kernel, and nothing releases it because the
-    module-level caches hold it.
+    Each ``n_vars`` compiles its own kernel and the module-level caches keep it
+    alive, so call this when sweeping problem sizes in one process.
     """
     _make_body.cache_clear()
     _make_kernel.cache_clear()
@@ -181,13 +185,12 @@ def _make_body(
 ) -> MLIRDispatcher:
     """Build the per-trajectory Tsit5 integration loop as a CUDA device function.
 
-    ``i`` is the trajectory, indexing the ensemble's global arrays (``y0``,
-    ``params``, ``weights``, ``hist`` and the counters). ``y``, ``u`` and
-    ``k1``..``k7`` are the nine per-trajectory vectors, each a 1-D array of
-    ``n_system`` components that the body reads and writes as its own: the
-    kernels below hand it either the thread's ``cuda.local`` arrays or one
-    column of a per-block ``cuda.shared`` array, and the body is the same
-    either way, which is what keeps the two bit-identical.
+    The device function takes the trajectory index ``i`` into the ensemble's
+    global arrays (``y0``, ``params``, ``weights``, ``hist``, the counters) and
+    nine 1-D vectors of ``n_system`` components: ``y``, ``u`` and
+    ``k1``..``k7``. The kernels pass either the thread's ``cuda.local`` arrays
+    or its column of per-block ``cuda.shared`` arrays. One body for both keeps
+    the two backends bit-identical.
     """
     next_step = make_step_controller(gains, ORDER, FACTOR_MIN, FACTOR_MAX)
     # With a sensitivity spec the loop integrates the joint [y, S] system: the
@@ -415,16 +418,15 @@ def _make_kernel(
     spec: SensitivitySpec | None,
     shared: bool,
 ) -> MLIRDispatcher:
-    """Build a Tsit5 kernel: one thread per trajectory, storage chosen by ``shared``.
+    """Build a Tsit5 kernel with one thread per trajectory.
 
-    Either way the launch carries no scratch and ``y0``/``weights``/``hist``
-    keep their natural ``(n, ...)`` layouts. ``shared=False`` allocates the
-    nine per-trajectory vectors as the thread's own ``cuda.local`` arrays, as
-    in Rodas5P. ``shared=True`` allocates them as nine ``(n_system,
+    ``shared=False`` puts the nine per-trajectory vectors in the thread's own
+    ``cuda.local`` arrays. ``shared=True`` puts them in nine ``(n_system,
     _SHARED_BLOCK)`` ``cuda.shared`` arrays and hands the body the thread's
-    column of each: a strided 1-D view, which the body indexes exactly as it
-    does a local array. Every thread touches only its own column, so nothing
-    synchronises and a thread past the ensemble's end simply leaves.
+    column of each, a strided 1-D view. Each thread touches only its own
+    column, so nothing synchronises and a thread past the ensemble's end just
+    returns. The launch carries no scratch either way, and ``y0``,
+    ``weights`` and ``hist`` keep their ``(n, ...)`` layouts.
     """
     body = _make_body(ode_fn, n_vars, gains, spec)
     n_system = n_vars if spec is None else spec.n_aug
@@ -702,67 +704,58 @@ def solve(
     sens_error_control: bool = True,
     sens_param_columns: Sequence[int] | None = None,
 ) -> SolveOutput:
-    """JAX-callable Tsit5 custom-kernel solve.
+    """Integrate an ensemble with the Tsit5 kernel, callable from JAX.
+
+    The solve is an XLA custom call with a ``jax.custom_jvp`` rule.
+    ``jax.jvp``, ``jax.jacfwd``, ``jax.grad``, ``jax.jacrev`` and
+    ``jax.value_and_grad`` work with respect to ``y0`` and ``params`` by
+    integrating the forward-sensitivity system with the state (see
+    ``modax/_sensitivity.py``). An undifferentiated call runs the plain kernel
+    and pays nothing extra.
 
     Args:
-        ode_fn: The right-hand side, ``(y, t, p) -> tuple`` of scalars; see
+        ode_fn: The right-hand side, ``(y, t, p) -> tuple`` of scalars. See
             Writing ODE callbacks. A plain function is ``cuda.jit``-ed for you.
-        y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``; a 1-D state is
-            shared by every trajectory.
+        y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``. Every trajectory
+            shares a 1-D state.
         t_span: Save times, ``(n_save,)``, shared across the ensemble. Not
             differentiable.
         params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
-            from whichever of ``y0`` and ``params`` is batched; if both are,
+            from whichever of ``y0`` and ``params`` has a batch axis. If both do,
             they must agree.
         rtol: Relative tolerance of the weighted RMS error norm.
         atol: Absolute tolerance of the weighted RMS error norm.
-        first_step: Initial step size. ``None`` or any non-positive value lets
-            the kernel start from 1e-6 of its own integration window; it is a
-            launch-time scalar because ``t_span`` is traced.
+        first_step: Initial step size. ``None`` or any non-positive value
+            starts the kernel from 1e-6 of its own integration window. It is a
+            launch-time scalar because JAX traces ``t_span``.
         max_steps: Per-trajectory step budget.
         return_stats: Also return a dict of per-trajectory step counters,
             ``accepted_steps``, ``rejected_steps`` and ``loop_steps``, each
             ``(N,)``.
-        error_weights: Optional per-component weights, ``(n_vars,)`` or
-            ``(N, n_vars)``, applied in the error norm; a weight of 0 excludes
-            that component from step-size control.
+        error_weights: Per-component weights of the error norm, ``(n_vars,)``
+            or ``(N, n_vars)``. A weight of 0 takes that component out of
+            step-size control.
         pcoeff: Proportional gain of the PID step controller.
-        icoeff: Integral gain; the default ``(0, 1, 0)`` is the classic
+        icoeff: Integral gain. The default ``(0, 1, 0)`` is the classic
             I-controller.
         dcoeff: Derivative gain.
-        backend: ``"auto"``, ``"shared"`` or ``"local"``, where the state and
-            stage vectors live; see below.
-        sens_error_control: Whether a differentiated solve's sensitivity
-            components take part in step-size control; see below.
-        sens_param_columns: Restrict the parameter sensitivities to these
-            ``params`` columns; ``None`` carries every column.
+        backend: Where the state and stage vectors live. ``"shared"`` uses
+            per-block shared memory and ``"local"`` the thread's own local
+            memory. The two are bit-identical, and local wins by up to 14%
+            once the device saturates. ``"auto"`` picks shared for at most 16
+            components and at most 16384 trajectories, and local otherwise.
+        sens_error_control: Whether a differentiated solve holds the
+            sensitivities to ``rtol``/``atol`` too. ``True`` makes the
+            gradient as accurate as the value. ``False`` drops them from the
+            error norm, so the joint solve takes the plain solve's steps and
+            returns its value bit for bit, but nothing then ties the
+            sensitivities' accuracy to ``rtol``.
+        sens_param_columns: The ``params`` columns to carry sensitivities
+            for. ``None`` means every column.
 
     Returns:
         The history, ``(N, n_save, n_vars)``, followed by the stats dict when
         ``return_stats=True``.
-
-    ``backend`` chooses where the kernel keeps the state and its stage vectors:
-    ``"shared"`` in per-block shared memory, ``"local"`` in the thread's own
-    local memory. The two are bit-identical and within noise of each other until the
-    device saturates, where local wins by up to 14%; ``"auto"`` takes shared
-    where the system has at most 16 components and the ensemble at most 16384
-    trajectories, and local otherwise.
-
-    The solve is an XLA custom call into the numba-cuda kernel, so it carries a
-    ``jax.custom_jvp`` rule rather than being differentiated by XLA: asking for
-    a derivative integrates the continuous forward-sensitivity system alongside
-    the state (see ``modax/_sensitivity.py``). ``jax.jvp``, ``jax.jacfwd``,
-    ``jax.grad``, ``jax.jacrev`` and ``jax.value_and_grad`` all work with
-    respect to ``y0`` and ``params``; ``t_span`` is not differentiable. An
-    undifferentiated call runs the plain kernel and pays nothing.
-
-    ``sens_error_control`` decides whether the sensitivity components take part
-    in the step-size error norm. The default ``True`` controls them to the same
-    ``rtol``/``atol`` as the state, so the gradient is as accurate as the value.
-    ``False`` drops them from the norm, which makes the joint solve take exactly
-    the step sequence the plain solve takes -- the value then matches a plain
-    call bit for bit -- at the cost of nothing tying the sensitivities' accuracy
-    to ``rtol``.
     """
     from modax._hierarchy import as_hierarchy
 

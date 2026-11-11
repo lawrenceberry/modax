@@ -1,5 +1,5 @@
-"""What the two kernels share: the callback coercion, the solve settings, the
-step controller and the kernel signature."""
+"""What the two kernels share: callback coercion, solve settings, the step
+controller and the kernel signature."""
 
 from __future__ import annotations
 
@@ -28,9 +28,8 @@ OdeFn: TypeAlias = (
 )
 """The right-hand side, ``(y, t, p) -> tuple`` of scalars.
 
-A plain function is compiled with ``cuda.jit(device=True)`` by
-:py:obj:`as_cuda_device <modax._numba_common.as_cuda_device>`; one already compiled
-is used as it is.
+:py:obj:`as_cuda_device <modax._numba_common.as_cuda_device>` compiles a plain
+function with ``cuda.jit(device=True)`` and passes a compiled one through.
 """
 
 
@@ -51,10 +50,10 @@ Solver: TypeAlias = Callable[[ArrayLike, ArrayLike, ArrayLike], SolveOutput]
 
 @dataclass(frozen=True)
 class SolveSettings:
-    """The per-call settings both solvers take and hand to the kernel as scalars.
+    """Per-call settings both solvers pass to the kernel at launch.
 
-    Unlike the kernel options these select no compiled code: they are launch
-    arguments, and the error weights are an array input.
+    These select no compiled code. The tolerances, ``first_step`` and
+    ``max_steps`` go in as scalars and the error weights as an array input.
     """
 
     rtol: float = 1e-8
@@ -65,26 +64,30 @@ class SolveSettings:
 
     @property
     def dt0(self) -> np.float64:
-        """The initial step the kernels take, from ``first_step``.
+        """The kernel's initial step, from ``first_step``.
 
-        A launch-time scalar, so it cannot be derived here from the save
-        times: under ``jit`` (and under the ``custom_vmap`` rule, which traces
-        unconditionally) those are tracers. With no first step pinned it is
-        the non-positive sentinel, and each kernel takes 1e-6 of its own
-        integration window off the ``times`` array it already reads.
+        The host can't derive it from the save times, which are tracers under
+        ``jit`` and the ``custom_vmap`` rule. Without ``first_step`` it is 0,
+        a sentinel that makes each kernel start from 1e-6 of its own
+        integration window.
         """
         return np.float64(0.0 if self.first_step is None else self.first_step)
 
 
 @dataclass(frozen=True)
 class PIDGains:
-    """The gains of the proportional-integral-derivative step controller.
+    """Gains of the proportional-integral-derivative step controller.
 
     The default ``(0, 1, 0)`` is the elementary integral controller. Non-zero
-    proportional and derivative gains give smoother step-size sequences and
-    fewer rejected steps on stiff and mildly oscillatory problems, which
-    reduces the spread of step counts across an ensemble and with it the
-    divergence between the threads of a warp.
+    proportional and derivative gains smooth the step-size sequence and cut
+    rejected steps on stiff and mildly oscillatory problems. That narrows the
+    spread of step counts across an ensemble, and so the divergence between
+    threads of a warp.
+
+    Attributes:
+        pcoeff: Proportional gain ``k_P``. Defaults to 0.
+        icoeff: Integral gain ``k_I``. Defaults to 1.
+        dcoeff: Derivative gain ``k_D``. Defaults to 0.
     """
 
     pcoeff: float = 0.0
@@ -97,7 +100,7 @@ class PIDGains:
         ``h_next = h * 0.9 * err^e1 * err_prev^e2 * err_prev2^e3``, with
         ``e1 = -(k_I + k_P + k_D) / q``, ``e2 = (k_P + 2 k_D) / q`` and
         ``e3 = -k_D / q``. The defaults give ``e1 = -1 / q`` and
-        ``e2 = e3 = 0``, the elementary controller exactly.
+        ``e2 = e3 = 0``, which is exactly the elementary controller.
         """
         q = -1.0 / order
         return (
@@ -113,15 +116,14 @@ SAFETY = 0.9
 def make_step_controller(
     gains: PIDGains, order: int, factor_min: float, factor_max: float
 ) -> MLIRDispatcher:
-    """The device function that rescales the step after every attempt.
+    """Build the device function that rescales the step after every attempt.
 
-    ``next_step(err_norm, err_prev, err_prev2, accept)`` returns the factor to
-    multiply the step by and the error history to carry forward, which
-    advances only on an accepted step. The error is clamped away from zero,
-    infinity and NaN before it is raised to the exponents, so a rejected step
-    with a NaN norm shrinks the step by ``factor_min`` rather than poisoning
-    the history. Both kernels call this once per attempted step; they differ
-    only in the error order and in how far a step may grow or shrink at once.
+    ``next_step(err_norm, err_prev, err_prev2, accept)`` returns the step
+    factor, clipped to ``[factor_min, factor_max]``, and the error history to
+    carry forward, which advances only on an accepted step. It clamps the
+    error away from zero, infinity and NaN first, so a NaN norm shrinks the
+    step by ``factor_min`` instead of poisoning the history. Both kernels call
+    it once per attempted step, with their own ``order`` and factor bounds.
     """
     e1, e2, e3 = gains.exponents(order)
 
@@ -168,7 +170,7 @@ SOLVER_ARGTYPES: tuple[Type, ...] = (
     _I32_1D,  # loop steps
 )
 HOOK_OUT_ARGTYPE: Type = _F64_2D
-"""Per-trajectory rows a save hook accumulates into (``(n, hook_size)``)."""
+"""The ``(n, hook_size)`` rows a save hook accumulates into."""
 SOLVER_INPUT_KINDS: tuple[int, ...] = (
     ABI_ARRAY,
     ABI_ARRAY,
@@ -184,13 +186,11 @@ SOLVER_INPUT_KINDS: tuple[int, ...] = (
 def build_error_weights(
     error_weights: ArrayLike | None, n: int, n_vars: int
 ) -> npt.NDArray[np.float64]:
-    """Broadcast a user ``error_weights`` argument to a ``(n, n_vars)`` array.
+    """Broadcast a user ``error_weights`` argument to an ``(n, n_vars)`` array.
 
-    ``None`` yields all-ones (every component weighted equally); a 1-D array of
-    length ``n_vars`` is broadcast across trajectories; a 2-D ``(n, n_vars)``
-    array is used as-is. This array is copied to the device and read per
-    component as the ``weight`` argument of the kernel's error-contribution
-    device function.
+    ``None`` gives all ones. A 1-D array of length ``n_vars`` applies to every
+    trajectory, and a 2-D ``(n, n_vars)`` array passes through as it is. The
+    kernel reads it per component as the weight in each error contribution.
     """
     if error_weights is None:
         return np.ones((n, n_vars), dtype=np.float64)
@@ -202,8 +202,9 @@ def build_error_weights(
 
 @functools.cache
 def as_cuda_device(fn: Callable[..., object] | MLIRDispatcher) -> MLIRDispatcher:
-    """``fn`` as a CUDA device function: ``cuda.jit(device=True)`` unless it
-    already is one, cached so a callback is compiled once.
+    """Return ``fn`` as a CUDA device function, compiling it at most once.
+
+    Applies ``cuda.jit(device=True)`` unless ``fn`` already is one.
     """
     if isinstance(fn, MLIRDispatcher):
         return fn
@@ -211,12 +212,11 @@ def as_cuda_device(fn: Callable[..., object] | MLIRDispatcher) -> MLIRDispatcher
 
 
 def make_cuda_local_vector_writer(fn: OdeFn, n_vars: int) -> MLIRDispatcher:
-    """A vector writer over one trajectory's own thread-local arrays.
+    """Build a device function that writes ``fn``'s values into an array.
 
-    Both kernels run one trajectory per thread, so there is no stripe to share:
-    the thread owning the trajectory writes the whole vector, and both
-    ``y_row`` and ``out`` are its own local memory rather than rows of a global
-    scratch array.
+    ``write_vector(y_row, t, p_row, out)`` stores all ``n_vars`` components
+    of ``fn(y_row, t, p_row)`` in ``out``. Each thread owns one trajectory,
+    so ``y_row`` and ``out`` are its own local arrays.
     """
     fn_device = as_cuda_device(fn)
 

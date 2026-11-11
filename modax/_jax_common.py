@@ -29,12 +29,17 @@ from modax._sensitivity import (
 def normalize_y0_params(
     y0: ArrayLike, params: ArrayLike
 ) -> tuple[jax.Array, jax.Array, int, int]:
-    """Broadcast ``y0`` / ``params`` to a consistent ``(N, …)`` ensemble layout.
+    """Broadcast ``y0`` and ``params`` to a shared ``(N, ...)`` ensemble layout.
 
-    Accepts either 1-D (``(n_vars,)`` / ``(n_params,)``) or 2-D
-    (``(N, n_vars)`` / ``(N, n_params)``) inputs and returns 2-D arrays with a
-    common leading axis, so every numba-cuda solver shares one calling
-    convention.
+    Each takes 1-D (``(n_vars,)``, ``(n_params,)``) or 2-D (``(N, n_vars)``,
+    ``(N, n_params)``) form. A 1-D input repeats across the other's ``N``.
+
+    Returns:
+        ``(y0, params, N, n_vars)``, both arrays 2-D float64.
+
+    Raises:
+        ValueError: If either input is not 1-D or 2-D, or both are 2-D with
+            different leading axes.
     """
     y0_arr = jnp.asarray(y0, dtype=jnp.float64)
     params_arr = jnp.asarray(params, dtype=jnp.float64)
@@ -67,12 +72,12 @@ def normalize_y0_params(
 
 @dataclass(frozen=True)
 class EnsembleInputs:
-    """The array inputs of one launch, in kernel order, and the extents behind them.
+    """The array inputs of one launch, in kernel order, and their extents.
 
-    ``n_vars`` is the state dimension the kernel was built for and ``n_system``
-    the number of components it integrates: the same, unless a sensitivity
-    spec augments the state, in which case ``y0`` and ``weights`` are already
-    the augmented arrays.
+    ``n_vars`` is the state dimension and ``n_system`` the number of
+    components the kernel integrates. They match unless a sensitivity spec
+    augments the state, and then ``y0`` and ``weights`` already hold the
+    augmented arrays.
     """
 
     y0: jax.Array
@@ -108,8 +113,8 @@ def prepare_inputs(
 ) -> EnsembleInputs:
     """Normalise a solve's arguments into the arrays the kernel reads.
 
-    With a ``spec`` the kernel integrates the joint ``[y, S]`` system, so the
-    initial state and the error weights are widened to the augmented extent.
+    With a ``spec`` the kernel integrates the joint ``[y, S]`` system, so this
+    widens the initial state and error weights to the augmented extent.
     """
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     weights = build_error_weights(settings.error_weights, n, n_vars)
@@ -136,15 +141,16 @@ def ensemble_ffi_call(
 ) -> tuple[jax.Array, ...]:
     """Launch a solver kernel from JAX and return its outputs.
 
-    Returns ``(hist, accepted, rejected, loop)``. There is no scratch: every
-    per-trajectory buffer is thread-local, so the kernel's outputs are the
-    history and the counters alone.
+    Args:
+        n_save_hist: The history's time extent when it differs from the number
+            of save times. A kernel that keeps only the final state passes 1.
+        hook_size: Width of the save hook's per-trajectory accumulator rows,
+            which the kernel takes as one more output after the counters.
 
-    ``n_save_hist`` is the history's time extent when it differs from the number
-    of save times (a kernel that keeps only the final state passes 1), and
-    ``hook_size`` the width of the save hook's per-trajectory accumulator rows,
-    which the kernel takes as one more output right after the counters; the
-    call then returns ``(hist, accepted, rejected, loop, hook_out)``.
+    Returns:
+        ``(hist, accepted, rejected, loop)``, plus ``hook_out`` when
+        you give a ``hook_size``. ``hist`` is ``(N, n_hist, n_system)``, the
+        counters ``(N,)`` and ``hook_out`` ``(N, hook_size)``.
     """
     n = inputs.n
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
@@ -193,14 +199,16 @@ def _broadcast_for_vmap(
 def make_custom_vmap_solver(
     solve_impl: Callable[[jax.Array, jax.Array, jax.Array], SolveOutput],
 ) -> custom_vmap:
-    """Wrap a solver implementation so outer ``jax.vmap`` becomes one ensemble call.
+    """Wrap a solver so an outer ``jax.vmap`` becomes one ensemble launch.
 
-    ``solve_impl`` must accept ``(y0, t_span, params)`` and return the normal
-    public solver result for those arrays.  The custom batching rule supports
-    vmapping scalar solves over ``y0`` and/or ``params`` and lowers that vmap to
-    a single native ensemble solve with a leading trajectory axis.  Every stats
-    field the kernels emit is a per-trajectory counter, so the stats pytree
-    only needs a trailing solve axis added.
+    ``solve_impl(y0, t_span, params)`` returns the public solver result. The
+    batching rule handles a ``vmap`` of single-trajectory solves over ``y0``,
+    ``params`` or both, and runs it as one ensemble solve with a leading
+    trajectory axis. A batched ``t_span`` counts as one shared time grid.
+
+    Raises:
+        NotImplementedError: If the mapped ``y0`` or ``params`` is already an
+            ensemble, or a batched ``t_span`` is not 2-D.
     """
 
     @custom_vmap
@@ -254,7 +262,7 @@ def differentiable_solve(
     sens_error_control: bool,
     sens_param_columns: Sequence[int] | None,
 ) -> SolveOutput:
-    """Solve through the vmap and forward-sensitivity rules.
+    """Solve through the ``vmap`` and forward-sensitivity rules.
 
     ``impl(y0, t_span, params, *, options, settings, return_stats)`` is the
     plain launch, and ``options`` a dataclass with a ``spec`` field.

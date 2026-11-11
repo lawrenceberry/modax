@@ -1,20 +1,17 @@
 """Compile each device function once, not twice, in numba-cuda-mlir.
 
 numba-cuda-mlir (0.5.1) compiles a device function called from another twice.
-Typing the caller compiles the callee to learn its return type
-(``MLIRDispatcher.get_call_template``, with no ABI name), and lowering the
-caller then asks for it under the mangled name it links it by
-(``build_user_defined_function_call``: ``<qualname>_<id(dispatcher)>`` and
-the argument types); the cached result is only reused under the same name,
-so the whole function -- typing, MLIR lowering, optimisation -- is compiled
-again. For a hierarchy kernel that is every step, stage, Jacobian writer,
-right-hand side and factorisation, some 6 s of a 36 s build.
+Typing the caller compiles the callee with no ABI name
+(``MLIRDispatcher.get_call_template``) to learn its return type. Lowering then
+asks for it under its mangled link name, ``<qualname>_<id(dispatcher)>`` plus
+the argument types (``build_user_defined_function_call``). The cache only
+matches the same name, so the whole function compiles again. For a hierarchy
+kernel that costs some 6 s of a 36 s build.
 
 :func:`install` makes the typing-time compile use the name lowering will ask
-for, so lowering finds it cached. The compiled code is the same function
-under the same name; if a call's argument types fold differently in the two
-places the names differ and the callee is compiled twice, as before. Set
-``MODAX_COMPILE_CALLEES_TWICE=1`` to leave numba-cuda-mlir untouched.
+for, so lowering finds it cached. If a call's argument types fold differently
+in the two places, the names differ and the callee compiles twice as before.
+Set ``MODAX_COMPILE_CALLEES_TWICE=1`` to leave numba-cuda-mlir untouched.
 """
 
 from __future__ import annotations
@@ -25,7 +22,11 @@ _INSTALLED: list[bool] = []
 
 
 def install() -> None:
-    """Patch ``MLIRDispatcher.get_call_template`` once per process (idempotent)."""
+    """Patch ``MLIRDispatcher.get_call_template``, once per process.
+
+    Does nothing when you set ``MODAX_COMPILE_CALLEES_TWICE`` or the installed
+    numba-cuda-mlir lacks the methods the patch relies on.
+    """
     if _INSTALLED or os.environ.get("MODAX_COMPILE_CALLEES_TWICE"):
         return
     from numba_cuda_mlir import descriptor
@@ -44,7 +45,7 @@ def install() -> None:
         return  # a numba-cuda-mlir this was not written against: leave it alone
 
     def lowering_dispatcher(self):
-        """The dispatcher ``build_user_defined_function_call`` will compile through."""
+        """Return the dispatcher ``build_user_defined_function_call`` compiles through."""
         if self.targetoptions.get("device", False):
             return self
         # The device twin _compile_as_device_callee keeps, created with its

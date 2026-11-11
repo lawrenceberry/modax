@@ -1,26 +1,24 @@
 """Continuous forward sensitivity analysis for the numba-cuda ensemble solvers.
 
-The solvers reach JAX through an XLA FFI custom call, so the solve itself is
-opaque to autodiff: there is no traced graph for JAX to differentiate and no
-practical way to run Enzyme over the kernel (see "Why continuous forward
-sensitivities" in docs/usage/gradients.md). Derivatives are therefore supplied by a ``jax.custom_jvp`` rule
-that integrates the sensitivity system alongside the state.
+The solve reaches JAX through an XLA FFI custom call, which autodiff cannot
+see into (see "Why continuous forward sensitivities" in
+docs/usage/gradients.md). A ``jax.custom_jvp`` rule supplies the derivatives
+instead, integrating the sensitivity system alongside the state.
 
-Writing ``S(t) = dy(t)/dtheta`` for a direction block ``theta``, differentiating
-``y' = f(t, y, p)`` with respect to ``theta`` gives the variational equation
+With ``S(t) = dy(t)/dtheta`` for a direction block ``theta``, differentiating
+``y' = f(t, y, p)`` gives the variational equation
 
     S' = J_y(t) S + J_p(t),    J_y = df/dy,  J_p = df/dtheta,
 
 with ``J_p = 0`` and ``S(t0) = I`` for the initial-state block, and ``J_p =
-df/dp`` and ``S(t0) = 0`` for the parameter block.  Stacking it under the state
-gives one joint system
+df/dp`` and ``S(t0) = 0`` for the parameter block. Stacked under the state it
+makes one joint system
 
     d/dt [y, S] = [f(t, y, p), J_y S + J_p]
 
-which the existing kernels integrate as an ordinary ODE of ``n_aug = n_vars *
-(1 + n_sens)`` variables.  Because the rule returns the primal and the tangent
-together, ``jax.value_and_grad`` costs one joint solve rather than a solve for
-the value plus another for the derivative.
+which the kernels integrate as an ordinary ODE of ``n_aug = n_vars *
+(1 + n_sens)`` variables. The rule returns the primal and the tangent
+together, so ``jax.value_and_grad`` costs one joint solve, not two solves.
 
 Layout
 ------
@@ -30,20 +28,16 @@ sensitivity direction::
     z[j]                        = y[j]
     z[n_vars + k * n_vars + r]  = S[r, k]
 
-Direction ``k`` runs over the initial-state block first (``n_vars`` directions,
-present only when ``y0`` is differentiated) and then the parameter block
-(``n_params`` directions, present only when ``params`` is differentiated).  Only
-the blocks JAX actually asks for are integrated, so differentiating with respect
-to parameters alone does not pay for the ``n_vars`` initial-state columns.
+Direction ``k`` runs over the initial-state block first (``n_vars``
+directions, present only when JAX differentiates ``y0``), then the parameter
+block (``n_params`` directions, present only when JAX differentiates
+``params``). The solve integrates only the blocks JAX asks for.
 
-``J_y S_k + J_p_k`` comes from ``numba_enzyme.jvp`` applied to the user's
-``ode_fn``, seeded with a direction over the callback's *flattened* argument
-list ``(y_0 ... y_n-1, t, p_0 ... p_m-1)``: seeding ``(S_k, 0, e_k)`` returns
-that whole right-hand side in one sweep, and seeding the time argument instead
-returns ``df/dt`` (what Rodas5P already uses).  So the parameter derivatives
-the sensitivity system needs come from the same device function the stiff
-kernel already builds, with nothing extra from the caller and no Jacobian ever
-formed.
+``J_y S_k + J_p_k`` comes from ``numba_enzyme.jvp`` of the user's ``ode_fn``,
+seeded over the callback's *flattened* argument list ``(y_0 ... y_n-1, t,
+p_0 ... p_m-1)``. Seeding ``(S_k, 0, e_k)`` returns that whole right-hand side
+in one sweep, and seeding the time argument returns ``df/dt``. The caller
+supplies nothing extra and no Jacobian is ever formed.
 """
 
 from __future__ import annotations
@@ -74,14 +68,16 @@ Tangent = Callable[..., None]
 class SensitivitySpec:
     """Which sensitivity blocks a joint solve carries.
 
-    Hashable and used as part of the kernel cache keys, so a solve
-    differentiated only with respect to ``params`` compiles (and integrates) a
-    smaller augmented system than one differentiated with respect to both.
+    Hashable and part of the kernel cache keys, so a solve differentiated only
+    with respect to ``params`` compiles and integrates a smaller system than one
+    differentiated with respect to both. ``error_control`` lives here, not on the
+    solve, because the error-norm denominator it picks is a compile-time constant
+    of the kernel. ``param_columns`` restricts the parameter block to those
+    columns.
 
-    ``error_control`` decides whether the sensitivity components take part in
-    the step-size error norm; it belongs here rather than in the solve because
-    the error-norm denominator it selects is a compile-time constant of the
-    kernel.
+    Raises:
+        ValueError: The spec asks for neither block, or ``param_columns`` repeats a
+            column or names one outside the ``n_params`` columns.
     """
 
     n_vars: int
@@ -107,7 +103,7 @@ class SensitivitySpec:
                 )
 
     def check_extents(self, n_vars: int, n_params: int, against: str) -> None:
-        """Raise unless the spec is for ``n_vars`` states and ``n_params`` parameters."""
+        """Raise ValueError unless the spec is for ``n_vars`` states and ``n_params`` parameters."""
         if self.n_vars != n_vars or self.n_params != n_params:
             raise ValueError(
                 f"the sensitivity spec is for {self.n_vars} variables and "
@@ -137,24 +133,23 @@ class SensitivitySpec:
 
     @property
     def n_aug(self) -> int:
-        """Size of the joint ``[y, S]`` system the kernel actually integrates."""
+        """Size of the joint ``[y, S]`` system the kernel integrates."""
         return self.n_vars * (1 + self.n_sens)
 
     @property
     def n_error(self) -> int:
         """Component count the weighted-RMS error norm divides by.
 
-        With the sensitivities excluded from step-size control their weights
-        are zero, so they contribute exactly 0.0 to the sum; dividing by
-        ``n_vars`` rather than ``n_aug`` then reproduces the plain solve's error
-        norm bit for bit, and with it its exact step sequence.
+        With the sensitivities out of step-size control their weights are zero, so
+        dividing by ``n_vars`` rather than ``n_aug`` reproduces the plain solve's
+        error norm, and its step sequence, bit for bit.
         """
         return self.n_aug if self.error_control else self.n_vars
 
 
 @functools.cache
 def _quantity_signature(n_outputs: int, n_vars: int, n_params: int) -> Signature:
-    """The specialisation a :func:`quantity_hook`'s quantities are differentiated in."""
+    """The specialisation :func:`quantity_hook` differentiates its quantities in."""
     return types.UniTuple(types.float64, n_outputs)(
         types.UniTuple(types.float64, n_vars),
         types.float64,
@@ -164,11 +159,11 @@ def _quantity_signature(n_outputs: int, n_vars: int, n_params: int) -> Signature
 
 @functools.cache
 def make_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
-    """``D f(y, t, p)[u]`` in one forward sweep, for an arbitrary direction.
+    """``D f(y, t, p)[u]`` in one forward sweep, for any direction.
 
-    The sensitivity right-hand side ``J_y S_k + J_p_k`` *is* a directional
-    derivative: seed ``(S_k, 0, e_k)`` and it comes out whole.  Assembling it
-    from unit columns instead costs ``n_vars + 1`` sweeps where this costs one.
+    The sensitivity right-hand side ``J_y S_k + J_p_k`` is the sweep seeded with
+    ``(S_k, 0, e_k)``. Building it from unit columns would cost ``n_vars + 1``
+    sweeps.
     """
     return make_quantity_tangent(ode_fn, n_vars, n_vars, n_params)
 
@@ -177,20 +172,13 @@ def make_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
 def make_second_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     """``D2 f(y, t, p)[u, v] + D f(y, t, p)[w]``, forward over forward.
 
-    The joint system's Jacobian is the derivative of a right-hand side that
-    already contains first derivatives of ``ode_fn``, so its off-diagonal block
-    holds second derivatives of the original problem: ``d2f/dy2`` contracted
-    with ``S_k``, plus the mixed ``d2f/dy dp_k``.  Seeding ``u = (S_k, 0, e_k)``
-    and ``v = (w, 0, 0)`` applies that block to ``w`` without forming it;
-    seeding ``v = (0, 1, 0)`` returns the sensitivity block's ``dF/dt``.
-
-    ``jvp`` composes with itself, so this is literally the forward sweep of the
-    forward sweep -- numba-enzyme records the chain and emits both markers into
-    one module, rather than trying to differentiate an already-compiled
-    derivative.  Composing makes the derivative of the *whole* tangent map, a
-    function of ``(x, u)``, so the call carries a fourth direction ``w`` for the
-    inner direction's own variation; every caller here passes zero for it,
-    which leaves the plain bilinear form.
+    The joint system's off-diagonal Jacobian block holds second derivatives of
+    ``ode_fn``. Seeding ``u = (S_k, 0, e_k)`` and ``v = (w, 0, 0)`` applies that
+    block to ``w`` without forming it, and ``v = (0, 1, 0)`` gives the
+    sensitivity block's ``dF/dt``. numba-enzyme composes ``jvp`` with itself, so
+    this is the forward sweep of the forward sweep. The extra direction ``w`` is
+    the inner direction's own variation, and every caller here passes zero for
+    it, which leaves the plain bilinear form.
     """
     return make_quantity_second_tangent(ode_fn, n_vars, n_vars, n_params)
 
@@ -223,10 +211,9 @@ def seed_table(spec: SensitivitySpec) -> npt.NDArray[np.float64]:
     """Read-only table every unit and zero direction is a window into.
 
     ``2 * L`` zeros with a single ``1.0`` at ``L``, so the window starting at
-    ``L - k`` carries its ``1.0`` at position ``k``, and any window inside
-    ``[0, L)`` is all zeros.  One table in constant memory replaces a per-thread
-    one-hot buffer, which could not promote to registers because its store index
-    is dynamic.
+    ``L - k`` has its ``1.0`` at position ``k``, and any window inside ``[0, L)``
+    is all zeros. A per-thread one-hot buffer could not promote to registers,
+    because its store index is dynamic.
     """
     length = max(spec.n_vars, spec.n_params)
     table = np.zeros(2 * length, dtype=np.float64)
@@ -238,13 +225,10 @@ def seed_table(spec: SensitivitySpec) -> npt.NDArray[np.float64]:
 def make_augmented_local_writer(ode_fn: OdeFn, spec: SensitivitySpec) -> MLIRDispatcher:
     """Joint ``[f, J_y S + J_p]`` writer for a kernel's thread-local state.
 
-    Both kernels run one trajectory per thread, so the whole augmented vector --
-    the state block and every sensitivity direction -- is written by the thread
-    that owns it, out of and into its own local arrays.  The directions stay
-    independent of one another (each is its own forward sweep seeded with
-    ``(S_k, 0, e_k)``); nothing is shared, so there is no race and no
-    synchronisation inside a device function whose callers invoke it under a
-    divergent ``if running``.
+    Each thread writes its own trajectory's whole augmented vector from and into
+    its own local arrays, one forward sweep per direction seeded with ``(S_k, 0,
+    e_k)``. Threads share nothing, so the device function needs no synchronisation
+    under its callers' divergent ``if running``.
     """
     n_vars = spec.n_vars
     n_sens = spec.n_sens
@@ -292,31 +276,26 @@ def quantity_hook(
 ) -> MLIRDispatcher:
     """A save hook storing ``quantities(y, t, p)`` at every save, and their tangents.
 
-    ``quantities`` is a device function (or a plain function, compiled as one)
-    of the state, the time and the parameter row returning a tuple of
-    ``n_outputs`` floats: the per-save values a consumer wants instead of the
-    history. The hook stores them save-major, ``n_outputs * (1 + n_sens)``
-    numbers per save, so its ``hook_size`` is that times the number of saves.
-
-    Without ``sensitivity`` (``n_sens = 0``) it stores the values alone, for a
-    plain hooked solve. With it, for the joint launch of
-    ``solve(..., sensitivity=spec)``, it stores after the values of each save
-    their total derivative along every direction ``k`` of the spec, direction
-    after direction::
+    The hook stores ``n_outputs * (1 + n_sens)`` numbers per save, save-major, so
+    its ``hook_size`` is that times the number of saves. Without ``sensitivity``
+    (``n_sens = 0``) it stores the values alone, for a plain hooked solve. With
+    it, for the joint launch of ``solve(..., sensitivity=spec)``, it follows each
+    save's values with their total derivative along every direction ``k`` of the
+    spec, direction after direction::
 
         dq/d theta_k = (dq/dy) S_k + dq/dp e_k
 
-    (no ``e_k`` term for an initial-state direction), from one Enzyme forward
-    sweep of ``quantities`` seeded with ``(S_k, 0, e_k)``, the sweep the
-    sensitivity equations run on the right-hand side. The derivative is built
-    for the kernel's own target (``compile_target``), so the two link on every
-    GPU, Blackwell included, and the caller needs no Enzyme of its own.
+    (no ``e_k`` term for an initial-state direction). One Enzyme forward sweep of
+    ``quantities`` seeded with ``(S_k, 0, e_k)`` gives each. The derivative
+    targets the kernel's own ``compile_target``, so the two link on every GPU,
+    Blackwell included, and the caller needs no Enzyme of its own.
 
     Parameters
     ----------
     quantities : callable
         ``quantities(y, t, p) -> tuple`` of ``n_outputs`` floats, reading
-        ``y[0:n_vars]`` only.
+        ``y[0:n_vars]`` only. A device function, or a plain function compiled as
+        one.
     n_outputs : int
         Length of the tuple ``quantities`` returns.
     n_vars, n_params : int
@@ -328,6 +307,11 @@ def quantity_hook(
     -------
     MLIRDispatcher
         ``hook(save_idx, y, t, p_row, acc)``, the ``save_hook`` of ``solve``.
+
+    Raises
+    ------
+    ValueError
+        ``n_outputs`` is below 1, or ``sensitivity`` is for other extents.
     """
     if n_outputs < 1:
         raise ValueError("a quantity hook stores at least one quantity")
@@ -385,8 +369,8 @@ def quantity_hook(
 def clear_caches() -> None:
     """Drop the cached device writers and Enzyme derivatives.
 
-    Each ``(ode_fn, spec)`` pair compiles its own writer, and nothing releases
-    them: the module-level caches hold them for the process's lifetime.
+    The module-level caches otherwise hold every ``(ode_fn, spec)`` pair's
+    writer for the life of the process.
     """
     make_tangent.cache_clear()
     make_second_tangent.cache_clear()
@@ -400,8 +384,8 @@ def clear_caches() -> None:
 def augmented_y0(y0_arr: jax.Array, spec: SensitivitySpec) -> jax.Array:
     """``(n, n_vars)`` initial state -> ``(n, n_aug)`` joint initial state.
 
-    ``S(t0)`` is the identity for the initial-state block (``dy0/dy0``) and zero
-    for the parameter block (the initial state does not depend on ``p``).
+    ``S(t0)`` is the identity for the initial-state block and zero for the
+    parameter block.
     """
     n = y0_arr.shape[0]
     blocks = [y0_arr]
@@ -418,13 +402,12 @@ def augmented_error_weights(
 ) -> npt.NDArray[np.float64]:
     """``(n, n_vars)`` error weights -> ``(n, n_aug)``.
 
-    A zero weight drops a component from the step-size error norm, so
-    ``spec.error_control=False`` makes the joint solve take exactly the step
-    sequence the plain solve would -- the value from ``jax.value_and_grad`` is
-    then bit-identical to the value from a plain call, and the sensitivities
-    ride along on steps chosen for the state alone.  That is not the default:
-    nothing then ties the sensitivities' accuracy to ``rtol``, and a stiff
-    solver taking large steps on an easy state can be badly wrong about them.
+    A zero weight drops a component from the error norm, so
+    ``spec.error_control=False`` makes the joint solve take the plain solve's
+    steps exactly, and ``jax.value_and_grad`` returns the plain call's value bit
+    for bit. It is not the default: nothing then ties the sensitivities'
+    accuracy to ``rtol``, and a stiff solver taking large steps on an easy state
+    can get them badly wrong.
     """
     tail = np.ones if spec.error_control else np.zeros
     return np.concatenate(
@@ -449,11 +432,11 @@ def split_augmented(
 def _match_shape(tangent: ArrayLike, axis_size: int, name: str) -> jax.Array:
     """Broadcast an input tangent the way the primal argument was broadcast.
 
-    ``normalize_y0_params`` broadcasts a 1-D argument across the ensemble, so
-    the tangent has to be broadcast identically for the contraction to be the
-    true directional derivative.  ``jnp.broadcast_to`` is linear, so reverse
-    mode transposes it back to the sum over trajectories that a shared argument
-    should receive.
+    ``normalize_y0_params`` broadcasts a 1-D argument across the ensemble, and
+    the tangent must match for the contraction to be the true directional
+    derivative. ``jnp.broadcast_to`` is linear, so reverse mode transposes it to
+    the sum over trajectories a shared argument should get. Raises ValueError
+    for a tangent that is neither 1-D nor 2-D.
     """
     arr = jnp.asarray(tangent)
     if arr.ndim == 1:
@@ -466,8 +449,8 @@ def _match_shape(tangent: ArrayLike, axis_size: int, name: str) -> jax.Array:
 def _zero_tangent(x: ArrayLike) -> jax.Array | npt.NDArray[np.void]:
     """A zero tangent of the type JAX expects for ``x``.
 
-    Integer outputs (the step counters) take the empty ``float0`` type rather
-    than a zero array of their own dtype.
+    Integer outputs (the step counters) take the empty ``float0`` type, not a
+    zero array of their own dtype.
     """
     if jnp.issubdtype(jnp.result_type(x), jnp.inexact):
         return jnp.zeros_like(x)
@@ -485,20 +468,18 @@ def make_sensitivity_solver(
     """Attach a forward-sensitivity JVP rule to one solver implementation.
 
     ``solver_for(None)`` is the plain solve, ``(y0, t_span, params)``, and
-    ``solver_for(spec)`` the corresponding solver for the joint ``[y, S]``
-    system described by ``spec``; its output has the ordinary solver shape,
-    with ``n_aug`` components in place of ``n_vars``.  Both are expected to be
-    already wrapped for ``vmap``: the rule has to sit *outside*
-    ``custom_vmap``, whose JVP path traces to a jaxpr and so instantiates every
-    symbolic zero, which would hide exactly the information the rule uses to
-    decide which sensitivity blocks to integrate.
+    ``solver_for(spec)`` the solver for the joint ``[y, S]`` system of ``spec``,
+    with ``n_aug`` components in place of ``n_vars``. Both must already
+    handle ``vmap``. The rule sits *outside* ``custom_vmap`` because that
+    JVP path traces to a jaxpr and instantiates every symbolic zero, hiding which
+    blocks the rule needs to integrate.
 
     The rule fires only under a JAX differentiation transform, so an
-    undifferentiated call pays nothing for sensitivities.  The tangent is formed
-    by contracting ``S`` -- which depends only on the primal inputs -- with the
-    input tangents.  That contraction is linear in the tangents, so JAX can
-    transpose it: ``jax.grad`` and ``jax.jacrev`` work off the same rule as
-    ``jax.jvp`` and ``jax.jacfwd``, with no adjoint solve.
+    undifferentiated call pays nothing. It contracts ``S``, which depends only on
+    the primals, with the input tangents. That contraction is linear, so JAX
+    transposes it and ``jax.grad`` and ``jax.jacrev`` work off the same rule
+    with no adjoint solve. Differentiating with respect to ``t_span`` raises
+    NotImplementedError.
     """
     primal_solver = solver_for(None)
     param_columns = (

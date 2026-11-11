@@ -1,24 +1,24 @@
-"""How a system or a block steps: the method objects :func:`modax.solve` and :class:`~modax.Block` take.
+"""The method objects :func:`modax.solve` and :class:`~modax.Block` take.
 
-A method is a small frozen dataclass of the options that belong to one
-solver's numerics (the LU's precision and fill-reducing ordering, the
-controller's gains, Tsit5's memory backend). What applies to the problem or
-the whole launch (tolerances, error weights, the sparsity pattern, the save
-hook, sensitivities) is an argument of :func:`modax.solve`. Being hashable, a
-method is part of the kernel's identity like everything else a block carries.
+A method is a small frozen dataclass holding one solver's numerical options:
+the LU's precision and fill-reducing ordering, the controller's gains, and
+Tsit5's memory backend. Options that belong to the problem or the launch
+(tolerances, error weights, the sparsity pattern, the save hook,
+sensitivities) are arguments of :func:`modax.solve`. A method is hashable, so
+it forms part of the kernel's identity.
 
-* :class:`Rodas5P` -- linearly implicit, for stiff blocks: a Jacobian and an
-  LU every step.
-* :class:`Tsit5` -- explicit, for non-stiff blocks: seven right-hand sides a
+* :class:`Rodas5P`: linearly implicit, for stiff blocks. A Jacobian and an LU
+  every step.
+* :class:`Tsit5`: explicit, for non-stiff blocks. Seven right-hand sides a
   step (the last reused as the next step's first), no Jacobian, no LU.
-* :class:`Auto` -- one of each, switched by a stiffness estimate the way
-  OrdinaryDiffEq.jl's ``AutoSwitch`` does (:class:`Auto` has the details).
+* :class:`Auto`: one of each, switched by a stiffness estimate like
+  OrdinaryDiffEq.jl's ``AutoSwitch``.
 
-In a hierarchy, ``None`` for a block's option means the value of the method
-given to :func:`modax.solve`: its ``gains``, its ``ordering``, and its
+In a hierarchy, a block option left ``None`` takes the value from the method
+passed to :func:`modax.solve`: its ``gains``, its ``ordering``, and its
 ``lu_precision`` on the final block (a block others read factorises in double
-precision). Left ``None`` there too, the defaults are the integral controller,
-AMD and single precision.
+precision). If that is ``None`` too, the defaults are the integral
+controller, AMD and single precision.
 """
 
 from __future__ import annotations
@@ -40,20 +40,24 @@ Backend: TypeAlias = Literal["auto", "shared", "local"]
 class Rodas5P:
     """Rodas5P, the linearly implicit Rosenbrock-W method of order 5, for stiff systems.
 
-    Every step builds the Jacobian by forward-mode AD of the right-hand side
-    and factorises the iteration matrix in the thread's own memory.
+    Every step builds the Jacobian by forward-mode AD of the right-hand side and
+    factorises the iteration matrix in the thread's own memory.
 
     Args:
-        lu_precision: ``"fp32"`` (the default) or ``"fp64"``, the precision
-            the iteration matrix is factorised in. Single precision halves the
-            LU's footprint; as a W-method Rodas5P stays convergent with an
-            inexact matrix, and the step controller absorbs the difference.
-            A block others read always factorises in double.
+        lu_precision: ``"fp32"`` (the default) or ``"fp64"``, the precision of
+            the iteration matrix's factorisation. Single precision halves the
+            LU's footprint. As a W-method, Rodas5P stays convergent with an
+            inexact matrix and the step controller absorbs the difference. A
+            block others read always factorises in double.
         gains: The step controller's :class:`PIDGains`. The default is the
             integral controller ``(0, 1, 0)``.
-        ordering: The fill-reducing permutation of the sparse LU when
-            :func:`modax.solve` has a ``sparsity`` pattern: ``"amd"`` (the
+        ordering: The sparse LU's fill-reducing permutation when
+            :func:`modax.solve` has a ``sparsity`` pattern. ``"amd"`` (the
             default) or ``"natural"``, which keeps the pattern's own order.
+
+    Raises:
+        ValueError: If ``lu_precision`` or ``ordering`` is not one of the values
+            above.
     """
 
     lu_precision: LUPrecision | None = None
@@ -75,17 +79,20 @@ class Rodas5P:
 class Tsit5:
     """Tsitouras's explicit Runge--Kutta 5(4) pair, first-same-as-last, for non-stiff systems.
 
-    Seven right-hand-side evaluations a step, the last reused as the next
-    step's first, and no Jacobian.
+    Seven right-hand-side evaluations a step, the last reused as the next step's
+    first, and no Jacobian.
 
     Args:
         gains: The step controller's :class:`PIDGains`. The default is the
             integral controller ``(0, 1, 0)``.
-        backend: Where a plain system's state and stage vectors live:
-            ``"shared"`` (per-block shared memory), ``"local"`` (the thread's
-            own memory) or ``"auto"`` (the default: shared for up to 16
-            components and 16384 trajectories). The two are bit-identical. A
-            block of a hierarchy always uses thread-local memory.
+        backend: Where a plain system's state and stage vectors live.
+            ``"shared"`` uses per-block shared memory, ``"local"`` the thread's
+            own memory, and ``"auto"`` (the default) picks shared for up to 16
+            components and 16384 trajectories. The two give bit-identical
+            results. A block of a hierarchy always uses thread-local memory.
+
+    Raises:
+        ValueError: If ``backend`` is not one of the values above.
     """
 
     gains: PIDGains | None = None
@@ -99,32 +106,46 @@ class Tsit5:
 
 
 TSIT5_STABILITY_SIZE = 3.5068
-"""How far along the negative real axis Tsit5's stability region reaches, ``|h lambda|``."""
+"""How far Tsit5's stability region reaches along the negative real axis, ``|h lambda|``."""
 
 
 @dataclass(frozen=True)
 class Auto:
     """Explicit while the block is not stiff, implicit while it is.
 
-    The switch is OrdinaryDiffEq.jl's ``AutoSwitch``. After every attempted
-    step, accepted or rejected (as OrdinaryDiffEq.jl's ``choose_algorithm!``
-    runs in each step's footer), the block estimates the largest eigenvalue magnitude of its
-    Jacobian: from an explicit step at no cost, as ``max_j |k7_j - k6_j| /
-    |y_new,j - g6_j|`` over the two stages Tsit5 evaluates at the step's end
-    (Hairer and Wanner II, p. 22, in the infinity norm); from an implicit step
-    as ``||J||_inf``, the largest absolute row sum of the Jacobian it has
-    anyway. The step is *stiff* when ``estimate * h_next`` exceeds
-    ``stifftol`` (``nonstifftol`` while explicit) times Tsit5's stability
-    size, 3.5068: an explicit step that long would be unstable. More than
-    ``maxstiffstep`` stiff steps in a row switch to ``stiff``, with the step
-    multiplied by ``dtfac``; more than ``maxnonstiffstep`` non-stiff ones in a
-    row switch back, with it divided.
+    The switch follows OrdinaryDiffEq.jl's ``AutoSwitch``. After every attempted
+    step, accepted or rejected, the block estimates the largest eigenvalue
+    magnitude of its Jacobian. An explicit step gets it for free as ``max_j
+    |k7_j - k6_j| / |y_new,j - g6_j|`` over the two stages Tsit5 evaluates at
+    the step's end (Hairer and Wanner II, p. 22, in the infinity norm). An
+    implicit step uses ``||J||_inf``, the largest absolute row sum of the
+    Jacobian it already has. A step counts as *stiff* when ``estimate * h_next``
+    exceeds ``stifftol`` (``nonstifftol`` while explicit) times Tsit5's
+    stability size, 3.5068, because an explicit step that long would be
+    unstable.
 
-    On the GPU the choice is the warp's, not the lane's: a lane only votes,
-    and the warp steps implicitly when any of its active lanes wants to, so
-    the lanes of a warp never run both methods one after the other. The
-    implicit method is always a valid step for a lane that would rather be
-    explicit; the converse is not true. ``stiff_first`` starts implicit.
+    On the GPU the warp chooses, not the lane. Each lane votes, and the warp
+    steps implicitly when any active lane wants to, so a warp never runs both
+    methods back to back. The implicit method is always a valid step for a lane
+    that would rather be explicit, but not the other way round.
+
+    Args:
+        nonstiff: The explicit method, a :class:`Tsit5`.
+        stiff: The implicit method, a :class:`Rodas5P`.
+        maxstiffstep: Switch to ``stiff`` after more than this many stiff steps
+            in a row, multiplying the step by ``dtfac``. Defaults to 10.
+        maxnonstiffstep: Switch back to ``nonstiff`` after more than this many
+            non-stiff steps in a row, dividing the step by ``dtfac``. Defaults
+            to 3.
+        nonstifftol: The stiffness threshold while explicit. Defaults to 0.9.
+        stifftol: The stiffness threshold while implicit. Defaults to 0.9.
+        dtfac: The step factor applied on a switch. Defaults to 2.0.
+        stiff_first: Start implicit. Defaults to ``False``.
+
+    Raises:
+        TypeError: If ``nonstiff`` is not a :class:`Tsit5` or ``stiff`` not a
+            :class:`Rodas5P`.
+        ValueError: If a step count is negative or ``dtfac`` is not positive.
     """
 
     nonstiff: Tsit5 = Tsit5()
@@ -163,6 +184,6 @@ def method_parts(method: Method) -> tuple[Rodas5P | None, Tsit5 | None]:
 
 
 def option_or(method: Rodas5P | Tsit5 | None, name: str, default):
-    """``method``'s option ``name``, or ``default`` where there is no method or it leaves the option ``None``."""
+    """``method``'s option ``name``, or ``default`` if there is no method or the option is ``None``."""
     value = getattr(method, name) if method is not None else None
     return default if value is None else value

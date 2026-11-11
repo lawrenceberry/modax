@@ -1,82 +1,67 @@
-"""A stiff system as a hierarchy of one-way-coupled blocks, each on steps of its own.
+"""A stiff system as a hierarchy of one-way-coupled blocks, each on its own steps.
 
-A :class:`Block` is a set of states with a right-hand side of its own that
-may read *quantities* -- any functions of the state -- of the blocks upstream
-of it, and may publish quantities of its own for the blocks downstream. The
-blocks form a directed acyclic graph: nothing feeds back. The thermal history
-under an Einstein-Boltzmann hierarchy is the case this was built for (five
-states that every photon multipole reads through four quantities, the scale
-factor, the opacity, the baryon sound speed and the neutrino density, and
-that read nothing back), but nothing here knows that.
+A :class:`Block` holds states with a right-hand side of their own. It may read
+*quantities* (any functions of the state) of the blocks upstream of it and
+publish quantities of its own for the blocks downstream. The blocks form a
+directed acyclic graph, so nothing feeds back. The motivating case is the
+thermal history under an Einstein-Boltzmann hierarchy (five states that every
+photon multipole reads through four quantities), but nothing here knows that.
 
-Why split what one kernel could integrate whole:
+Splitting what one kernel could integrate whole pays twice:
 
 * **The matrix.** A state every downstream row reads is a full column of the
-  joint Jacobian, and a sparse factorisation of a full column fills in. Split,
-  each block factorises its own matrix, and a downstream block's Jacobian has
-  no upstream columns at all: the upstream quantities enter its right-hand
-  side as known functions of time.
-* **The steps.** Each block takes the steps its own dynamics allow, accepted
-  or rejected by its own error norm and controller. A smooth upstream block
-  takes long steps where the downstream block takes many, and its right-hand
-  side (and the quantities it publishes) are evaluated once per *upstream*
-  step, not once per stage of every downstream step.
+  joint Jacobian, and a sparse factorisation fills it in. Split, each block
+  factorises its own matrix, and a reader's Jacobian has no upstream columns.
+* **The steps.** Each block takes the steps its own dynamics allow, under its
+  own error norm and controller. A smooth upstream block takes long steps, and
+  its right-hand side and published quantities cost one evaluation per
+  *upstream* step, not one per stage of every downstream step.
 
-How the blocks talk. Every block runs ahead of its readers on steps of its
-own, keeping a ring of *nodes*: at each accepted step's end its state, rate
-and second derivative (``y'' = J y' + df/dt``), and for the quantities it
-publishes their values, first and second time derivatives. Between nodes the
-block's dense output is the quintic Hermite interpolant of that data, ``O(H^6)``
-over a step ``H``, one order beyond Rodas5P's local error, so a reader loses
-no order. A reader about to step over ``[t, t + h]`` reads the dense output
-of every block it reads at both ends and writes those twelve numbers per
-quantity into its thread-local copy of the parameter row; its generated
-right-hand side evaluates the quintic there, so the reader's own Rodas5P step
--- its stages, its Jacobian sweeps, its time sweep -- sees the upstream as a
-polynomial of ``t`` and nothing else. The nodes a reader has passed are
-dropped; how far ahead a block may run is bounded by its ring
-(:data:`NODES`, fewer with sensitivities).
+How the blocks talk. Every block runs ahead of its readers and keeps a ring of
+*nodes*: at each accepted step's end, its state, rate and second derivative
+(``y'' = J y' + df/dt``), plus the values and first two time derivatives of
+the quantities it publishes. Between nodes its dense output is the quintic
+Hermite interpolant of that data, ``O(H^6)`` over a step ``H``. That is one
+order beyond Rodas5P's local error, so a reader loses no order. Before
+stepping over ``[t, t + h]`` a reader evaluates the dense output of every block
+it reads at both ends and writes the six numbers per quantity into its
+thread-local parameter row. Its generated right-hand side evaluates the
+quintic there, so its whole step sees the upstream as a polynomial in ``t``.
+The ring bounds how far a block runs ahead (:data:`NODES`, fewer with
+sensitivities).
 
 Methods. Each block steps with its own method (:mod:`modax._methods`):
 Rodas5P, Tsit5, or ``Auto``, which switches between the two on a stiffness
-estimate. The nodes are the same whatever the method: a Tsit5 block's rate at
-a node is its last stage (first same as last) and its second derivative one
-forward sweep along ``(y', 1)``; the rates at which an upstream's error
-enters a Tsit5 reader come from one sweep per upstream, with no damping.
-Under ``Auto`` the warp, not the lane, picks the method of each step: Rodas5P
-when any lane about to step wants it.
+estimate. The nodes look the same whatever the method. A Tsit5 block's rate at
+a node is its last stage (first same as last) and its second derivative is one
+forward sweep along ``(y', 1)``. Under ``Auto`` the warp, not the lane, picks
+each step's method: Rodas5P when any lane about to step wants it.
 
-The warp decides when a block advances: whenever any lane's reader needs
-more of an upstream block, every lane with room in its ring steps that block
-too. Left to themselves the lanes would reach their upstream steps at
-different moments and the warp would run the upstream code at nearly every
-downstream step, which is what a lockstep solve pays.
+The warp also decides when a block advances. When any lane's reader needs more
+of an upstream block, every lane with room in its ring steps that block too.
+Left alone, the lanes would reach their upstream steps at different moments
+and the warp would run the upstream code at nearly every downstream step,
+which is what a lockstep solve pays.
 
-Error control. Each block's steps are accepted by its own weighted RMS norm
-over its own rows. The error the upstream makes is handed down as well: a
-reader seeds one extra direction of its Jacobian sweeps with the upstream's
-error estimate over the piece its step lies in (through the quantity values,
-and through the quantity function for a published quantity), reads off the
-rate ``df/dq . eps`` at which that error enters its rows, and turns it into
-the error it would make over the upstream step, damped where a row restores
-itself faster than that. That *inherited* error cannot be reduced by a
-shorter downstream step -- the upstream's error is already made -- so it is
-fed to the upstream block's controller, whose next step shrinks until the
-increments it hands down are as accurate as its own. So the tolerance means
-what it does for a single system: every block's local error, its own and
-what it inherits, is held to ``rtol`` and ``atol``.
+Error control. Each block accepts its steps by its own weighted RMS norm over
+its own rows. A reader also seeds one extra direction of its Jacobian sweeps
+with the upstream's error estimate, reads off the rate ``df/dq . eps`` at which
+that error enters its rows, and turns it into the error over the upstream
+step, damped where a row restores itself faster. A shorter downstream step
+cannot reduce this *inherited* error, so it goes to the upstream block's
+controller, which shrinks its next step until what it hands down is as
+accurate as its own work. Every block's local error, own and inherited, then
+meets ``rtol`` and ``atol``.
 
-Forward sensitivities ride on every block. A block carries the parameter
-directions and the initial-state directions of its own states and of its
-upstream blocks'; for each, the parameter-direction seed of its sweeps is the
-unit vector plus the Hermite coefficients of the upstream quantities'
-sensitivities in that direction, so ``df/dq S_q(t)`` comes out of the same
-forward sweep as ``J_y S_y + J_p``. A published quantity's sensitivity and its
-rate come from first- and second-order sweeps of the quantity function; its
-second derivative, which would need a third-order sweep, comes instead from
-the quintic through the sensitivity's value and rate at the two nodes and at
-the midpoint of the step (``O(H^6)`` all the same), whose end curvatures are
-what the Hermite block carries.
+Forward sensitivities. A block carries the parameter and initial-state
+directions of its own states and of its upstream blocks'. Each direction's
+parameter seed is the unit vector plus the Hermite coefficients of the
+upstream quantities' sensitivities, so ``df/dq S_q(t)`` comes out of the same
+forward sweep as ``J_y S_y + J_p``. First- and second-order sweeps of the
+quantity function give a published quantity's sensitivity and its rate. Its
+second derivative would need a third-order sweep, so it comes instead from the
+quintic through the sensitivity's value and rate at both nodes and the step's
+midpoint (``O(H^6)`` all the same).
 """
 
 from __future__ import annotations
@@ -130,18 +115,32 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, eq=False)
 class Block:
-    """One block of a hierarchy: states, their right-hand side, and what it reads and publishes.
+    """One block of a hierarchy: its states, their right-hand side, and what it reads and publishes.
 
-    ``rhs(y, t, p) -> tuple`` of the block's ``n`` rates, or ``rhs(y, t, p,
-    q) -> tuple`` when the block ``reads`` other blocks: ``q`` is then the flat
-    tuple of their quantities, block after block in the order of ``reads``.
-    ``outputs(y, t, p[, q]) -> tuple`` of ``n_outputs`` quantities is what the
-    blocks reading this one see; ``None`` publishes the states themselves.
-    ``sparsity`` is the pattern of ``rhs`` with respect to the block's own
-    states (dense when ``None``). ``reads`` are other blocks; a block read by
-    two others is integrated once. ``method`` is how the block steps
-    (:class:`~modax.Rodas5P`, :class:`~modax.Tsit5` or :class:`~modax.Auto`);
-    ``None`` takes the solve's.
+    Args:
+        rhs: ``rhs(y, t, p) -> tuple`` of the block's ``n`` rates, or
+            ``rhs(y, t, p, q)`` when the block reads other blocks. ``q`` is then
+            the flat tuple of their quantities, block after block in the order
+            of ``reads``.
+        n: The number of states. Must be positive.
+        reads: The blocks this one reads. A block that two others read still
+            integrates once.
+        outputs: ``outputs(y, t, p[, q]) -> tuple`` of ``n_outputs`` quantities,
+            what the blocks reading this one see. ``None`` publishes the states
+            themselves.
+        n_outputs: The length of the tuple ``outputs`` returns. Required with
+            ``outputs``, and ``n`` (or ``None``) without it.
+        sparsity: The pattern of ``rhs`` with respect to the block's own states,
+            dense when ``None``.
+        name: A label for the block in error messages.
+        method: How the block steps: :class:`~modax.Rodas5P`,
+            :class:`~modax.Tsit5` or :class:`~modax.Auto`. ``None`` takes the
+            solve's.
+
+    Raises:
+        ValueError: ``n`` is not positive, or ``n_outputs`` does not match
+            ``outputs``.
+        TypeError: ``method`` is not a Rodas5P, Tsit5 or Auto.
     """
 
     rhs: Callable[..., tuple[float, ...]]
@@ -188,12 +187,19 @@ class Block:
 class Hierarchy:
     """The blocks a :class:`Block` tree reaches, upstream first, and their place in the state.
 
-    ``Hierarchy(root)`` orders the blocks by depth-first search from the root
-    (the block nothing reads, the last to step), each block after the blocks
-    it reads, in the order of their ``reads``. The flat state the solve takes
-    and returns holds the blocks' states in that order unless ``layout`` says
-    otherwise: the same blocks in the order their states appear. ``offsets``
-    gives where each of ``blocks`` starts in it.
+    Depth-first search from ``root`` orders the blocks, each after the blocks it
+    reads, in the order of their ``reads``. The flat state the solve takes and
+    returns holds the blocks' states in that order unless ``layout`` gives
+    another. ``offsets`` gives where each of ``blocks`` starts in it.
+
+    Args:
+        root: The block nothing reads, the last to step.
+        layout: The same blocks in the order their states appear in the flat
+            state. ``None`` keeps the search order.
+
+    Raises:
+        ValueError: The blocks read each other in a cycle, or ``layout`` does
+            not list exactly the blocks ``root`` reaches.
     """
 
     root: Block
@@ -241,15 +247,15 @@ class Hierarchy:
     ) -> SplitHierarchy:
         """Split one system into a driver block and a main block along its sparsity pattern.
 
-        The pattern, read as a graph, has strongly connected components in
-        topological order. Those that read only components already taken
-        join the *driver* while it holds at most ``max_driver`` states; the
-        rest is the *main* block, which reads the driver. Pass the result to
-        :func:`modax.solve` in place of ``ode_fn``: the driver steps on its
-        own ahead of the main block, which reads it as a quintic Hermite
-        interpolant of ``t``, with the driver's error handed down. Blocks
-        step with the solve's ``method``. The state, the history and the
-        error weights keep ``ode_fn``'s order.
+        Read as a graph, the pattern has strongly connected components in
+        topological order. Those that read only components already taken join the
+        *driver* while it holds at most ``max_driver`` states. The rest is the
+        *main* block, which reads the driver. Pass the result to
+        :func:`modax.solve` in place of ``ode_fn``. The driver steps ahead of the
+        main block, which reads it as a quintic Hermite interpolant of ``t`` and
+        hands the driver's error back to it. Both blocks step with the solve's
+        ``method``. The state, the history and the error weights keep ``ode_fn``'s
+        order.
 
         Args:
             ode_fn: The whole system's right-hand side, ``(y, t, p) -> tuple``.
@@ -303,9 +309,10 @@ def as_hierarchy(ode_fn: object) -> Hierarchy | None:
 # --- the plan: per-block layout and bookkeeping ------------------------------------
 
 NODES = 12
-"""Nodes of its dense output a block keeps: a reader's step must end at or
-before the last of them, so this bounds how far a block runs ahead (and the
-local memory it takes); with sensitivities on a block keeps :data:`NODES_SENS`."""
+"""Dense-output nodes a block keeps. A reader's step must end at or before the
+last of them, so this bounds how far a block runs ahead and the local memory
+it takes. With sensitivities on, a block keeps :data:`NODES_SENS`.
+"""
 
 NODES_SENS = 4
 
@@ -326,10 +333,10 @@ QUINTIC_LINES = [
 def _midpoint_curvatures() -> tuple[np.ndarray, np.ndarray]:
     """The end curvatures of the quintic through value and slope at 0, 1/2 and 1.
 
-    Returns ``(c_left, c_right)``: ``P''(0) = c_left . d`` and ``P''(1) =
-    c_right . d`` for ``d = (P(0), P'(0), P(1/2), P'(1/2), P(1), P'(1))``, in
-    the unit interval. In ``t`` the slopes are scaled by ``H`` and the
-    curvatures by ``1/H^2``.
+    Returns ``(c_left, c_right)`` with ``P''(0) = c_left . d`` and ``P''(1) =
+    c_right . d`` for ``d = (P(0), P'(0), P(1/2), P'(1/2), P(1), P'(1))`` on the
+    unit interval. In ``t``, scale the slopes by ``H`` and the curvatures by
+    ``1/H^2``.
     """
     powers = np.arange(6)
     rows = []
@@ -442,7 +449,7 @@ class _Method:
 
 
 def resolve_method(bp: _BlockPlan, options) -> _Method:
-    """``bp``'s method: its own, else the solve's ``default_method``, else Rodas5P; ``None`` options from the solve."""
+    """``bp``'s method: its own, else the solve's ``default_method``, else Rodas5P, with ``None`` options taken from the solve."""
     method = bp.block.method or getattr(options, "default_method", None) or Rodas5P()
     rodas, tsit = method_parts(method)
     kind = (
@@ -476,12 +483,12 @@ def resolve_method(bp: _BlockPlan, options) -> _Method:
 
 
 def _table(seq) -> np.ndarray:
-    """``seq`` as an int32 index table, ``(-1,)`` where it is empty."""
+    """``seq`` as an int32 index table, ``(-1,)`` when empty."""
     return np.asarray(seq or (-1,), dtype=np.int32)
 
 
 def hermite_slot(hslot: int, j: int) -> int:
-    """First of the six Hermite coefficients of quantity ``j`` of a block whose block starts at ``hslot``."""
+    """First of the six Hermite coefficients of quantity ``j`` in the Hermite block at ``hslot``."""
     return hslot + 2 + 6 * j
 
 
@@ -494,9 +501,9 @@ def plan_hierarchy(
 ) -> _Plan:
     """Lay the blocks out: indices, directions, Hermite slots.
 
-    ``layout`` overrides where each block's states sit in the user's state
-    (the pattern split keeps the user's order); ``patterns`` overrides the
-    blocks' own sparsity.
+    ``layout`` overrides where each block's states sit in the user's state (the
+    pattern split keeps the user's order). ``patterns`` overrides the blocks'
+    own sparsity.
     """
     blocks = hierarchy.blocks
     n_vars = hierarchy.n_vars
@@ -687,9 +694,9 @@ def quintic_d2(c0, c1, c2, c3, c4, c5, s, h):
 def dense_eval_fn(width: int) -> MLIRDispatcher:
     """A block's dense output at ``t_eval``: every row's value, rate and second derivative.
 
-    The piece is the quintic between the last node at or before ``t_eval``
-    and the next, from the value and rate at both nodes, the curvature of the
-    piece's start (``node_d2r``) and of its end (``node_d2l``); at a node it
+    It evaluates the quintic between the last node at or before ``t_eval`` and
+    the next, built from the value and rate at both nodes, the curvature at the
+    piece's start (``node_d2r``) and at its end (``node_d2l``). At a node it
     reproduces the node's own data.
     """
 
@@ -747,7 +754,7 @@ def _rows(coeff_rows):
 
 
 def _dense_or_pattern(bp: _BlockPlan):
-    """The block's sparsity pattern, every column of every row where it has none."""
+    """The block's sparsity pattern, or every column of every row when it has none."""
     n = bp.n
     if bp.pattern is not None:
         return bp.pattern
@@ -788,10 +795,10 @@ def _jacobian_inf_norm(bp: _BlockPlan, structure) -> MLIRDispatcher:
 def _explicit_functions(plan: _Plan, bp: _BlockPlan, write, tangent) -> dict[str, Any]:
     """The device functions of a block's Tsit5 steps (no directions: ``bp.ns == 0``).
 
-    ``k`` is ``(7, n)``: row 0 holds ``f(t, y)`` on entry (first same as
-    last: the previous step's row 6, or the node's rate), rows 1..6 the
-    stages, row 6 the rate at the candidate ``u``. The step is one loop over
-    the stages with the right-hand side called at one place, as Rodas5P's is.
+    ``k`` is ``(7, n)``. Row 0 holds ``f(t, y)`` on entry (first same as last:
+    the previous step's row 6, or the node's rate), rows 1..6 the stages, and
+    row 6 the rate at the candidate ``u``. As in Rodas5P, the step is one loop
+    over the stages that calls the right-hand side in one place.
     """
     b, n = bp.b, bp.n
     P_LOCAL = plan.p_local
@@ -871,10 +878,10 @@ def _explicit_functions(plan: _Plan, bp: _BlockPlan, write, tangent) -> dict[str
     def teig(u, g6, k):
         """The largest eigenvalue magnitude, ``max_j |k7_j - k6_j| / |u_j - g6_j|`` (Hairer and Wanner II, p. 22).
 
-        A row whose rate differs while its state is the same to the last bit
-        counts as (practically) infinitely stiff, as OrdinaryDiffEq.jl's
-        division makes it: at a stability-limited step the two states can
-        agree to rounding while the stiff rows' rates do not.
+        A row whose rate differs while its state matches to the last bit counts as
+        (practically) infinitely stiff, as OrdinaryDiffEq.jl's division makes it.
+        At a stability-limited step the two states can agree to rounding while the
+        stiff rows' rates do not.
         """
         largest = 0.0
         for j in range(n):
@@ -889,12 +896,12 @@ def _explicit_functions(plan: _Plan, bp: _BlockPlan, write, tangent) -> dict[str
 
     @cuda.jit(device=True)
     def trate(u, g6, k, jdiag):
-        """Each row's restoring rate for the inherited error's damping, ``-|k7 - k6| / |u - g6|`` row by row.
+        """Each row's restoring rate for damping the inherited error, ``-|k7 - k6| / |u - g6|``.
 
-        The row's own share of the stiffness estimate, free from the step's
-        two stages at its end: a Tsit5 block has no Jacobian diagonal, and
-        without damping a stiff row's inherited error is overstated by
-        ``h |J_rr|``, which starves the upstream block of step size.
+        This is the row's own share of the stiffness estimate, free from the two
+        stages at the step's end. A Tsit5 block has no Jacobian diagonal, and
+        without damping a stiff row overstates its inherited error by ``h |J_rr|``,
+        which starves the upstream block of step size.
         """
         for j in range(n):
             jdiag[j] = -math.fabs(k[6, j] - k[5, j]) / max(
@@ -1108,7 +1115,7 @@ def _block_functions(
             pass
 
     def add_outputs(functions: dict[str, Any]) -> dict[str, Any]:
-        """The published quantities' functions at a node, added to ``functions``."""
+        """Add the published quantities' functions at a node to ``functions``."""
         # -- the published quantities at a node ---------------------------------------------
         if out_fn is not None:
             out_device = as_cuda_device(out_fn)
@@ -1146,7 +1153,7 @@ def _block_functions(
 
             @cuda.jit(device=True)
             def outputs_error(th, t, p_local, err_y, p_seed, errq, zero):
-                """The quantities' error ``D o[(eps_y, 0, eps_upstream)]`` from the block's and its upstream's."""
+                """The quantities' error ``D o[(eps_y, 0, eps_upstream)]`` from the block's error and its upstream's."""
                 column = cuda.local.array(m, types.float64)
                 out_tangent(column, th, t, p_local, err_y, 0.0, p_seed)
                 for j in range(m):
@@ -1190,10 +1197,10 @@ def _block_functions(
                 def outputs_curvature(nQ, nQ1, qa, Qm, Q1m, Qb, Q1b, h, nQ2, nQ2l, qb):
                     """The sensitivities' curvatures at the ends of the piece from node ``qa`` to node ``qb``.
 
-                    From the quintic through their values and rates at the piece's
-                    start (node ``qa``), midpoint and end (``Qb``, ``Q1b``): the
-                    start's curvature replaces node ``qa``'s right-hand one, the
-                    end's becomes node ``qb``'s left-hand one.
+                    They come from the quintic through the values and rates at the piece's
+                    start (node ``qa``), midpoint and end (``Qb``, ``Q1b``). The start's
+                    curvature replaces node ``qa``'s right-hand one, and the end's becomes node
+                    ``qb``'s left-hand one.
                     """
                     cl = cuda.const.array_like(curv_left)
                     cr = cuda.const.array_like(curv_right)
@@ -1749,7 +1756,7 @@ def _block_functions(
                 jdiag,
                 jn,
             ):
-                """One Rodas5P step from ``y``; leaves ``u + k_stages[7]`` as the candidate."""
+                """One Rodas5P step from ``y``, leaving ``u + k_stages[7]`` as the candidate."""
                 inv_dt = 1.0 / dt_use
                 dtgamma_inv = inv_dt / GAMMA
                 diag = cuda.const.array_like(diag_t)
@@ -1970,7 +1977,7 @@ def _block_functions(
 
 
 def _hermite_writer(plan: _Plan, u: int, b: int) -> MLIRDispatcher:
-    """The Hermite block of upstream ``u`` for reader ``b``'s step into ``p_local`` and ``hseed_b``."""
+    """Write upstream ``u``'s Hermite block for reader ``b``'s step into ``p_local`` and ``hseed_b``."""
     up, rp = plan.blocks[u], plan.blocks[b]
     m, hslot, hoff = up.m, up.hslot, plan.hoff(b, u)
     dirs_t = _table(rp.dirs)
@@ -2402,15 +2409,15 @@ def _emit_kernel(
     def controller(
         b: int, h: str, indent: int, inherited: bool, kind: str = "r"
     ) -> None:
-        """The step proposal; an accepted step leaves ``min(safe_err, 1)`` in the controller's history.
+        """The step proposal. An accepted step leaves ``min(safe_err, 1)`` in the controller's history.
 
-        The inherited error counts like the block's own in the proposal, and
-        in the history up to 1: a history entry above 1 (an accepted step
-        whose readers inherited more than the tolerance) stops a rejection's
-        proposal contracting (``SAFETY err^E1 ep1^E2`` with ``err > 1`` needs
-        ``ep1 <= 1``), and let a step be rejected at the same size for ever.
-        Keeping the block's own error alone in the history cost 20 percent
-        on DISCO-EB (smaller steps after every inherited-error-limited one).
+        The inherited error counts like the block's own in the proposal, and in the
+        history up to 1. A history entry above 1 (an accepted step whose readers
+        inherited more than the tolerance) stops a rejection's proposal from
+        contracting, since ``SAFETY err^E1 ep1^E2`` with ``err > 1`` needs
+        ``ep1 <= 1``, and the controller could then reject a step at the same size for ever.
+        Keeping only the block's own error in the history cost 20 percent on
+        DISCO-EB (smaller steps after every step the inherited error limited).
         """
         w(indent, "if math.isnan(err_norm) or err_norm > 1e18:")
         w(indent + 1, "own_err = 1e18")
@@ -2449,7 +2456,7 @@ def _emit_kernel(
         w(indent, f"dt_new = {h} * factor")
 
     def by_mode(b: int, indent: int, emit) -> None:
-        """``emit(kind, indent)`` for the block's method; under Auto both, chosen by the warp's mode."""
+        """``emit(kind, indent)`` for the block's method. Under Auto it emits both, and the warp's mode picks one."""
         kind = methods[b].kind
         if kind == "rodas":
             emit("r", indent)
@@ -2466,8 +2473,9 @@ def _emit_kernel(
     def auto_vote(b: int, ready: str, indent: int) -> None:
         """The warp's method for the next step: Rodas5P if any lane about to step wants it.
 
-        Separate ifs throughout, no else and no conditional expressions: the
-        LLVM 7 translation rejects what numba makes of them here.
+        It uses separate ifs throughout, with no else and no conditional
+        expressions, because the LLVM 7 translation rejects what numba makes of
+        them here.
         """
         a = methods[b].switch
         w(indent, f"vote_{b} = False")
@@ -2480,8 +2488,11 @@ def _emit_kernel(
         w(indent, f"mode_{b} = vote_{b}")
 
     def auto_update(b: int, indent: int) -> None:
-        """After every attempt, accepted or not (OrdinaryDiffEq.jl's ``choose_algorithm!`` runs in each
-        step's footer): count stiff and non-stiff steps in a row, and turn the lane's wish over."""
+        """Count stiff and non-stiff steps in a row and turn the lane's wish over when a count passes its limit.
+
+        Runs after every attempt, accepted or not, as OrdinaryDiffEq.jl's
+        ``choose_algorithm!`` runs in each step's footer.
+        """
         a = methods[b].switch
         w(
             indent,
@@ -3065,8 +3076,8 @@ def make_hierarchy_kernel(
     """Rodas5P over a hierarchy of blocks, one trajectory per thread.
 
     ``options`` is the :class:`modax.rodas5P.KernelOptions`. Returns
-    ``(kernel, trajectories_per_block)``; the kernel takes the standard
-    argument list and writes the history in the user's layout.
+    ``(kernel, trajectories_per_block)``. The kernel takes the standard argument
+    list and writes the history in the user's layout.
     """
     from modax import rodas5P as R
 

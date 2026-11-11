@@ -1,23 +1,22 @@
-"""Turning a Jacobian sparsity pattern into the fewest forward sweeps.
+"""Turn a Jacobian sparsity pattern into the fewest forward sweeps.
 
-Forward-mode AD does not hand back a Jacobian; it hands back ``J v`` for a
-direction ``v``. Seeding the unit vectors one at a time costs ``n_vars`` sweeps.
-But two columns that share no row are *structurally orthogonal*: their
-contributions to ``J v`` never land on the same component, so seeding both at
-once -- ``v = e_i + e_j`` -- returns both columns uncorrupted in a single sweep,
-and the sparsity pattern says which component belongs to which column.
+Forward-mode AD returns ``J v`` for a direction ``v``, not ``J``, so seeding
+unit vectors one at a time costs ``n_vars`` sweeps. Two columns that share
+no row are *structurally orthogonal*. Their contributions to ``J v`` never
+land on the same component, so seeding ``v = e_i + e_j`` returns both
+columns intact in one sweep, and the pattern says which component belongs to
+which column.
 
-Partitioning the columns into as few such groups as possible is exactly vertex
-colouring of the column intersection graph ``S^T S``, which NetworkX's greedy
-colouring does well enough here: the bound that matters is the largest set of
-mutually overlapping columns, and greedy hits it on the patterns these solvers
-see.
+Grouping the columns into as few such sets as possible is vertex colouring of
+the column intersection graph ``S^T S``. NetworkX's greedy colouring reaches
+the bound that matters (the largest set of mutually overlapping columns) on
+the patterns these solvers see.
 
-The pattern a caller supplies must be a *superset* of the true nonzeros --
-colouring a superset is conservative, colouring a subset silently corrupts
-entries where two columns in a group turn out to overlap after all. It need not
-cover the factorisation's fill-in: that has slots of its own, laid out by
-:py:obj:`modax._sparse_direct`, and no column of ``J`` writes them.
+The caller's pattern must be a *superset* of the true nonzeros. A superset
+only costs sweeps, but a subset silently corrupts entries where two columns
+of a group overlap after all. It need not cover the factorisation's fill-in,
+which gets its own slots from :py:obj:`modax._sparse_direct` and which no
+column of ``J`` writes.
 """
 
 from __future__ import annotations
@@ -36,7 +35,8 @@ Pattern: TypeAlias = tuple[tuple[int, ...], ...]
 
 Sparsity: TypeAlias = ArrayLike | spmatrix | sparray
 """What ``solve`` accepts as ``sparsity``: an ``(n_vars, n_vars)`` mask, a
-scipy sparse matrix, or an ``(nnz, 2)`` array of ``(row, col)`` pairs."""
+scipy sparse matrix, or an ``(nnz, 2)`` array of ``(row, col)`` pairs.
+"""
 
 # The strategies NetworkX offers that are worth trying. They are cheap -- this
 # runs once per kernel build, on the host -- so the best of them is taken
@@ -55,19 +55,18 @@ class CompressedJacobian:
     """A column-compressed Jacobian layout, and the seeds that fill it.
 
     Entry ``(r, c)`` of the Jacobian lives at slot ``r * n_colours + colour[c]``.
-    The layout is dense in the rows and compressed in the columns, so a slot
-    exists for every row of every colour; slots whose colour group has no
-    nonzero in that row are written but never read, which costs nothing and
-    keeps the write a straight run over a column block.
+    Rows stay dense and the colouring compresses the columns, so every row of every colour has
+    a slot. The sweeps write slots whose colour group has no nonzero in that row
+    but nothing reads them, which keeps each write a straight run over a column
+    block.
 
-    With no pattern every column conflicts with every other, colouring gives
-    ``n_colours == n_vars``, and this degenerates exactly to the dense
-    row-major matrix -- so the dense path is not a special case in the kernel,
-    just the uninformative end of the same mechanism.
+    With no pattern, colouring gives ``n_colours == n_vars`` and this is exactly
+    the dense row-major matrix. The kernel's dense path is therefore not a
+    special case.
 
-    :py:obj:`modax._sparse_direct` overrides the grid with ``packed``: the slot
-    of each entry in its own CSR image of ``L + U``, so the sweeps deposit ``-J``
-    straight into the buffer the factorisation will work in.
+    :py:obj:`modax._sparse_direct` replaces the grid with ``packed``, the slot of
+    each entry in its CSR image of ``L + U``, so the sweeps write ``-J`` straight
+    into the buffer the factorisation works in.
     """
 
     n_vars: int
@@ -103,7 +102,11 @@ class CompressedJacobian:
         return tuple(self.slot(i, i) for i in range(self.n_vars))
 
     def slot(self, row: int, col: int) -> int:
-        """Where entry ``(row, col)`` lives."""
+        """Where entry ``(row, col)`` lives.
+
+        Raises:
+            ValueError: If the layout packs its slots and the pattern has no such entry.
+        """
         if self.packed is not None and row == col:
             # The factorisation's own slot, whether or not the pattern declares
             # the diagonal. The grid cell ``(row, colour[row])`` cannot stand in
@@ -125,12 +128,12 @@ class CompressedJacobian:
 
     @property
     def has_unwritten_slots(self) -> bool:
-        """Whether some slot of the buffer is written by no colour sweep.
+        """Whether no colour sweep writes some slot of the buffer.
 
-        The grid writes every slot, and a packed layout has one slot per entry
-        of ``J``; only a packed layout with slots nothing claims -- the
-        factorisation's fill-in, or a diagonal the pattern left out -- has to
-        be cleared before the sweeps run.
+        The grid writes every slot, and a packed layout has one slot per entry of
+        ``J``. Only a packed layout with unclaimed slots (the factorisation's
+        fill-in, or a diagonal the pattern left out) needs clearing before the
+        sweeps run.
         """
         if self.packed is None:
             return False
@@ -139,9 +142,9 @@ class CompressedJacobian:
     def store_slots(self) -> npt.NDArray[np.int32] | None:
         """Where each ``(row, colour)`` sweep value goes, or ``None`` for a run.
 
-        On the grid a colour group's values are a contiguous block and the
-        kernel writes them straight down; packed, each one is scattered to its
-        own slot and the positions no entry claims are simply not written.
+        On the grid, a colour group's values form a contiguous block that the
+        kernel writes straight down. In a packed layout each value goes to its own
+        slot, and the kernel skips positions no entry claims.
         """
         if self.packed is None:
             return None
@@ -150,12 +153,11 @@ class CompressedJacobian:
     def seed_table(self, min_width: int = 0) -> npt.NDArray[np.float64]:
         """``(n_colours + 1, max(n_vars, min_width))`` of tangent directions.
 
-        Row ``g`` is the indicator of colour group ``g``, so one sweep seeded
-        with it yields that whole group. The extra final row is all zeros, for
-        the sweeps that vary ``t`` or a parameter rather than the state -- which
-        is why the rows are widened to ``min_width``: the zero row doubles as
-        the null *parameter* direction, and there may be more parameters than
-        state variables.
+        Row ``g`` is the indicator of colour group ``g``, so one sweep seeded with it
+        yields that whole group. The final row is all zeros, for sweeps that vary
+        ``t`` or a parameter rather than the state. It also serves as the null
+        *parameter* direction, and there may be more parameters than states, hence
+        the widening to ``min_width``.
         """
         width = max(self.n_vars, min_width)
         seeds = np.zeros((self.n_colours + 1, width), dtype=np.float64)
@@ -182,8 +184,12 @@ def pattern_mask(pattern: Pattern) -> np.ndarray:
 def normalize_sparsity(sparsity: Sparsity, n_vars: int) -> Pattern:
     """Accept a dense mask, a scipy sparse matrix, or ``(row, col)`` pairs.
 
-    Returned as a hashable tuple of row tuples so the colouring can be cached
-    on it: a kernel is rebuilt per pattern, not per call.
+    Returns a hashable tuple of row tuples so the colouring can cache on it.
+    A kernel is rebuilt per pattern, not per call.
+
+    Raises:
+        ValueError: If ``sparsity`` has none of those shapes, or an entry lies
+            outside the ``n_vars`` by ``n_vars`` Jacobian.
     """
     pairs: Iterable[tuple[int, int]]
     if isinstance(sparsity, (spmatrix, sparray)):
@@ -214,7 +220,13 @@ def normalize_sparsity(sparsity: Sparsity, n_vars: int) -> Pattern:
 
 @functools.cache
 def colour_sparsity(pattern: Pattern) -> CompressedJacobian:
-    """Colour a pattern's column intersection graph, fewest colours wins."""
+    """Colour a pattern's column intersection graph, keeping the fewest colours.
+
+    Tries several NetworkX greedy strategies and keeps the best.
+
+    Raises:
+        ValueError: If the colouring is not structurally orthogonal.
+    """
     import networkx as nx
 
     n_vars = len(pattern)
@@ -244,11 +256,14 @@ def colour_sparsity(pattern: Pattern) -> CompressedJacobian:
 
 
 def _check_orthogonal(pattern: Pattern, compressed: CompressedJacobian) -> None:
-    """No row may hold two columns of the same colour.
+    """Check that no row holds two columns of the same colour.
 
-    A violation means two entries would share a slot and silently overwrite one
-    another, which is the one way this scheme can be wrong. It costs a pass over
-    the pattern once per kernel build to rule out.
+    Such a pair would share a slot and silently overwrite each other, the one
+    way this scheme can go wrong. One pass over the pattern per kernel build
+    rules it out.
+
+    Raises:
+        ValueError: If a row holds two columns of one colour.
     """
     for row, cols in enumerate(pattern):
         seen: dict[int, int] = {}

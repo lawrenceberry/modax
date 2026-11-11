@@ -1,65 +1,53 @@
 """A compiled sparse direct solver for the Rodas5P iteration matrix.
 
-``dense_lu_solver`` factorises ``M = I/(h*gamma) - J`` as though it were dense,
-which is ``n_vars ** 3 / 3`` operations however few nonzeros ``M`` has. A
-hand-written solver such as DISCO-EB's Schur/Einstein-Boltzmann block-LU does far
-better, but only for the one block structure it was written against. This module
-takes the *sparsity pattern* the kernel is already given and compiles a direct
-solver for it -- any pattern, no structure assumed -- so the saving a hand-written
-solver bought is available to any caller who can say where its nonzeros are.
+``dense_lu_solver`` factorises ``M = I/(h*gamma) - J`` as if it were dense,
+which costs ``n_vars ** 3 / 3`` operations however few nonzeros ``M`` has. A
+hand-written solver such as DISCO-EB's Schur block-LU does far better, but
+only for the one structure it targets. This module compiles a direct solver
+for whatever *sparsity pattern* the kernel receives, assuming no structure.
 
-The analysis happens once, on the host, when the kernel is built:
+The host runs the analysis once, at kernel build time:
 
-1. **Order.** The pattern is symmetrised and handed to SuiteSparse's AMD, which
-   returns a fill-reducing permutation (see
-   :py:obj:`fill_reducing_order <modax._sparse_direct.fill_reducing_order>` for
-   why AMD and not COLAMD).
-2. **Factor symbolically.** The exact pattern of ``L + U`` for the permuted
-   matrix, fill-in included, falls out of a pure-pattern Gaussian elimination
-   (:py:obj:`fill_pattern <modax._sparse_direct.fill_pattern>`) -- no numbers, no
-   device, no sample matrix.
-3. **Lay out.** That pattern becomes one CSR image of ``L + U``, and the
-   ``(row, col) -> slot`` map it defines becomes the
-   :py:obj:`CompressedJacobian <modax._sparsity.CompressedJacobian>` the AD sweeps
-   write into. The buffer is exactly ``nnz(L + U)`` elements: the
-   symbolic pass *is* the memory footprint.
+1. **Order.** SuiteSparse's AMD takes the symmetrised pattern and returns a
+   fill-reducing permutation (see
+   :py:obj:`fill_reducing_order <modax._sparse_direct.fill_reducing_order>`
+   for why AMD and not COLAMD).
+2. **Factor symbolically.** A pattern-only Gaussian elimination
+   (:py:obj:`fill_pattern <modax._sparse_direct.fill_pattern>`) gives the
+   exact pattern of ``L + U``, fill-in included, with no numbers and no
+   device.
+3. **Lay out.** That pattern becomes one CSR image of ``L + U``, and its
+   ``(row, col) -> slot`` map becomes the
+   :py:obj:`CompressedJacobian <modax._sparsity.CompressedJacobian>` the AD
+   sweeps write into. The buffer holds exactly ``nnz(L + U)`` elements.
 4. **Compile.** The factorisation and the two triangular solves become
-   ``cuda.jit(device=True)`` functions, in the same
-   ``factorize_local(lu, ipiv)`` / ``solve_local(lu, ipiv, rhs)`` shape
-   :py:obj:`modax.rodas5P.dense_lu_solver` has, so the kernel calls one or the
-   other and has no branch. Where the structure is small enough they are emitted
-   as straight-line code with every slot a literal; above that they fall back to
-   loops over index tables in constant memory.
+   ``cuda.jit(device=True)`` functions with the same
+   ``factorize_local(lu, ipiv)`` / ``solve_local(lu, ipiv, rhs)`` shape as
+   :py:obj:`modax.rodas5P.dense_lu_solver`, so the kernel has no branch.
+   Small structures get straight-line code with every slot a literal. Larger
+   ones fall back to loops over index tables in constant memory.
 
-One trajectory per thread, as everywhere else in this kernel. Every thread runs
-the same pattern, so there is no divergence to pay for whichever form is
-emitted.
+Every thread runs the same pattern, so neither form causes divergence.
 
-**Why the straight-line form matters.** Table-driven, a sparse routine spends a
-broadcast load on the index of every value it is about to read, and the load of
-the value cannot issue until that index arrives. With a big enough ensemble the
-other trajectories cover that latency; DISCO-EB's single-cosmology case is 128
-trajectories, four warps on a 46-SM device, and there is nothing to cover it
-with. Spelling the indices out removes the dependency entirely, and it costs
-nothing anywhere else: neither the matrix nor the right-hand side can leave
-local memory, because the kernel indexes both with loop variables of its own, so
-this trades index loads for instruction count and not for registers. Measured on
-DISCO-EB at N128: 528 ms table-driven, 419 ms with the solves unrolled, 398 ms
-with the factorisation unrolled too, against 509 ms for the hand-written Schur
-solver it replaced.
+**Why straight-line code matters.** Table-driven, a sparse routine spends a
+broadcast load on each value's index before it can load the value. A large
+ensemble hides that latency, but DISCO-EB's single-cosmology case is 128
+trajectories (four warps on a 46-SM device), and nothing hides it. Literal
+indices remove the dependency without costing registers, since the kernel
+keeps both the matrix and the right-hand side in local memory anyway.
+Measured on DISCO-EB at N128: 528 ms table-driven, 419 ms with the solves
+unrolled, 398 ms with the factorisation unrolled too, against 509 ms for the
+hand-written Schur solver it replaced.
 
-**No pivoting.** The pattern has to be fixed at compile time and the same in
-every thread, so rows cannot be swapped on the numbers. Two things make that
-sound here. The permutation is *symmetric*, so ``M``'s diagonal stays on the
-diagonal and ``I/(h*gamma)`` guarantees every pivot is structurally there and
-grows without bound as the step shrinks. And Rodas5P satisfies the
-Rosenbrock-*W* order conditions to second order, so an approximate factorisation
-costs order and step-size control rather than convergence -- and the controller
-is what notices.
-A pivot that reaches exactly zero leaves an infinity in the factors, the error
-norm goes to NaN, the step is rejected and the next attempt has a larger
-``1/(h*gamma)`` on that diagonal. This is the same stance ``dense_lu_solver``
-takes on a singular column, for the same reason.
+**No pivoting.** The compiler fixes the pattern, and every thread shares
+it, so rows cannot swap based on the numbers. The *symmetric*
+permutation keeps ``M``'s diagonal on the diagonal, where ``I/(h*gamma)``
+puts a pivot that grows as the step shrinks. Rodas5P also satisfies the
+Rosenbrock-*W* order conditions to second order, so an approximate
+factorisation costs order and step size, not convergence. A pivot of exactly
+zero leaves an infinity, the error norm goes to NaN, the controller rejects
+the step, and the retry has a larger ``1/(h*gamma)`` on that diagonal.
+``dense_lu_solver`` treats a singular column the same way.
 """
 
 from __future__ import annotations
@@ -103,39 +91,27 @@ def fill_reducing_order(
 ) -> tuple[int, ...]:
     """A permutation of the variables that keeps ``L + U`` small.
 
-    AMD, on the symmetrised pattern ``S + S.T``.
+    ``ordering="amd"`` runs AMD on the symmetrised pattern ``S + S.T``, and
+    ``"natural"`` returns the identity. :data:`ORDERINGS` lists both.
 
-    Why AMD rather than COLAMD, which is the other obvious candidate: COLAMD
-    orders the *columns* so that fill stays bounded whatever row permutation
-    partial pivoting later chooses. That is the right objective exactly when
-    there will be pivoting -- and there will not be here, because the pattern is
-    compiled into the kernel and cannot depend on the numbers. COLAMD's
-    permutation is also one-sided, so it moves the diagonal off the diagonal,
-    and this factorisation needs the diagonal precisely where ``I/(h*gamma)``
-    puts it. AMD instead minimises (approximately) the fill of the Cholesky
-    factor of ``S + S.T``, which is the standard bound on the fill of an
-    unpivoted ``LU`` of ``S``, and it does so with a *symmetric* permutation
-    ``P S P.T`` that leaves every diagonal entry on the diagonal. It is what
-    UMFPACK and SuperLU use in their "symmetric mode" for the same reasons, and
-    an iteration matrix ``I/(h*gamma) - J`` is about as close to structurally
-    symmetric as an unsymmetric matrix gets.
+    AMD rather than COLAMD because COLAMD bounds fill under whatever row
+    permutation partial pivoting later picks, and there is no pivoting here.
+    COLAMD's one-sided permutation also moves the diagonal, which this
+    factorisation needs where ``I/(h*gamma)`` puts it. AMD approximately
+    minimises the Cholesky fill of ``S + S.T``, the standard bound on an
+    unpivoted LU of ``S``, with a symmetric permutation ``P S P.T`` that keeps
+    the diagonal in place.
 
-    On DISCO-EB's Einstein-Boltzmann Jacobian this returns a *perfect*
-    elimination order -- ``nnz(L + U) == nnz(J)``, not one entry of fill -- and
-    the order it finds is the hand-written Schur solver's: peel each
-    free-streaming multipole hierarchy from its truncated end inwards, then
-    eliminate the densely coupled core last.
+    On DISCO-EB's Einstein-Boltzmann Jacobian AMD finds a *perfect* elimination
+    order, with ``nnz(L + U) == nnz(J)``. It matches the hand-written Schur
+    solver's order: peel each free-streaming hierarchy from its truncated end
+    inwards, then eliminate the dense core last.
 
-    SuiteSparse's AMD reaches this through cvxopt, which ships it in a
-    manylinux wheel. It used to come through scikit-sparse's CHOLMOD bindings,
-    which have no wheels and compile against SuiteSparse's headers -- so the
-    default ordering worked only where someone had already run an `apt install`,
-    and `pip install modax` failed at that build. The two give the same fill
-    on every pattern measured; where they differ it is in how they break ties
-    between orders that are equally good.
+    AMD comes from cvxopt, which ships it in a manylinux wheel.
 
-    ``ordering`` is ``"amd"`` or ``"natural"``; see :data:`ORDERINGS` for what
-    became of CHOLMOD's others.
+    Raises:
+        ValueError: If ``ordering`` is not in :data:`ORDERINGS`.
+        ImportError: If ``ordering="amd"`` and cvxopt is not installed.
     """
     if ordering not in ORDERINGS:
         raise ValueError(f"unknown ordering {ordering!r}; expected one of {ORDERINGS}")
@@ -167,21 +143,16 @@ def fill_reducing_order(
 def fill_pattern(pattern: Pattern) -> npt.NDArray[np.bool_]:
     """The exact ``L + U`` pattern of an unpivoted LU, as a boolean matrix.
 
-    Gaussian elimination on the pattern alone: eliminating column ``k`` makes
-    every row below it inherit row ``k``'s entries to the right of the diagonal.
-    The result is exact -- it is what the numeric factorisation will touch, no
-    more and no less -- which is why the footprint is taken this way rather than
-    by factorising a sample matrix and counting. A sample cannot be exact: a
-    coefficient that happens to vanish for those numbers, or an exact
-    cancellation, drops an entry that another right-hand side needs, and the
-    buffer is then one slot short in a kernel that has no way to say so. It is
-    also cheaper, since it needs neither a plausible matrix nor a device.
+    Runs Gaussian elimination on the pattern alone. Eliminating column ``k``
+    makes every row below it inherit row ``k``'s entries right of the diagonal.
+    The result is exactly what the numeric factorisation touches. Factorising a
+    sample matrix instead could drop an entry that cancels for those numbers,
+    leaving the buffer a slot short with no way for the kernel to notice.
 
-    A dense boolean elimination over the whole matrix, one numpy row OR per
-    update, so the analysis is ``O(n ** 3)`` time at worst and ``O(n ** 2)``
-    bytes. These are solvers for systems of tens to a few
-    hundred variables (a 200-variable pattern analyses in single-digit
-    milliseconds), so a sparse symbolic factorisation would buy nothing but code.
+    The elimination is dense, one numpy row OR per update, so it takes
+    ``O(n ** 3)`` time and ``O(n ** 2)`` bytes at worst. A 200-variable pattern
+    analyses in single-digit milliseconds, so a sparse symbolic factorisation
+    would gain nothing.
     """
     n = len(pattern)
     filled = np.zeros((n, n), dtype=bool)
@@ -201,24 +172,19 @@ def fill_pattern(pattern: Pattern) -> npt.NDArray[np.bool_]:
 class SparseLULayout:
     """One CSR image of ``L + U``, in elimination order.
 
-    CSR rather than CSC because every one of the three routines that reads this
-    reads it *by rows*: the up-looking factorisation takes row ``i`` and
-    subtracts multiples of the rows above it, the forward substitution is a dot
-    product of row ``i`` of ``L`` with the solution so far, and the back
-    substitution is the same over row ``i`` of ``U``. One row-major image serves
-    all three; CSC would have to be transposed for two of them, and a
-    column-oriented factorisation would still leave the solves wanting rows.
+    CSR because all three routines read by rows: the up-looking factorisation,
+    the forward substitution and the back substitution.
 
-    ``L`` and ``U`` share the image -- ``L`` strictly left of the diagonal, ``U``
-    from it rightwards -- because the factorisation is in place and a unit
-    diagonal needs no storage. ``row_ptr``/``diag_ptr`` bracket the two halves of
-    each row.
+    ``L`` (strictly left of the diagonal) and ``U`` (from the diagonal
+    rightwards) share the image, because the factorisation runs in place and
+    ``L``'s unit diagonal needs no storage. ``row_ptr`` and ``diag_ptr`` bracket
+    the two halves of each row.
 
-    Indices here are *elimination* indices: row ``i`` of this structure is
-    variable ``order[i]`` of the caller's system. :attr:`row_origin` and
-    :attr:`col_origin` carry the translation, so the device code never applies a
-    permutation to a vector -- it visits the rows in elimination order and reads
-    and writes the right-hand side where the caller left it.
+    Indices are *elimination* indices: row ``i`` here is variable ``order[i]``
+    of the caller's system. :attr:`row_origin` and :attr:`col_origin` translate
+    back, so the device code never permutes a vector. It visits rows in
+    elimination order and reads and writes the right-hand side at the caller's
+    indices.
     """
 
     n_vars: int
@@ -229,7 +195,7 @@ class SparseLULayout:
 
     @property
     def nnz(self) -> int:
-        """Elements in one trajectory's ``L + U``, i.e. the whole footprint."""
+        """Elements in one trajectory's ``L + U``, the whole footprint."""
         return int(self.row_ptr[-1])
 
     @property
@@ -259,23 +225,21 @@ class SparseLULayout:
         """The rank-one updates, addressed off the multiplier that drives them.
 
         Up-looking LU visits row ``i`` and, for each entry ``(i, k)`` left of the
-        diagonal in increasing ``k``, forms the multiplier ``L[i, k]`` and
-        subtracts ``L[i, k] * U[k, k:]`` from row ``i``. With the pattern fixed,
-        *which* slot each of those subtractions reads and writes is fixed too, so
-        the whole inner merge -- the part a runtime sparse solver spends its time
-        on, searching row ``i`` for the column it has to update -- is resolved
-        here.
+        diagonal in increasing ``k``, forms the multiplier ``L[i, k]`` and subtracts
+        ``L[i, k] * U[k, k:]`` from row ``i``. With the pattern fixed, the slot each
+        subtraction writes never changes either, so this resolves on the host the search a
+        runtime sparse solver spends its time on.
 
-        The *sources* need no table at all: they are row ``k``'s upper entries,
-        which CSR already holds contiguously, so the inner loop can simply run
-        over ``pivot_of[p] + 1 .. upper_end[p]`` and read ``lu[s]`` straight.
-        That leaves one index load per multiply-add rather than three, which is
-        the whole cost of the inner loop besides the arithmetic.
+        The sources need no table. They are row ``k``'s upper entries, which CSR
+        stores contiguously, so the inner loop runs over ``pivot_of[p] + 1 ..
+        upper_end[p]``. That leaves one index load per multiply-add rather than
+        three.
 
-        Returned as ``(dst_start, destination, upper_end)``, all indexed by the
-        multiplier's own slot ``p``. The destinations for one multiplier are
-        contiguous, and in the same order as the sources, so the inner loop walks
-        ``destination`` from ``dst_start[p]`` alongside the sources.
+        Returns:
+            ``(dst_start, destination, upper_end)``, indexed by the multiplier's
+            slot ``p``. One multiplier's destinations are contiguous and in source
+            order, so the inner loop walks ``destination`` from ``dst_start[p]``
+            alongside the sources.
         """
         n = self.n_vars
         dst_start = np.zeros(self.nnz, dtype=np.int64)
@@ -299,10 +263,9 @@ class SparseLULayout:
     def flop_counts(self) -> tuple[int, int, int]:
         """``(multipliers, updates, substitutions)``.
 
-        The first two are one factorisation; the third is one solve, both
-        substitutions together. These decide whether the device code is emitted
-        as straight-line or as loops, so they are counted from the structure
-        rather than by building what they are counting.
+        The first two count one factorisation, the third one solve (both
+        substitutions). They decide between straight-line and looped code, so they
+        come from the structure rather than from building the code.
         """
         lower = self.diag_ptr - self.row_ptr[:-1]
         upper = self.row_ptr[1:] - self.diag_ptr - 1
@@ -355,19 +318,20 @@ def analyse(pattern: Pattern, ordering: Ordering = "amd") -> SparseLULayout:
 def compressed_jacobian(pattern: Pattern, layout: SparseLULayout) -> CompressedJacobian:
     """The colour-compressed layout whose slots are ``layout``'s CSR slots.
 
-    Colouring and storage are separate questions and this is where they meet.
-    The colouring comes from the caller's pattern as it always does -- the sweeps
-    cost ``n_colours + 1`` whatever happens to the storage -- but the slot each
-    ``(row, colour)`` writes to is the factorisation's, so the AD deposits ``-J``
-    directly into the buffer the factorisation will work in. Fill-in slots
-    belong to no column of ``J`` and so are written by nobody, which is exactly
-    what ``needs_clear`` in the kernel is for.
+    The colouring comes from the caller's pattern as usual, so the sweeps still
+    cost ``n_colours + 1``. Each ``(row, colour)`` writes to the
+    factorisation's slot, so the AD deposits ``-J`` straight into the buffer the
+    factorisation works in. No sweep writes the fill-in slots, which is what the
+    kernel's ``needs_clear`` handles.
 
-    A consequence worth knowing: the pattern may now be coloured as tightly as it
-    really is. A structured solver that owned its own buffer had to declare its
-    fill-in in the pattern too, since an entry with no slot had nowhere to go,
-    and that cost colours -- DISCO-EB's 12 rather than 11. Here the fill has its
-    own slots by construction, so only the true nonzeros need colouring.
+    Because the fill has its own slots, the pattern only needs the true
+    nonzeros and can colour as tightly as it really is. A solver that owned its
+    own buffer had to declare its fill-in too, which cost DISCO-EB 12 colours
+    rather than 11.
+
+    Raises:
+        ValueError: If a pattern entry is missing from ``layout``, which means
+            the two came from different patterns.
     """
     compressed = colour_sparsity(pattern)
     table = layout.slot_table()
@@ -394,14 +358,14 @@ def compressed_jacobian(pattern: Pattern, layout: SparseLULayout) -> CompressedJ
 class SparseDirectSolver:
     """A Rodas5P linear solver compiled for one sparsity pattern.
 
-    ``rodas5P.solve`` builds this itself from the ``sparsity`` it is given, so a
-    caller never holds one; :attr:`compressed` is the layout it laid out and the
-    layout the kernel then fills, which is what keeps the Enzyme sweeps and the
-    factorisation from disagreeing about where an entry lives.
+    ``rodas5P.solve`` builds this from its ``sparsity``, so callers never hold
+    one. :attr:`compressed` is both the layout the solver defines and the one
+    the kernel fills, so the Enzyme sweeps and the factorisation agree on where
+    each entry lives.
 
-    It pivots nothing, so :attr:`ipiv_size` is 1 -- the kernel still allocates
-    the array and the device functions still take it, because the dense solver
-    needs it and the two have one shape.
+    It never pivots, so :attr:`ipiv_size` is 1. The kernel still allocates the
+    array and the device functions still take it, to match the dense solver's
+    shape.
     """
 
     layout: SparseLULayout
@@ -429,9 +393,9 @@ def sparse_direct_solver_for(
 ) -> SparseDirectSolver:
     """Compile a direct sparse solver for a *normalised* pattern.
 
-    This is what the kernel builder calls, since it has already normalised what
-    the caller passed as ``sparsity``. Cached on the pattern, so asking twice
-    gets the same compiled device functions and the kernel's own cache hits.
+    The kernel builder calls this, having already normalised ``sparsity``. It
+    caches the result on the pattern, so a repeat call returns the same compiled
+    device functions and the kernel's own cache hits.
     """
     layout = analyse(pattern, ordering)
     return SparseDirectSolver(
@@ -447,10 +411,10 @@ def sparse_direct_solver(
 ) -> SparseDirectSolver:
     """Compile a direct sparse solver for ``sparsity``.
 
-    ``sparsity`` takes the same spellings ``solve`` does: an ``(n_vars, n_vars)``
+    ``sparsity`` takes the same forms as in ``solve``: an ``(n_vars, n_vars)``
     mask, a scipy sparse matrix, or an ``(nnz, 2)`` index array. It must be a
-    superset of the true nonzeros of ``J``, as for any pattern the kernel is
-    given; it need *not* include the fill-in, which is what this computes.
+    superset of the true nonzeros of ``J``. It need *not* include the fill-in,
+    which this computes.
     """
     return sparse_direct_solver_for(normalize_sparsity(sparsity, n_vars), ordering)
 
@@ -473,26 +437,25 @@ MAX_UNROLLED_UPDATES = 8192
 
 
 def _make_factorize(layout: SparseLULayout, inline: str = "always") -> MLIRDispatcher:
-    """Up-looking LU of ``M``, in place, no pivoting.
+    """Up-looking LU of ``M``, in place, with no pivoting.
 
-    Row ``i`` is finished before row ``i + 1`` begins, so by the time the
-    multiplier ``L[i, k]`` is formed, row ``k`` already holds its final ``U``.
-    Within a row the entries left of the diagonal are visited in increasing
-    column order, which is the order their own updates arrive in.
+    Row ``i`` finishes before row ``i + 1`` starts, so row ``k`` already holds
+    its final ``U`` when the multiplier ``L[i, k]`` forms. Within a row, entries
+    left of the diagonal go in increasing column order, the order their own
+    updates arrive in.
 
-    The diagonal is left holding ``1 / U[i, i]``: it is divided by once here and
-    multiplied by ``n_vars`` times per step in the back substitutions, eight of
-    them.
+    The diagonal ends up holding ``1 / U[i, i]``. That costs one divide here
+    and saves ``n_vars`` divides in each of the eight back substitutions per
+    step.
 
     Small structures get this unrolled, every slot a literal, for the reasons
     ``_make_solve`` gives. Table-driven, the inner loop runs over row ``k``'s
-    upper entries -- which CSR holds contiguously, so the *source* needs no index
-    and only the destination costs a broadcast load per multiply-add.
+    contiguous upper entries, so only the destination costs a broadcast load
+    per multiply-add.
 
-    A zero pivot is left to produce an infinity rather than guarded against: the
-    Rosenbrock-W property tolerates an approximate factorisation, the step
-    controller rejects whatever comes out of one that is not, and the smaller
-    step it then takes puts a larger ``1/(h*gamma)`` on this very diagonal.
+    A zero pivot produces an infinity rather than an error. The step
+    controller rejects the step, and the smaller retry puts a larger
+    ``1/(h*gamma)`` on this very diagonal.
     """
     n = layout.n_vars
     dst_start, destination, upper_end = layout.factorization_ops()
@@ -537,9 +500,8 @@ def _unrolled_factorize(
 ) -> MLIRDispatcher:
     """Generate the factorisation with every slot spelled out as a literal.
 
-    Each multiplier gets its own name rather than reusing one, so the only
-    dependencies left in the emitted code are the real ones and the compiler is
-    free to schedule across them.
+    Each multiplier gets its own name, so the emitted code carries only the real
+    dependencies and the compiler can schedule across them.
     """
     n = layout.n_vars
     row_ptr, diag_ptr = layout.row_ptr, layout.diag_ptr
@@ -561,26 +523,23 @@ def _unrolled_factorize(
 def _make_solve(layout: SparseLULayout, inline: str = "always") -> MLIRDispatcher:
     """The two triangular solves: ``M x = rhs`` in place, sparse both ways.
 
-    Each sweep touches only the nonzeros -- ``nnz(L) + nnz(U)`` multiply-adds
-    against a dense solve's ``n_vars ** 2``. Rows are visited in elimination
-    order and each reads and writes ``rhs`` at the *caller's* own index, so the
-    permutation costs no gather, no scatter and no second vector. ``L`` has a
-    unit diagonal and is not stored; ``U``'s diagonal was inverted by the
-    factorisation, so the divide is a multiply.
+    Each sweep touches only the nonzeros, ``nnz(L) + nnz(U)`` multiply-adds
+    against a dense solve's ``n_vars ** 2``. Rows go in elimination order and
+    each reads and writes ``rhs`` at the caller's index, so the permutation
+    needs no gather, scatter or second vector. ``L`` has a unit diagonal and no
+    storage, and the factorisation inverted ``U``'s diagonal, so the divide is a
+    multiply.
 
-    Small structures get the sweeps **unrolled**, every slot a literal. This is
-    the eight-times-per-step routine and it is what the solver's cost is mostly
-    made of, so the index loads are worth removing outright: table-driven, each
-    multiply-add spends a broadcast load on the column it reads before it can
-    issue the load of the value, and each row spends two more on its own bounds.
-    That dependent pair is invisible on a full device, where other trajectories
-    cover the latency, and is most of the cost when the ensemble is small enough
-    to leave the SMs idle -- DISCO-EB's single-cosmology case is 128
-    trajectories, four warps.
+    Small structures get the sweeps **unrolled**, every slot a literal. This
+    routine runs eight times per step and dominates the solver's cost.
+    Table-driven, each multiply-add loads its column index before it can load
+    the value, and each row loads two more for its bounds. A full device hides
+    that latency, but a small ensemble such as DISCO-EB's 128 trajectories
+    (four warps) cannot.
 
-    Neither ``lu`` nor ``rhs`` can be promoted out of local memory by unrolling,
-    so this trades index loads for instruction count and nothing else: the kernel
-    itself indexes both with loop variables elsewhere.
+    Unrolling cannot promote ``lu`` or ``rhs`` out of local memory, since the
+    kernel indexes both with loop variables elsewhere. It trades index loads
+    for instruction count and nothing else.
     """
     n = layout.n_vars
     row_ptr, diag_ptr = layout.row_ptr, layout.diag_ptr
@@ -640,12 +599,14 @@ def _unrolled_solve(layout: SparseLULayout, inline: str = "always") -> MLIRDispa
 def _pack(*arrays: npt.NDArray[np.integer]) -> tuple[IndexTable, tuple[int, ...]]:
     """One int32 array of everything, plus each piece's offset into it.
 
-    Every entry must be **non-negative**. A negative int32 read out of a
-    constant array and then used in index arithmetic is promoted as though it
-    were unsigned by numba-cuda-mlir (0.5.1): ``t[i] + 4`` with ``t[i] == -1``
-    evaluates to ``2 ** 32 + 3``, so the address is wrong and nothing complains.
-    Every table here is an offset into the buffer or into another table, so
-    non-negativity is the natural form anyway; this is what keeps it that way.
+    Every entry must be **non-negative**. numba-cuda-mlir (0.5.1) promotes a
+    negative int32 read from a constant array as unsigned once it
+    enters index arithmetic: ``t[i] + 4`` with ``t[i] == -1`` gives
+    ``2 ** 32 + 3``, and the bad address goes unnoticed. Every table here is an
+    offset, so non-negative is the natural form anyway.
+
+    Raises:
+        ValueError: If any entry is negative.
     """
     offsets = np.cumsum([0] + [len(a) for a in arrays[:-1]])
     packed = np.concatenate([np.asarray(a, dtype=np.int32) for a in arrays])

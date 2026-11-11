@@ -20,10 +20,10 @@ if TYPE_CHECKING:
 
 
 def _controller(method: Method) -> dict[str, Any]:
-    """The solve-level method options as the per-method solvers' keywords.
+    """Return the solve-level method options as per-method solver keywords.
 
-    In a hierarchy these are what a block's own method falls back to where it
-    leaves an option ``None``: an ``Auto`` contributes its stiff method's.
+    In a hierarchy a block's method falls back to these for any option it
+    leaves ``None``. An ``Auto`` contributes its stiff method's options.
     """
     rodas, tsit = method_parts(method)
     gains = option_or(rodas, "gains", option_or(tsit, "gains", PIDGains()))
@@ -38,10 +38,10 @@ def _controller(method: Method) -> dict[str, Any]:
 
 @functools.cache
 def _one_block(rhs: OdeFn, n: int, pattern: Pattern | None, method: Method):
-    """A plain system as the one block of a hierarchy, the same object every call.
+    """Wrap a plain system as a one-block hierarchy, the same object every call.
 
-    The hierarchy kernel is cached on the block, so a block built afresh on
-    every solve would compile afresh on every solve.
+    The hierarchy kernel caches on the block, so a fresh block would mean a
+    fresh compile on every solve.
     """
     from modax._hierarchy import Block
 
@@ -77,40 +77,40 @@ def solve(
 ) -> SolveOutput | HookedOutput:
     """Integrate an ensemble of ODE trajectories.
 
-    ``ode_fn`` is a plain right-hand side, a :class:`~modax.Block` or a
-    :class:`~modax.Hierarchy` of blocks, or a system split along its sparsity
-    pattern by :meth:`Hierarchy.from_sparsity <modax.Hierarchy.from_sparsity>`.
-    How it steps is ``method``: :class:`~modax.Rodas5P` (the default),
+    ``ode_fn`` is a plain right-hand side, a :class:`~modax.Block`, a
+    :class:`~modax.Hierarchy`, or a system split by
+    :meth:`Hierarchy.from_sparsity <modax.Hierarchy.from_sparsity>`.
+    ``method`` picks the stepper: :class:`~modax.Rodas5P` (the default),
     :class:`~modax.Tsit5`, or :class:`~modax.Auto`, which switches between
-    them. The method object holds the options of that method's numerics;
-    everything here is about the problem and the launch. In a hierarchy
-    ``method`` is how the blocks that name no method of their own step.
+    them. The method object holds its own numerical options, and the
+    arguments here cover the problem and the launch. In a hierarchy,
+    ``method`` steps every block that names no method of its own.
 
-    The solve is ``jit``-traceable, an outer ``jax.vmap`` becomes one larger
-    ensemble launch, and ``jax.jvp``, ``jax.grad`` and their relatives
+    The solve is ``jit``-traceable, and an outer ``jax.vmap`` becomes one
+    larger ensemble launch. ``jax.jvp``, ``jax.grad`` and friends
     differentiate it with respect to ``y0`` and ``params`` by integrating the
-    forward-sensitivity system alongside the state (Tsit5 and Rodas5P on plain
-    systems, Rodas5P blocks in a hierarchy).
+    forward-sensitivity system with the state. That works for Tsit5 and
+    Rodas5P on plain systems and for Rodas5P blocks in a hierarchy.
 
-    A plain system under ``Tsit5`` runs on Tsit5's own kernel, which has no
-    save hook, per-trajectory end time, kernel cache or launch tuning. Ask for
-    any of those and it is solved as a hierarchy of one Tsit5 block instead,
-    as a plain system under ``Auto`` always is: the same method, on the
-    hierarchy kernel, which has them all (and no ``backend``).
+    A plain Tsit5 solve runs on Tsit5's own kernel, which has no save hook,
+    per-trajectory end time, kernel cache or launch tuning. Ask for any of
+    those and modax solves it as a one-block Tsit5 hierarchy instead, as it
+    always does for a plain ``Auto`` solve. The hierarchy kernel has all of
+    them but no ``backend``.
 
     Args:
         ode_fn: The right-hand side ``(y, t, p) -> tuple`` of scalars, a
             :class:`~modax.Block`, a :class:`~modax.Hierarchy`, or the result
             of :meth:`Hierarchy.from_sparsity
             <modax.Hierarchy.from_sparsity>`. A plain function is
-            ``cuda.jit``-ed for you; see Writing ODE callbacks.
-        y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``; a 1-D state is
-            shared by every trajectory. A hierarchy's is the blocks' states,
-            upstream first (or in its ``layout``'s order).
+            ``cuda.jit``-ed for you. See Writing ODE callbacks.
+        y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``. Every trajectory
+            shares a 1-D state. For a hierarchy, the blocks' states upstream
+            first (or in its ``layout``'s order).
         t_span: Save times, ``(n_save,)``, shared across the ensemble. Not
             differentiable.
         params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
-            from whichever of ``y0`` and ``params`` is batched; if both are,
+            from whichever of ``y0`` and ``params`` has a batch axis. If both do,
             they must agree.
         method: :class:`~modax.Rodas5P` (``None`` means ``Rodas5P()``),
             :class:`~modax.Tsit5` or :class:`~modax.Auto`.
@@ -120,45 +120,50 @@ def solve(
             starts each trajectory from ``1e-6`` of its own integration
             window.
         max_steps: Attempted steps a trajectory may take before it stops.
-        error_weights: Per-component weights of the error norm, ``(n_vars,)``;
-            a zero takes a component out of step-size control.
+        error_weights: Per-component weights of the error norm, ``(n_vars,)``.
+            A zero takes a component out of step-size control.
         return_stats: Also return a dict of per-trajectory step counters.
         sparsity: The Jacobian's pattern: an ``(n_vars, n_vars)`` mask, a
             scipy sparse matrix, or an ``(nnz, 2)`` array of ``(row, col)``
-            pairs. It must cover every structural nonzero. Rodas5P then
-            colours the Jacobian's columns (one AD sweep per colour, not per
-            column) and compiles a sparse direct LU for the pattern; Tsit5,
-            which forms no Jacobian, ignores it. A hierarchy's blocks carry
-            their own.
+            pairs. It must cover every structural nonzero. Rodas5P colours the
+            Jacobian's columns (one AD sweep per colour, not per column) and
+            compiles a sparse direct LU for the pattern. Tsit5 forms no
+            Jacobian and ignores it. A hierarchy's blocks carry their own.
         sens_error_control: Hold the sensitivities to the tolerance too, when
             differentiated. ``False`` takes them out of step-size control, so
             the joint solve takes the plain solve's steps.
         sens_param_columns: The ``params`` columns to differentiate with
-            respect to; ``None`` is all of them.
+            respect to. ``None`` means all of them.
         save_hook: A device function ``hook(save_idx, y, t, p_row, acc)``
-            called at every save time with the dense-output state,
+            the kernel calls at every save time with the dense-output state,
             accumulating into an ``(N, hook_size)`` output (see
             :func:`modax.rodas5P.quantity_hook`). The solve then returns
             ``(history, hook_output)`` and is not differentiable.
         hook_size: The width of the save hook's output row.
         save_history: ``False`` keeps only the final state, for a hook that
             consumes the saves itself.
-        sensitivity: A sensitivity spec integrated as the solve's primal, so
-            a save hook can form tangents. Not through Tsit5.
+        sensitivity: A sensitivity spec the solve integrates as its primal,
+            so a save hook can form tangents. Tsit5 does not take it.
         tf_index: A ``params`` column holding each trajectory's own end time.
-        array_rhs: A plain Rodas5P solve only. An ``f(y, t, p, out)`` device
-            function for the stage evaluations, which need not be the tuple
-            form ``ode_fn`` takes for differentiation.
-        trajectories_per_block: Trajectories per CUDA block; ``None`` is a
-            warp.
+        array_rhs: An ``f(y, t, p, out)`` device function for the stage
+            evaluations, so they skip the tuple form ``ode_fn`` keeps for
+            differentiation. Plain Rodas5P solves only.
+        trajectories_per_block: Trajectories per CUDA block. ``None`` means
+            a warp.
         max_registers: A cap on the kernel's registers per thread.
-        cache: Keep the compiled kernel on disk, keyed by everything it was
-            built from, so a later process loads it.
+        cache: Keep the compiled kernel on disk, keyed by everything that
+            built it, so a later process loads it.
 
     Returns:
         The integration history, ``(N, n_save, n_vars)``. With
-        ``return_stats``, ``(history, stats)``; with a save hook,
+        ``return_stats``, ``(history, stats)``. With a save hook,
         ``(history, hook_output)`` or ``(history, hook_output, stats)``.
+
+    Raises:
+        TypeError: If ``method`` is not a Rodas5P, Tsit5 or Auto.
+        ValueError: If ``array_rhs`` comes with anything but a plain Rodas5P
+            solve, or a split system gets a ``sparsity`` or a ``y0`` of the
+            wrong width.
     """
     from modax import rodas5P, tsit5
     from modax._hierarchy import as_hierarchy

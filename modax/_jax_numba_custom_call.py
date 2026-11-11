@@ -1,8 +1,8 @@
 """JAX custom-call bridge for launching numba-cuda kernels.
 
-The public surface in this module is intentionally small: compile a CUDA
-kernel, register a typed XLA FFI launcher for it, and call it from JAX.  The C++ FFI shim is built lazily into ``/tmp`` so the project can
-keep using plain ``uv run python`` without a package build step.
+Compile a CUDA kernel, register a typed XLA FFI launcher for it, and call it
+from JAX. The C++ FFI shim builds lazily into the temp directory on first use,
+so the package needs no build step.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ ABI_SCALAR_I32 = 2
 
 @dataclass(frozen=True)
 class CudaLaunch:
-    """Compiled CUDA kernel launch metadata for an XLA FFI call."""
+    """A compiled kernel's ``CUfunction`` pointer and launch geometry."""
 
     function: int
     grid: tuple[int, int, int]
@@ -259,7 +259,7 @@ def _build_bridge() -> Path:
 
 @functools.cache
 def register_target() -> ctypes.CDLL:
-    """Register the generic CUDA launcher with JAX once per process."""
+    """Build the C++ shim and register its launcher with JAX, once per process."""
 
     lib = ctypes.CDLL(str(_build_bridge()))
     symbol = getattr(lib, _TARGET_NAME)
@@ -284,22 +284,18 @@ _NEWEST_LLVM7_TARGET = (9, 0)
 
 @functools.cache
 def compile_target() -> tuple[int, int]:
-    """The compute capability modax compiles its kernels and derivatives for.
+    """The compute capability modax compiles kernels and derivatives for.
 
-    The current GPU's own, except on Blackwell (10.0 and up), where it is 9.0.
-    numba-cuda-mlir lowers a Blackwell target through its LLVM 20 dialect,
-    which the Enzyme derivatives a kernel links cannot share: their LLVM 15
-    toolchain reads only the LLVM 7 dialect numba-cuda-mlir uses below 10.0.
-    Compiling both the kernel and its derivatives for 9.0 keeps them on that
-    path, and numba-cuda-mlir still links the result for the GPU it runs on,
-    since a target older than the device is linked for the device.
+    This is the current GPU's own, except on Blackwell (10.0 and up), where it
+    is 9.0. numba-cuda-mlir lowers a Blackwell target through its LLVM 20
+    dialect, but the Enzyme derivatives' LLVM 15 toolchain reads only the
+    LLVM 7 dialect it uses below 10.0. Compiling both for 9.0 keeps them on
+    that dialect, and numba-cuda-mlir still links the result for the device.
 
-    ``NUMBA_ENZYME_CUDA_CC``, which numba-enzyme reads for its own target,
-    overrides it for both, read once on the first compile.
+    ``NUMBA_ENZYME_CUDA_CC``, the variable numba-enzyme reads for its own
+    target, overrides it for both. The first compile reads it once.
 
-    Returns
-    -------
-    tuple of int
+    Returns:
         ``(major, minor)``.
     """
     from numba_cuda_mlir import tools
@@ -317,19 +313,15 @@ def compile_target() -> tuple[int, int]:
 def target_kernel(kernel: MLIRDispatcher) -> MLIRDispatcher:
     """Point ``kernel`` at `compile_target` where it is not the GPU's own.
 
-    An explicit chip below the device's is compiled for that chip and linked
-    for the device, which is what keeps a Blackwell kernel and its Enzyme
-    derivatives on one dialect (see `compile_target`). Elsewhere the kernel is
-    left as it is.
+    Sets the kernel's ``chip`` option, which numba-cuda-mlir compiles for and
+    then links for the device. That keeps a Blackwell kernel and its Enzyme
+    derivatives on one dialect (see `compile_target`). Elsewhere it leaves the
+    kernel alone.
 
-    Parameters
-    ----------
-    kernel : MLIRDispatcher
-        A ``cuda.jit`` kernel, not yet compiled.
+    Args:
+        kernel: A ``cuda.jit`` kernel, not yet compiled.
 
-    Returns
-    -------
-    MLIRDispatcher
+    Returns:
         The same kernel.
     """
     from numba_cuda_mlir import tools
@@ -343,13 +335,14 @@ def target_kernel(kernel: MLIRDispatcher) -> MLIRDispatcher:
 def compile_kernel(kernel: MLIRDispatcher, argtypes: Sequence[Type]) -> int:
     """Compile a ``cuda.jit`` kernel and return its ``CUfunction`` pointer.
 
-    The kernel is compiled for `compile_target`, which differs from the GPU
-    only on Blackwell.
+    Compiles for `compile_target`, which differs from the GPU only on
+    Blackwell. numba-cuda-mlir has no ``get_cufunc()``, so this loads the
+    cubin from the compile result's metadata through the driver and looks the
+    entry point up by its mangled name.
 
-    numba-cuda-mlir exposes no ``get_cufunc()`` -- its ``MLIRLibrary`` only
-    offers the textual IR.  The linked cubin and the mangled entry name are on
-    the compile result's metadata instead, so load the module through the driver
-    and look the function up by name.
+    Raises:
+        RuntimeError: If the driver fails to load the module or find the
+            function.
     """
 
     cres = target_kernel(kernel).compile(tuple(argtypes)).cres
@@ -384,8 +377,13 @@ def make_launch(
 ) -> CudaLaunch:
     """Compile ``kernel`` for ``argtypes`` and bundle it with its launch geometry.
 
-    ``grid`` and ``block`` may be an int or up to three dimensions, padded to
-    three; ``shared_mem`` is the dynamic shared memory per block, in bytes.
+    ``grid`` and ``block`` take an int or up to three dimensions, padded to
+    three with ones. ``shared_mem`` is the dynamic shared memory per block, in
+    bytes.
+
+    Raises:
+        ValueError: If ``grid`` or ``block`` is empty or has more than three
+            dimensions.
     """
     return CudaLaunch(
         function=compile_kernel(kernel, argtypes),
@@ -404,9 +402,16 @@ def ffi_abi_call(
     scalar_f64_values: Sequence[float] = (),
     scalar_i32_values: Sequence[int] = (),
 ) -> tuple[jax.Array, ...]:
-    """Launch a Numba CUDA kernel using Numba's normal array/scalar ABI.
+    """Launch a compiled kernel from JAX through the XLA FFI target.
 
-    Outputs are always arrays, so only the input kinds need spelling out.
+    ``input_kinds`` gives each kernel argument before the outputs as
+    ``ABI_ARRAY``, ``ABI_SCALAR_F64`` or ``ABI_SCALAR_I32``. Array kinds
+    consume ``inputs`` in order and scalar kinds consume
+    ``scalar_f64_values`` or ``scalar_i32_values``. Outputs are always
+    arrays, shaped by ``output_specs``.
+
+    Returns:
+        One array per entry of ``output_specs``.
     """
 
     register_target()

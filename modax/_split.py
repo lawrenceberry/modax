@@ -1,27 +1,23 @@
-"""Splitting a stiff system into one-way-coupled blocks, from its sparsity pattern.
+"""Split a stiff system into one-way-coupled blocks using its sparsity pattern.
 
-A Jacobian pattern read as a graph -- row ``i`` depends on column ``j`` --
-has strongly connected components, and their condensation is a DAG. A
-component that no later component feeds back into is a *driver*: its
-equations can be integrated on their own, and everything downstream can read
-it as a known function of time. The thermal history under an
-Einstein-Boltzmann hierarchy is the case this was built for (five states that
-every photon multipole reads and that read nothing back), but nothing here
-knows that: the split is found from the pattern alone.
+Read as a graph, with row ``i`` depending on column ``j``, a Jacobian pattern
+has strongly connected components whose condensation is a DAG. A component
+that nothing later feeds back into is a *driver*. Its equations integrate on
+their own, and everything downstream can read it as a known function of
+time. The thermal history under an Einstein-Boltzmann hierarchy motivated
+this, but the split comes from the pattern alone.
 
 ``Hierarchy.from_sparsity`` (or ``split=True`` on :func:`modax.rodas5P.solve`)
-collects the components that read only
-components already collected into one driver block, as long as it stays
-small, and takes the rest as the main block. The two are integrated by the
-hierarchy kernel of :mod:`modax._hierarchy` as a two-block
-:class:`~modax._hierarchy.Hierarchy`: the driver publishes its states, the
-main block reads them as a quintic Hermite interpolant of ``t``, each on
-steps of its own, with the driver's error handed down. Both block right-hand
-sides are generated from the user's single ``ode_fn``: the driver's returns
-its rows with the main states set to zero (dead code after inlining), the
-main's returns its rows with the driver states taken from the interpolant.
-The history, the hook's state and the error weights all keep the user's
-order.
+gathers the components that read only components already gathered into one
+driver block, while it stays small, and makes the rest the main block. The
+hierarchy kernel of :mod:`modax._hierarchy` integrates them as a two-block
+:class:`~modax._hierarchy.Hierarchy`, each on its own steps. The driver
+publishes its states, the main block reads them as a quintic Hermite
+interpolant of ``t``, and the driver's error passes down. Both right-hand
+sides come from the user's single ``ode_fn``. The driver's sets the main
+states to zero (dead code after inlining), and the main's takes the driver
+states from the interpolant. The history, the hook's state and the error
+weights all keep the user's order.
 """
 
 from __future__ import annotations
@@ -38,7 +34,7 @@ from modax._numba_common import as_cuda_device
 
 @dataclass(frozen=True)
 class BlockSplit:
-    """Which state indices (the user's) form the driver block and the main block."""
+    """The user's state indices that form the driver block and the main block."""
 
     driver: tuple[int, ...]
     main: tuple[int, ...]
@@ -58,11 +54,11 @@ class BlockSplit:
 def components_in_order(
     pattern: tuple[tuple[int, ...], ...],
 ) -> list[tuple[tuple[int, ...], frozenset[int]]]:
-    """The pattern's strongly connected components in topological order, each with the states it reads.
+    """The pattern's strongly connected components in topological order, with the states each reads.
 
-    A pair ``(members, reads)`` per component: ``members`` its state indices,
-    ``reads`` the indices outside it that its rows depend on. Nothing reads a
-    component listed after it.
+    Returns a pair ``(members, reads)`` per component. ``members`` holds its
+    state indices and ``reads`` the indices outside it that its rows depend on.
+    No component reads one listed after it.
     """
     import networkx as nx
 
@@ -87,14 +83,13 @@ def analyse_blocks(
 ) -> BlockSplit | None:
     """The driver and main blocks of a pattern, or ``None`` when it does not split.
 
-    The strongly connected components are taken in topological order, and
-    each joins the driver when everything it reads is already there and the
-    driver stays within ``max_driver`` states, short of the whole system; the
-    rest is the main block. So
-    the driver is closed under "depends on", whatever the rows the main block
-    does not feed (an optical depth that only integrates the driver's opacity
-    joins it too), and a superset pattern, which can only merge components,
-    is safe: at worst nothing splits.
+    Walks the strongly connected components in topological order. A component
+    joins the driver when everything it reads is already there and the driver
+    stays within ``max_driver`` states and smaller than the whole system. The
+    rest forms the main block. The driver is therefore closed under "depends
+    on", and picks up rows the main block does not feed (an optical depth that
+    only integrates the driver's opacity). A superset pattern can only merge
+    components, so at worst nothing splits.
     """
     components = components_in_order(pattern)
     driver: set[int] = set()
@@ -114,11 +109,11 @@ def analyse_blocks(
 class SplitHierarchy:
     """A system split along its sparsity pattern, from :meth:`Hierarchy.from_sparsity <modax.Hierarchy.from_sparsity>`.
 
-    :func:`modax.solve` integrates it as two blocks: the *driver*, the leading
-    states nothing else feeds back into, on steps of its own, and the *main*
-    block, which reads the driver as a quintic Hermite interpolant of ``t``.
-    Both right-hand sides are generated from the one ``ode_fn``, and the
-    state keeps the user's order: ``driver`` and ``main`` are indices into it.
+    :func:`modax.solve` integrates it as two blocks. The *driver* holds the
+    leading states that nothing else feeds back into and takes its own steps.
+    The *main* block reads the driver as a quintic Hermite interpolant of ``t``.
+    Both right-hand sides come from the one ``ode_fn``, and the state keeps the
+    user's order, with ``driver`` and ``main`` as indices into it.
     """
 
     ode_fn: object
@@ -163,7 +158,7 @@ def restrict_pattern(pattern, indices: tuple[int, ...]) -> tuple[tuple[int, ...]
 
 
 def generate_driver_rhs(ode_fn, n_vars: int, split: BlockSplit):
-    """``g(theta, t, p) -> tuple`` of the driver rows; the main states are zero and dead."""
+    """``g(theta, t, p) -> tuple`` of the driver rows, with the main states zero and dead."""
     pos = {idx: k for k, idx in enumerate(split.driver)}
     y = ", ".join(f"th[{pos[i]}]" if i in pos else "0.0" for i in range(n_vars))
     lines = [
@@ -184,10 +179,10 @@ def generate_driver_rhs(ode_fn, n_vars: int, split: BlockSplit):
 
 
 def generate_main_rhs(ode_fn, n_vars: int, split: BlockSplit, hslot: int):
-    """``f(y_main, t, p) -> tuple`` of the main rows, the driver states from the quintic Hermite block of ``p``.
+    """``f(y_main, t, p) -> tuple`` of the main rows, reading the driver states from the quintic Hermite block of ``p``.
 
     ``hslot`` is where the driver's block starts in the local parameter row
-    (:func:`modax._hierarchy.hermite_slot`); reading it here rather than in a
+    (:func:`modax._hierarchy.hermite_slot`). Reading it here rather than in a
     generated wrapper keeps the user's right-hand side inlined once.
     """
     dpos = {idx: k for k, idx in enumerate(split.driver)}

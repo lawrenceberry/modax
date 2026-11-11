@@ -1,4 +1,4 @@
-"""Rodas5P custom kernel using numba-cuda: one thread per trajectory, everything thread-local."""
+"""The Rodas5P kernel: one thread per trajectory, every buffer thread-local."""
 
 from __future__ import annotations
 
@@ -160,13 +160,14 @@ _DEFAULT_TRAJECTORIES_PER_BLOCK = 32
 
 
 def trajectories_per_block_or_default(requested: int | None = None) -> int:
-    """How many trajectories a block carries, one per thread.
+    """Return how many trajectories a block carries, one per thread.
 
-    Nothing on chip bounds this any more: every per-trajectory buffer, the
-    iteration matrix included, is thread-local, so the choice is purely how wide
-    a block should be. A warp is the default because the trajectories in a block
-    step adaptively and diverge, and a warp is the granularity at which that
-    divergence costs nothing.
+    Every per-trajectory buffer is thread-local, so nothing on chip bounds this.
+    The default is a warp, because trajectories step adaptively and diverge, and
+    divergence within a warp costs nothing.
+
+    Raises:
+        ValueError: If ``requested`` is not positive.
     """
     if requested is None:
         return _DEFAULT_TRAJECTORIES_PER_BLOCK
@@ -178,12 +179,12 @@ def trajectories_per_block_or_default(requested: int | None = None) -> int:
 
 @dataclass(frozen=True)
 class KernelOptions:
-    """Everything that selects a compiled kernel besides ``ode_fn`` and the shapes.
+    """Everything besides ``ode_fn`` and the shapes that selects a compiled kernel.
 
-    Hashable, so it is the kernel cache key: two solves with equal options and
-    the same callback share one compiled kernel. ``solve`` builds it once from
-    its keyword arguments and hands it down unchanged; the sensitivity rule
-    substitutes ``spec`` and nothing else.
+    It is hashable and serves as the kernel cache key, so two solves with equal
+    options and the same callback share one kernel. ``solve`` builds it once and
+    passes it down unchanged. The sensitivity rule swaps in ``spec`` and nothing
+    else.
     """
 
     gains: PIDGains = PIDGains()
@@ -217,21 +218,17 @@ class KernelOptions:
 
 @functools.cache
 def dense_lu_solver(n_vars: int) -> tuple[MLIRDispatcher, MLIRDispatcher]:
-    """Dense LU with partial pivoting, one system per thread.
+    """Build a dense LU with partial pivoting, one system per thread.
 
-    This is what the kernel uses when it is given no sparsity pattern:
-    right-looking LU over the thread's own row-major buffer, then the two
-    triangular solves in place. Returned as the same
-    ``(factorize_local, solve_local)`` pair
+    The kernel uses it when it has no sparsity pattern: a right-looking LU over
+    the thread's own row-major buffer, then both triangular solves in place. It
+    returns the same ``(factorize_local, solve_local)`` pair that
     :py:obj:`sparse_direct_solver <modax._sparse_direct.sparse_direct_solver>`
-    builds from a pattern, so the kernel calls one or the other and has no branch.
+    builds from a pattern, so the kernel has no branch.
 
-    It replaced nvmath's ``LUPivotSolver``, whose block-collective API was the
-    only reason the kernel ever put a matrix in shared memory. That cost a
-    barrier around every factorisation and every stage solve, and shared memory
-    that an ensemble's occupancy could not spare. A thread owning its whole
-    trajectory needs neither, and these matrices -- tens of variables, not
-    thousands -- are far too small for cooperation to pay for itself.
+    It replaced nvmath's block-collective ``LUPivotSolver``, which needed shared
+    memory and a barrier around every factorisation. Matrices of tens of
+    variables are too small for cooperation between threads to pay off.
     """
     n = n_vars
 
@@ -312,18 +309,19 @@ def _make_literal_seed_jacobian(
 ) -> MLIRDispatcher:
     """Generate the Jacobian writer with every colour's seed row spelled out.
 
-    ``store_table`` is the layout's destination table, ``(row, colour) ->
-    slot`` with ``-1`` for none, or ``None`` for the plain colour grid where
-    entry ``(row, g)`` sits at ``row * n_colours + g``. The time sweep
-    (``df/dt`` into ``dT``) is one more direction of the same batched calls,
-    so with ``batch`` given the directions go in equal batches of at most
-    that many, padded with zero directions, and Enzyme lowers the primal for
-    one arity instead of one per batch size. ``coupling`` adds that many
-    directions seeded at run time: the writer then takes ``p_seed``, a
-    ``(coupling, n_params)`` array of parameter seeds, and ``coup``, a
-    ``(coupling, n_vars)`` array that receives ``df/dp . p_seed[k]`` for each;
-    the split kernel seeds an upstream block's error through its Hermite
-    values and reads off the error rate it hands down.
+    ``store_table`` maps ``(row, colour)`` to a slot, with ``-1`` for none. With
+    ``None`` the layout is the plain colour grid, entry ``(row, g)`` at
+    ``row * n_colours + g``. The time sweep (``df/dt`` into ``dT``) is one more
+    direction of the same calls. With ``batch`` the directions go in equal
+    batches of at most that many, padded with zero directions, so Enzyme lowers
+    the primal for one arity only.
+
+    ``coupling`` adds that many directions seeded at run time. The writer then
+    also takes ``p_seed``, a ``(coupling, n_params)`` array of parameter seeds,
+    and ``coup``, a ``(coupling, n_vars)`` array that receives
+    ``df/dp . p_seed[k]`` for each. The split kernel uses this to seed an
+    upstream block's error through its Hermite values and read off the error
+    rate it hands down.
     """
     zero_row = n_colours
     n_directions = n_colours + 1 + coupling
@@ -401,22 +399,20 @@ def _make_literal_seed_jacobian(
 def _make_kernel(
     ode_fn: OdeFn, n_vars: int, n_params: int, options: KernelOptions
 ) -> tuple[MLIRDispatcher, int]:
-    """Rodas5P, one trajectory per CUDA thread.
+    """Build the Rodas5P kernel, one trajectory per CUDA thread.
 
-    A thread owns its trajectory outright: the state, the ten stage vectors,
-    ``df/dt``, the step controller *and* the iteration matrix are all its own
-    local arrays and scalars. Nothing is shared and nothing synchronises inside
-    a step, so neither the state dimension nor the matrix bounds the block's
-    trajectory count, and each thread writes its own Jacobian straight into its
-    own matrix -- the ``O(n_vars**2)`` assembly is parallel across trajectories
-    rather than across lanes of one.
+    Each thread owns its state, ten stage vectors, ``df/dt``, step controller
+    and iteration matrix as local arrays and scalars. Threads share nothing and
+    nothing synchronises inside a step, so neither the state dimension nor the
+    matrix bounds the block size, and each thread assembles its own Jacobian.
 
-    The linear solve is one code path over a buffer the layout describes. With
-    no pattern that layout is the dense row-major matrix and the solver is
-    :py:obj:`dense_lu_solver <modax.rodas5P.dense_lu_solver>`; with one it is the
-    sparse factorisation's own CSR image and the solver is compiled for it.
-    The two differ in what they were built from and in nothing else the kernel
-    can see.
+    The linear solve is one code path over a buffer the layout describes.
+    Without a pattern that is the dense row-major matrix and
+    :py:obj:`dense_lu_solver <modax.rodas5P.dense_lu_solver>`. With one it is
+    the sparse factorisation's CSR image and a solver compiled for it.
+
+    Returns:
+        The kernel and its trajectories per block.
     """
     spec, sparsity, lu_precision = options.spec, options.sparsity, options.lu_precision
     tf_index, array_rhs = options.tf_index, options.array_rhs
@@ -493,14 +489,13 @@ def _make_kernel(
 
         @cuda.jit(device=True)
         def write_sensitivity_time_derivative(y_local, t, p_row, dT):
-            """``dF/dt`` for the sensitivity rows of the joint system.
+            """Write ``dF/dt`` for the sensitivity rows of the joint system.
 
-            It is ``d/dt (J_y S_k + J_p_k)`` at fixed state -- a second
-            derivative of ode_fn, which the second-order directional sweep
-            returns by seeding the time direction on the outside. Without it the
-            method loses order on a non-autonomous problem whose parameter
-            dependence is itself time-dependent, and leaves these rows of ``dT``
-            holding whatever was last in that local memory.
+            This is ``d/dt (J_y S_k + J_p_k)`` at fixed state, a second derivative of
+            ode_fn that the second-order sweep returns when seeded with the time
+            direction on the outside. Without it these rows of ``dT`` hold stale local
+            memory, and the method loses order when the parameter dependence varies
+            in time.
             """
             seed = cuda.const.array_like(seeds)
             column = cuda.local.array(n_vars, types.float64)
@@ -610,13 +605,12 @@ def _make_kernel(
                 [  M0        ] [ k_y   ]   [ r_y   ]
                 [ -L_k   M0  ] [ k_S_k ] = [ r_S_k ]
 
-            so the state row solves first and each sensitivity row then solves
-            against the *same* factorisation, its right-hand side corrected by
-            ``L_k k_y``. ``L_k`` is never formed: the correction is one
-            second-order directional sweep of ode_fn, seeded with the
-            sensitivity column on the inside and the state increment on the
-            outside. Like the Jacobian it belongs to, it is frozen at the step's
-            base point; only the outer direction changes per stage.
+            so the state row solves first, then each sensitivity row against the same
+            factorisation with ``L_k k_y`` added to its right-hand side. The kernel
+            never forms ``L_k``. One second-order sweep of ode_fn gives the correction,
+            seeded with the sensitivity column inside and the state increment outside.
+            Like the Jacobian, it stays frozen at the step's base point, and only the
+            outer direction changes per stage.
             """
             seed = cuda.const.array_like(seeds)
             coupling = cuda.local.array(n_vars, types.float64)
@@ -1091,7 +1085,7 @@ def _make_kernel(
 
 
 def split_blocks(sparsity: Sparsity, n_vars: int, max_driver: int = 16):
-    """The driver and main blocks ``split=True`` would use for a pattern, or ``None``."""
+    """Return the driver and main blocks ``split=True`` would use, or ``None``."""
     from modax._split import analyse_blocks
 
     return analyse_blocks(normalize_sparsity(sparsity, n_vars), max_driver)
@@ -1320,214 +1314,131 @@ def solve(
     split_max_driver: int = 16,
     cache: bool = False,
 ) -> SolveOutput | HookedOutput:
-    """JAX-callable Rodas5P custom-kernel solve.
+    """Integrate an ensemble with the Rodas5P kernel, callable from JAX.
+
+    Enzyme derives the Jacobian ``df/dy`` and the time derivative ``df/dt``
+    from ``ode_fn``, so a non-autonomous problem needs nothing extra. The solve
+    is an XLA custom call with a ``jax.custom_jvp`` rule. ``jax.jvp``,
+    ``jax.jacfwd``, ``jax.grad``, ``jax.jacrev`` and ``jax.value_and_grad`` work
+    with respect to ``y0`` and ``params`` by integrating the forward-sensitivity
+    system with the state (see ``modax/_sensitivity.py``). An undifferentiated
+    call runs the plain kernel and pays nothing extra.
+
+    The joint system has ``n_vars * (1 + n_sens)`` components, but the kernel
+    factorises only ``M0 = I/(h*gamma) - J_y``. The joint matrix is block lower
+    triangular with ``M0`` on every diagonal block, so the sensitivity rows are
+    a forward substitution. The coupling block ``d(J_y S + J_p)/dy`` comes from
+    a forward-over-forward Enzyme sweep. Dropping it keeps the method
+    convergent but cost 200x the steps on a bilinear right-hand side. What grows
+    with ``n_sens`` is each thread's working set, so this suits problems with
+    few parameters relative to the state.
 
     Args:
-        ode_fn: The right-hand side, ``(y, t, p) -> tuple`` of scalars; see
+        ode_fn: The right-hand side, ``(y, t, p) -> tuple`` of scalars. See
             Writing ODE callbacks. A plain function is ``cuda.jit``-ed for you.
-        y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``; a 1-D state is
-            shared by every trajectory.
+            A :class:`~modax.Block` or :class:`~modax.Hierarchy` goes through
+            :func:`modax.solve` instead.
+        y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``. Every trajectory
+            shares a 1-D state.
         t_span: Save times, ``(n_save,)``, shared across the ensemble. Not
             differentiable.
         params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
-            from whichever of ``y0`` and ``params`` is batched; if both are,
+            from whichever of ``y0`` and ``params`` has a batch axis. If both do,
             they must agree.
         rtol: Relative tolerance of the weighted RMS error norm.
         atol: Absolute tolerance of the weighted RMS error norm.
-        first_step: Initial step size. ``None`` or any non-positive value lets
-            the kernel start from 1e-6 of its own integration window; it is a
-            launch-time scalar because ``t_span`` is traced.
+        first_step: Initial step size. ``None`` or any non-positive value
+            starts the kernel from 1e-6 of its own integration window. It is a
+            launch-time scalar because JAX traces ``t_span``.
         max_steps: Per-trajectory step budget.
         return_stats: Also return a dict of per-trajectory step counters,
             ``accepted_steps``, ``rejected_steps`` and ``loop_steps``, each
             ``(N,)``.
-        error_weights: Optional per-component weights, ``(n_vars,)`` or
-            ``(N, n_vars)``, applied in the error norm; a weight of 0 excludes
-            that component from step-size control.
+        error_weights: Per-component weights of the error norm, ``(n_vars,)``
+            or ``(N, n_vars)``. A weight of 0 takes that component out of
+            step-size control.
         pcoeff: Proportional gain of the PID step controller.
-        icoeff: Integral gain; the default ``(0, 1, 0)`` is the classic
+        icoeff: Integral gain. The default ``(0, 1, 0)`` is the classic
             I-controller.
         dcoeff: Derivative gain.
         lu_precision: ``"fp32"`` or ``"fp64"``, the precision of the per-step
-            LU factorisation and triangular solves; see below.
-        trajectories_per_block: Threads per block, one trajectory each;
-            defaults to a warp.
-        sens_error_control: Whether a differentiated solve's sensitivity
-            components take part in step-size control; see below.
-        sens_param_columns: Restrict the parameter sensitivities to these
-            ``params`` columns; ``None`` carries every column.
-        sparsity: The Jacobian's sparsity pattern, as an ``(n_vars, n_vars)``
-            mask, a scipy sparse matrix or an ``(nnz, 2)`` index array; see
-            below.
-        ordering: Fill-reducing permutation for the sparse LU, ``"amd"`` or
-            ``"natural"``.
+            LU and triangular solves. The state, Jacobian and error estimate
+            stay float64. An inexact iteration matrix drops Rodas5P to order 2,
+            with an error the step controller absorbs. At FP32 rounding that
+            costs little, and the ``"fp32"`` default halves the LU's footprint.
+            Use ``"fp64"`` for ill-conditioned systems where FP32 upsets
+            step-size control.
+        trajectories_per_block: Threads per block, one trajectory each.
+            Defaults to a warp.
+        sens_error_control: Whether a differentiated solve holds the
+            sensitivities to ``rtol``/``atol`` too. ``True`` makes the gradient
+            as accurate as the value. ``False`` drops them from the error norm,
+            so the joint solve takes the plain solve's steps and matches its
+            value bit for bit, but nothing then ties the sensitivities'
+            accuracy to ``rtol``.
+        sens_param_columns: The ``params`` columns to carry sensitivities for.
+            Each costs a second-order Enzyme sweep per stage, so naming only
+            the ones you want skips columns that are not parameters at all,
+            like integration bounds. ``None`` means every column.
+        sparsity: The Jacobian's pattern, as an ``(n_vars, n_vars)`` mask, a
+            scipy sparse matrix or an ``(nnz, 2)`` index array. The Jacobian
+            then costs one Enzyme sweep per colour of the column intersection
+            graph (:py:obj:`modax._sparsity`), and the kernel gets a sparse LU
+            compiled for that structure (:py:obj:`modax._sparse_direct`). It
+            must be a superset of the true nonzeros, since a subset silently
+            corrupts entries. It need not include fill-in. ``None`` colours
+            every column apart and factorises densely.
+        ordering: Fill-reducing permutation for the sparse LU: ``"amd"``
+            (SuiteSparse's AMD from ``cvxopt``) or ``"natural"``. Ignored
+            without a pattern.
         tf_index: A ``params`` column holding each trajectory's own end time.
-        max_registers: Cap on the kernel's per-thread register count.
+            Save times past it hold the final state. ``None`` ends every
+            trajectory at ``t_span[-1]``.
+        max_registers: Cap on the kernel's per-thread register count, trading
+            spills against occupancy.
         array_rhs: An ``f(y, t, p, out)`` device function equivalent to
-            ``ode_fn``. The primal stage evaluations do not need the tuple
-            form, which exists for Enzyme, so handing this in lets the eight
-            evaluations per step call it directly.
-        save_hook: A device function ``hook(save_idx, y, t, p_row, acc)``
-            called at every save time; see below.
-        hook_size: Width of the hook's per-trajectory output row; must be
-            positive when ``save_hook`` is given.
+            ``ode_fn``. The eight stage evaluations per step call it directly,
+            since only Enzyme needs the tuple form.
+        save_hook: A device function ``hook(save_idx, y, t, p_row, acc)`` the
+            kernel calls at every save time (the initial state, each
+            dense-output save and the frozen saves past ``tf_index``) with
+            the state at that time. ``acc`` is the trajectory's row of the
+            ``(N, hook_size)`` output, zeroed at the start and kept across
+            saves, so the hook can accumulate or store per-save quantities.
+            :func:`quantity_hook` builds one from a device function of
+            ``(y, t, p)``. A hooked solve supports neither ``jax.vmap`` nor
+            differentiation.
+        hook_size: Width of the hook's per-trajectory output row. Must be
+            positive when you pass a ``save_hook``.
         save_history: Keep the full history. ``False`` keeps only the final
             state, and needs a ``save_hook`` to consume the saves.
+        sensitivity: A :class:`~modax._sensitivity.SensitivitySpec` whose joint
+            ``[y, S]`` system the solve integrates as its primal, in place of
+            the JVP rule. The output is ``n_aug`` wide in the layout
+            ``split_augmented`` reads, and a save hook sees the state followed
+            by one ``n_vars`` block per direction, so it can form its own
+            tangents. ``y0`` stays the plain state, and the spec supplies the
+            initial sensitivities.
+        split: Integrate the pattern's one-way-coupled leading block on steps
+            of its own, ahead of the rest, which reads it as a quintic Hermite
+            interpolant (:mod:`modax._split`).
+        split_max_driver: The most states that leading block may hold.
+        cache: Keep the compiled kernel on disk, keyed by everything that
+            built it (:mod:`modax._kernel_cache`), so a later process loads
+            it in a second.
 
     Returns:
         The history, ``(N, n_save, n_vars)``, or ``(N, 1, n_vars)`` with
         ``save_history=False``. A hooked solve returns ``(hist, hook_out)``,
         with ``hook_out`` of shape ``(N, hook_size)``, and ``return_stats=True``
-        appends the stats dict to whichever is returned.
+        appends the stats dict to either.
 
     Raises:
+        TypeError: If ``ode_fn`` is a :class:`~modax.Block` or
+            :class:`~modax.Hierarchy`.
         ValueError: If ``trajectories_per_block`` is not positive,
-            ``save_hook`` is given without a positive ``hook_size``, or
-            ``save_history=False`` is given without a ``save_hook``.
-
-    Only the right-hand side is supplied. The Jacobian ``df/dy``, and the
-    partial time derivative ``df/dt`` that a non-autonomous system needs to
-    keep fifth-order accuracy, are both differentiated out of ``ode_fn`` with
-    Enzyme, so a non-autonomous problem needs nothing extra from the caller.
-
-    ``lu_precision`` (``"fp32"`` or ``"fp64"``) selects the precision of the
-    per-step LU factorisation and triangular solves. The state, right-hand
-    side, Jacobian and error estimate are always float64. Rodas5P attains its
-    full fifth order only with the exact Jacobian; it satisfies the
-    Rosenbrock--Wanner order conditions to second order, so an inexact
-    iteration matrix reduces it to order 2 with an additional error that
-    scales with the perturbation and that the step controller compensates for
-    with smaller steps. At the level of FP32 rounding that costs little, and
-    the ``"fp32"`` default halves the LU's local-memory footprint and exploits
-    FP32 throughput. ``"fp64"`` is available for ill-conditioned systems where
-    the FP32 factorisation degrades step-size control.
-
-    ``first_step`` pins the initial step size; the default ``None`` (like any
-    non-positive value) lets the kernel start from 1e-6 of the integration
-    window.
-
-    ``error_weights`` is an optional per-component weight array, shape
-    ``(n_vars,)`` or ``(N, n_vars)``, applied in the weighted RMS step-size
-    error norm; a weight of 0 excludes that component from step-size control.
-
-    ``pcoeff``/``icoeff``/``dcoeff`` are the PID step-controller gains; the
-    default ``(0, 1, 0)`` is the classic I-controller.
-
-
-    The solve is an XLA custom call into the numba-cuda kernel, so it carries a
-    ``jax.custom_jvp`` rule rather than being differentiated by XLA: asking for
-    a derivative integrates the continuous forward-sensitivity system alongside
-    the state (see ``modax/_sensitivity.py``). ``jax.jvp``, ``jax.jacfwd``,
-    ``jax.grad``, ``jax.jacrev`` and ``jax.value_and_grad`` all work with
-    respect to ``y0`` and ``params``; ``t_span`` is not differentiable. An
-    undifferentiated call runs the plain kernel and pays nothing.
-
-    The joint system has ``n_vars * (1 + n_sens)`` components, but its iteration
-    matrix is *not* factorised whole: it is block lower triangular with the same
-    ``M0 = I/(h*gamma) - J_y`` on every diagonal block, so one ``n_vars``
-    factorisation serves the state and every sensitivity column and the coupling
-    is a forward substitution. What grows with ``n_sens`` is the thread's own
-    working set -- ten stage vectors of the augmented state, in local memory --
-    while the matrix stays ``n_vars``-sized. This is still a solver for problems with few parameters relative to
-    the state dimension.
-
-    ``sens_param_columns`` restricts the parameter sensitivities to the columns
-    named, rather than carrying one block per parameter. The joint system is
-    ``n_vars * (1 + n_sens)`` components and each direction costs a
-    second-order Enzyme sweep per stage, so this is the difference between
-    paying for the parameters you want and paying for the whole ``params`` row
-    -- which matters most when that row also carries things that are not
-    parameters at all, such as integration bounds or an integer selecting a
-    table. The default ``None`` carries every column, as before.
-
-    ``sens_error_control`` decides whether the sensitivity components take part
-    in the step-size error norm. The default ``True`` controls them to the same
-    ``rtol``/``atol`` as the state, so the gradient is as accurate as the value.
-    ``False`` drops them from the norm, which makes the joint solve take exactly
-    the step sequence the plain solve takes -- the value then matches a plain
-    call bit for bit -- at the cost of nothing tying the sensitivities' accuracy
-    to ``rtol``.
-
-    The joint Jacobian's lower-left block ``d(J_y S + J_p)/dy`` is a second
-    derivative of ``ode_fn``, and it is formed rather than dropped: Enzyme's
-    forward-over-forward sweep applies it to the state increment without ever
-    materialising the matrix. Dropping it would leave the method convergent,
-    since the W conditions hold to second order, but not cheap: the error
-    constant it costs was measured at 200x the steps on a right-hand side
-    bilinear in state and parameters, which is most reaction networks.
-
-    ``sparsity`` is where a structured problem pays off, and it is the only
-    thing a caller has to supply to get one. Pass an ``(n_vars, n_vars)`` mask,
-    a scipy sparse matrix, or an ``(nnz, 2)`` array of indices, and two things
-    follow. The Jacobian costs one Enzyme sweep per *colour* of the pattern's
-    column intersection graph rather than one per column, since columns sharing
-    no row can be seeded together and the pattern says which output component
-    belongs to which (:py:obj:`modax._sparsity`). And the iteration matrix is
-    ordered, factorised symbolically and given an in-kernel sparse LU and sparse
-    triangular solves compiled for that exact structure
-    (:py:obj:`modax._sparse_direct`). The default -- no pattern -- colours every
-    column apart and factorises densely, which is the same mechanism at its
-    uninformative end rather than a second path.
-
-    The pattern must be a **superset** of the true nonzeros. Colouring a
-    superset only costs sweeps; colouring a subset silently corrupts the entries
-    where two columns of a group do overlap after all. It need *not* include the
-    factorisation's fill-in, which the symbolic pass works out and gives slots
-    of its own.
-
-    ``ordering`` picks the fill-reducing permutation: ``"amd"`` by default,
-    SuiteSparse's approximate minimum degree out of ``cvxopt``, or
-    ``"natural"`` to skip the ordering. It is ignored without a pattern.
-
-    ``tf_index`` names a column of ``params`` holding each trajectory's own end
-    time, for ensembles whose members finish at different times; save times
-    past a trajectory's end hold its final state. The default ``None`` ends
-    every trajectory at ``t_span[-1]``.
-
-    ``trajectories_per_block`` is one thread's worth of work each, defaulting to
-    a warp; nothing on chip bounds it, since every per-trajectory buffer is
-    thread-local. ``max_registers`` caps the
-    kernel's per-thread register count, trading spills against occupancy.
-
-    ``save_hook`` is a device function ``hook(save_idx, y, t, p_row, acc)`` the
-    kernel calls at every save time -- the initial state, each dense-output
-    save, and the frozen saves past a trajectory's own end time -- with the
-    state at that time, so a consumer of the history can be evaluated inside
-    the launch instead of after it. ``acc`` is the trajectory's row of the
-    ``(n, hook_size)`` output, zeroed at the start and persistent across saves,
-    so the hook can accumulate (a line-of-sight integral, say) or store derived
-    quantities per save. With ``save_history=False`` the history output shrinks
-    to the final state, shape ``(n, 1, n_vars)``. A solve with a hook returns
-    ``(hist, hook_out)`` (plus the stats when asked) and supports neither
-    ``jax.vmap`` nor differentiation.
-
-    ``sensitivity`` integrates the joint ``[y, S]`` system of that
-    :class:`~modax._sensitivity.SensitivitySpec` as the primal instead of
-    attaching the JVP rule: the history (or the final state) comes back
-    ``n_aug`` wide in the layout ``split_augmented`` reads, and a save hook
-    sees the augmented state, the state followed by one ``n_vars`` block per
-    direction. That is how a consumer evaluated inside the launch forms its own
-    tangents: a hook that stores both a quantity of the state and its
-    directional derivative along ``S`` gives a differentiable hooked solve, at
-    the cost of a joint launch and no history. ``y0`` is the plain initial
-    state; the spec's initial sensitivities are supplied here.
-
-    :func:`quantity_hook` builds such a hook from a device function of
-    ``(y, t, p)`` returning the quantities: it stores them at every save and,
-    given the spec, their tangents along each direction from an Enzyme sweep
-    built for the kernel's own target, so a caller need not differentiate them
-    itself.
-
-    ``ode_fn`` is a plain right-hand side: a :class:`~modax.Block` or
-    :class:`~modax.Hierarchy`, and the methods its blocks step with, go
-    through :func:`modax.solve`.
-
-    ``split=True`` reads the pattern's one-way coupling: a leading block of
-    states nothing downstream feeds back into (at most ``split_max_driver``
-    of them) is integrated on steps of its own ahead of the rest, which reads
-    it as a quintic Hermite interpolant (:mod:`modax._split`). ``cache=True``
-    keeps the compiled kernel on disk, keyed by everything it was built from
-    (:mod:`modax._kernel_cache`), so a later process loads it in a second.
+            you pass a ``save_hook`` without a positive ``hook_size``, or
+            ``save_history=False`` without a ``save_hook``.
     """
     if as_hierarchy(ode_fn) is not None:
         raise TypeError(
@@ -1599,10 +1510,16 @@ def _solve(
     cache: bool = False,
     method: Method | None = None,
 ) -> SolveOutput | HookedOutput:
-    """:func:`solve` for a plain system, a :class:`~modax.Block` or a :class:`~modax.Hierarchy` (typed as ``OdeFn``).
+    """:func:`solve` for a plain system, a :class:`~modax.Block` or a :class:`~modax.Hierarchy`.
 
-    The hierarchy path behind :func:`modax.solve`: ``method`` is how the
-    blocks that name none step (:mod:`modax._methods`; ``None`` is Rodas5P).
+    This is the path behind :func:`modax.solve`. ``method`` steps the blocks
+    that name no method of their own (:mod:`modax._methods`), and ``None`` means
+    Rodas5P.
+
+    Raises:
+        ValueError: If a hierarchy's state count differs from ``y0``'s, a
+            hierarchy comes with a ``sparsity``, or the hook arguments
+            disagree as :func:`solve` describes.
     """
     n_vars = jnp.shape(y0)[-1]
     hierarchy = as_hierarchy(ode_fn)
@@ -1678,7 +1595,7 @@ def _solve_impl(
     settings: SolveSettings,
     return_stats: bool,
 ) -> SolveOutput:
-    """An unhooked solve: the history, with the stats when asked."""
+    """Run an unhooked solve and return the history, with the stats when asked."""
     hist, _, stats = _launch(ode_fn, y0, t_span, params, options, settings)
     return (hist, stats) if return_stats else hist
 
@@ -1691,7 +1608,7 @@ def _launch(
     options: KernelOptions,
     settings: SolveSettings,
 ) -> tuple[jax.Array, jax.Array, SolverStats]:
-    """Run the kernel: the history, the hook rows and the step counters."""
+    """Run the kernel and return the history, the hook rows and the step counters."""
     inputs = prepare_inputs(y0, t_span, params, settings, options.spec)
     launch = _make_jax_launch(ode_fn, inputs.n, inputs.n_vars, inputs.n_params, options)
     # No global scratch: the kernel keeps the state, the ten stage vectors and
