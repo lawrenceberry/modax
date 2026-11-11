@@ -1,9 +1,11 @@
-"""How a block of a hierarchy steps: the method objects a :class:`~modax.Block` takes.
+"""How a system or a block steps: the method objects :func:`modax.solve` and :class:`~modax.Block` take.
 
-A method is a small frozen dataclass of the options that belong to one block's
-solver; what applies to the whole launch (tolerances, error weights, the save
-hook, sensitivities) stays on :func:`modax.solve`. Being hashable, a method is
-part of the kernel's identity like everything else a block carries.
+A method is a small frozen dataclass of the options that belong to one
+solver's numerics (the LU's precision and fill-reducing ordering, the
+controller's gains, Tsit5's memory backend). What applies to the problem or
+the whole launch (tolerances, error weights, the sparsity pattern, the save
+hook, sensitivities) is an argument of :func:`modax.solve`. Being hashable, a
+method is part of the kernel's identity like everything else a block carries.
 
 * :class:`Rodas5P` -- linearly implicit, for stiff blocks: a Jacobian and an
   LU every step.
@@ -12,38 +14,88 @@ part of the kernel's identity like everything else a block carries.
 * :class:`Auto` -- one of each, switched by a stiffness estimate the way
   OrdinaryDiffEq.jl's ``AutoSwitch`` does (:class:`Auto` has the details).
 
-``None`` for an option means the solve's own value: ``gains=None`` the solve's
-``pcoeff``/``icoeff``/``dcoeff``, ``lu_precision=None`` the solve's
-``lu_precision`` on the final block and double precision upstream.
+In a hierarchy, ``None`` for a block's option means the value of the method
+given to :func:`modax.solve`: its ``gains``, its ``ordering``, and its
+``lu_precision`` on the final block (a block others read factorises in double
+precision). Left ``None`` there too, the defaults are the integral controller,
+AMD and single precision.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from modax._numba_common import PIDGains
+
+LUPrecision: TypeAlias = Literal["fp32", "fp64"]
+"""The precision of the per-step LU factorisation and triangular solves."""
+Ordering: TypeAlias = Literal["amd", "natural"]
+"""The sparse LU's fill-reducing permutation: AMD, or the pattern's own order."""
+Backend: TypeAlias = Literal["auto", "shared", "local"]
+"""Where the Tsit5 kernel keeps the state and its stage vectors."""
 
 
 @dataclass(frozen=True)
 class Rodas5P:
-    """Rodas5P, the linearly implicit Rosenbrock method of order 5."""
+    """Rodas5P, the linearly implicit Rosenbrock-W method of order 5, for stiff systems.
 
-    lu_precision: Literal["fp32", "fp64"] | None = None
+    Every step builds the Jacobian by forward-mode AD of the right-hand side
+    and factorises the iteration matrix in the thread's own memory.
+
+    Args:
+        lu_precision: ``"fp32"`` (the default) or ``"fp64"``, the precision
+            the iteration matrix is factorised in. Single precision halves the
+            LU's footprint; as a W-method Rodas5P stays convergent with an
+            inexact matrix, and the step controller absorbs the difference.
+            A block others read always factorises in double.
+        gains: The step controller's :class:`PIDGains`. The default is the
+            integral controller ``(0, 1, 0)``.
+        ordering: The fill-reducing permutation of the sparse LU when
+            :func:`modax.solve` has a ``sparsity`` pattern: ``"amd"`` (the
+            default) or ``"natural"``, which keeps the pattern's own order.
+    """
+
+    lu_precision: LUPrecision | None = None
     gains: PIDGains | None = None
+    ordering: Ordering | None = None
 
     def __post_init__(self) -> None:
         if self.lu_precision not in (None, "fp32", "fp64"):
             raise ValueError(
                 f"lu_precision must be 'fp32' or 'fp64', got {self.lu_precision!r}"
             )
+        if self.ordering not in (None, "amd", "natural"):
+            raise ValueError(
+                f"ordering must be 'amd' or 'natural', got {self.ordering!r}"
+            )
 
 
 @dataclass(frozen=True)
 class Tsit5:
-    """Tsitouras's explicit Runge--Kutta 5(4) pair, first-same-as-last."""
+    """Tsitouras's explicit Runge--Kutta 5(4) pair, first-same-as-last, for non-stiff systems.
+
+    Seven right-hand-side evaluations a step, the last reused as the next
+    step's first, and no Jacobian.
+
+    Args:
+        gains: The step controller's :class:`PIDGains`. The default is the
+            integral controller ``(0, 1, 0)``.
+        backend: Where a plain system's state and stage vectors live:
+            ``"shared"`` (per-block shared memory), ``"local"`` (the thread's
+            own memory) or ``"auto"`` (the default: shared for up to 16
+            components and 16384 trajectories). The two are bit-identical. A
+            block of a hierarchy always uses thread-local memory.
+    """
 
     gains: PIDGains | None = None
+    backend: Backend = "auto"
+
+    def __post_init__(self) -> None:
+        if self.backend not in ("auto", "shared", "local"):
+            raise ValueError(
+                f"backend must be 'auto', 'shared' or 'local', got {self.backend!r}"
+            )
 
 
 TSIT5_STABILITY_SIZE = 3.5068

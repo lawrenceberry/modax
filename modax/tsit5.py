@@ -6,7 +6,7 @@ import functools
 import gc
 import math
 from dataclasses import dataclass, replace
-from typing import Literal, Sequence, TypeAlias, overload
+from typing import Literal, Sequence, overload
 
 import jax
 import jax.numpy as jnp
@@ -20,6 +20,7 @@ from modax._jax_common import (
     prepare_inputs,
 )
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
+from modax._methods import Backend
 from modax._numba_common import (
     SOLVER_ARGTYPES,
     OdeFn,
@@ -128,9 +129,6 @@ _LOCAL_BLOCK = 32
 _SHARED_BLOCK = 32
 _SHARED_MAX_NVARS = 16
 _SHARED_MAX_ENSEMBLE = 16384
-
-Backend: TypeAlias = Literal["auto", "shared", "local"]
-"""Where the kernel keeps the state and its stage vectors."""
 
 
 @dataclass(frozen=True)

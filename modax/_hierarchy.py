@@ -95,7 +95,14 @@ from numba_cuda_mlir.descriptor import MLIRDispatcher
 from modax import tsit5 as T
 from modax._codegen import compile_device_source
 from modax._kernel_cache import enable_content_cache
-from modax._methods import TSIT5_STABILITY_SIZE, Auto, Method, Rodas5P, Tsit5
+from modax._methods import (
+    TSIT5_STABILITY_SIZE,
+    Auto,
+    Method,
+    Ordering,
+    Rodas5P,
+    Tsit5,
+)
 from modax._numba_common import SAFETY, PIDGains, as_cuda_device
 from modax._sensitivity import (
     SensitivitySpec,
@@ -368,6 +375,7 @@ class _Method:
     rodas_gains: PIDGains
     tsit_gains: PIDGains
     auto: Auto | None = None
+    ordering: Ordering = "amd"  # the sparse LU's fill-reducing permutation
 
     @property
     def implicit(self) -> bool:
@@ -429,6 +437,11 @@ def resolve_method(bp: _BlockPlan, options) -> _Method:
             tsit.gains if tsit is not None and tsit.gains is not None else options.gains
         ),
         auto=method if isinstance(method, Auto) else None,
+        ordering=(
+            rodas.ordering
+            if rodas is not None and rodas.ordering is not None
+            else options.ordering
+        ),
     )
 
 
@@ -1221,7 +1234,7 @@ def _block_functions(
 
         slots = _Dense()
     else:
-        solver = sparse_direct_solver_for(bp.pattern, options.ordering, "never")
+        solver = sparse_direct_solver_for(bp.pattern, meth.ordering, "never")
         structure = solver.compressed
         factorize, solve_local = solver.factorize_local, solver.solve_local
         ipiv_size = solver.ipiv_size

@@ -187,12 +187,22 @@ from a BlackJAX nested-sampling likelihood.
 ### Solver API
 
 ```python
-# Explicit
-y = solve(ode_fn, y0, t_span, params, rtol=..., atol=..., first_step=...)
+# Implicit, the default: df/dy and df/dt are derived from ode_fn
+y = modax.solve(ode_fn, y0, t_span, params, rtol=..., atol=..., first_step=...)
 
-# Implicit: same shape; df/dy and df/dt are derived from ode_fn
-y = solve(ode_fn, y0, t_span, params, lu_precision="fp32")
+# The method and its options are one object; everything else is the problem
+# or the launch
+y = modax.solve(ode_fn, y0, t_span, params, method=modax.Rodas5P(lu_precision="fp64"))
+y = modax.solve(ode_fn, y0, t_span, params, method=modax.Tsit5(backend="local"))
 ```
+
+`modax.solve` (`modax/_solve.py`) has an explicit signature and no `**kwargs`.
+A method's numerics live on its object (`modax/_methods.py`): `Rodas5P`'s
+`lu_precision`, `gains` and `ordering`, `Tsit5`'s `gains` and `backend`.
+Arguments only Rodas5P supports (`sparsity`, the save hook, `split`, `cache`,
+...) raise under `Tsit5`. `modax.rodas5P.solve` and `modax.tsit5.solve` are
+the per-method solvers underneath, with the flat keyword arguments; the
+benchmarks, examples and most tests call them directly.
 
 `y0` is `(n_vars,)` or `(N, n_vars)`; `params` is `(n_params,)` or
 `(N, n_params)`; the result is `(N, n_save, n_vars)`. `return_stats=True` adds a

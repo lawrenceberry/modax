@@ -33,7 +33,7 @@ from modax._jax_common import (
 )
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
 from modax._kernel_cache import enable_content_cache
-from modax._methods import Method
+from modax._methods import LUPrecision, Method
 from modax._numba_common import (
     HOOK_OUT_ARGTYPE,
     SOLVER_ARGTYPES,
@@ -61,9 +61,6 @@ from modax._sensitivity import (
 from modax._sensitivity import quantity_hook as quantity_hook
 from modax._sparse_direct import Ordering, sparse_direct_solver_for
 from modax._sparsity import Pattern, Sparsity, dense_jacobian, normalize_sparsity
-
-LUPrecision: TypeAlias = Literal["fp32", "fp64"]
-"""The precision of the per-step LU factorisation and triangular solves."""
 
 ArrayRhs: TypeAlias = (
     Callable[[Sequence[float], float, Sequence[float], MutableSequence[float]], None]

@@ -4,10 +4,10 @@ Both solvers are differentiable with respect to `y0` and `params`:
 
 ```python
 import jax
-from modax.rodas5P import solve
+import modax
 
 def loss(params):
-    y = solve(ode_fn, y0, t_span, params)
+    y = modax.solve(ode_fn, y0, t_span, params)
     return jnp.sum((y[:, -1, :] - observed) ** 2)
 
 value, grad = jax.value_and_grad(loss)(params)   # one joint solve

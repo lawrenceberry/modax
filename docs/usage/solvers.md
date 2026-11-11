@@ -1,12 +1,16 @@
 # Choosing a solver
 
-modax has two solvers, each in its own module with the same `solve(...)` entry
-point, so switching between them is a change of import:
+modax has two solvers behind the one `modax.solve`, and you pick one with its
+`method` argument, so switching between them changes one argument:
 
-| Method      | Type                   | Use for           | Module              |
-|-------------|------------------------|-------------------|---------------------|
-| **Tsit5**   | Explicit RK (order 5)  | Non-stiff systems | `modax.tsit5`       |
-| **Rodas5P** | Rosenbrock-W (order 5) | Stiff systems     | `modax.rodas5P`     |
+| Method      | Type                   | Use for           | Pass                        |
+|-------------|------------------------|-------------------|-----------------------------|
+| **Tsit5**   | Explicit RK (order 5)  | Non-stiff systems | `method=modax.Tsit5()`      |
+| **Rodas5P** | Rosenbrock-W (order 5) | Stiff systems     | `method=modax.Rodas5P()`    |
+
+Rodas5P is the default. A system that is stiff only some of the time can take
+`method=modax.Auto()`, which switches between the two (see
+[Switching methods](switching-methods.md)).
 
 Both run one CUDA thread per trajectory with per-trajectory adaptive stepping,
 take the same callback, trace under `jax.jit`, lower an outer `jax.vmap` to one
@@ -109,8 +113,8 @@ the additional error scales with the perturbation to $J$, and the step-size
 controller compensates by taking smaller steps. That robustness is what lets
 the [sparse solver](sparse.md) do without pivoting, and what allows the
 factorisation and triangular solves to run in single precision, where the
-perturbation is at the level of FP32 rounding: `lu_precision="fp32"` is the
-default, and it halves the matrix buffer's footprint and uses the FP32 cores
+perturbation is at the level of FP32 rounding: `Rodas5P(lu_precision="fp32")`
+is the default, and it halves the matrix buffer's footprint and uses the FP32 cores
 that outnumber the FP64 ones, while `"fp64"` is there for ill-conditioned
 systems. The state, right-hand side, Jacobian and error estimate stay in double
 precision throughout.

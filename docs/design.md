@@ -167,7 +167,7 @@ h_{n+1} = h_n \, \min\!\left(\phi_{\max},\, \max\!\left(\phi_{\min},\, 0.9\, \va
 $$
 
 with $e_1 = -(k_I + k_P + k_D)/q$, $e_2 = (k_P + 2k_D)/q$ and $e_3 = -k_D/q$,
-where $(k_P, k_I, k_D)$ are the `pcoeff`, `icoeff` and `dcoeff` arguments and
+where $(k_P, k_I, k_D)$ are the method's `gains`, a `modax.PIDGains`, and
 $q$ is 5 for Tsit5 and 6 for Rodas5P. The default gains $(0, 1, 0)$ recover
 the elementary integral controller. Non-zero proportional and derivative gains
 tend to produce smoother step-size sequences and fewer rejected steps on stiff

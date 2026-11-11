@@ -66,7 +66,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass, replace
-from typing import ClassVar, Literal, TypeAlias
+from typing import ClassVar, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -74,6 +74,7 @@ from numba_cuda_mlir import cuda
 from numba_cuda_mlir.descriptor import MLIRDispatcher
 
 from modax._codegen import compile_device_source
+from modax._methods import Ordering
 from modax._sparsity import (
     CompressedJacobian,
     Pattern,
@@ -94,7 +95,6 @@ IndexTable: TypeAlias = npt.NDArray[np.int32]
 # the perfect elimination order AMD finds there. Nested dissection wins on
 # meshes far larger than the tens-to-few-hundred variables this solver is for,
 # and it was the only thing a package with no wheels was buying.
-Ordering: TypeAlias = Literal["amd", "natural"]
 ORDERINGS: tuple[Ordering, ...] = ("amd", "natural")
 
 

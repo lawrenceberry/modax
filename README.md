@@ -76,8 +76,8 @@ a declared sparsity pattern (i.e. which inputs affect which outputs):
 
 ```python
 import jax.numpy as jnp
+import modax
 import numpy as np
-from modax.rodas5P import solve
 
 
 def ode_fn(y, t, p):  # tuples of scalars in and out
@@ -89,7 +89,8 @@ params = jnp.stack([jnp.logspace(0, 4, 1000), jnp.ones(1000)], axis=1)
 y0 = jnp.array([1.0, 0.0, 0.0])
 t_span = jnp.linspace(0.0, 10.0, 11)
 
-y = solve(ode_fn, y0, t_span, params, sparsity=sparsity)  # (1000, 11, 3)
+# Rodas5P, the default method, suits a stiff system
+y = modax.solve(ode_fn, y0, t_span, params, sparsity=sparsity)  # (1000, 11, 3)
 ```
 
 <!-- end:quickstart -->

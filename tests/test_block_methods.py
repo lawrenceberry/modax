@@ -18,7 +18,9 @@ cuda = pytest.importorskip("numba_cuda_mlir.cuda")
 pytestmark = pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 
 T_SPAN = np.linspace(0.0, 3.0, 7)
-TOL = dict(rtol=1e-9, atol=1e-11, lu_precision="fp64")
+TOL = dict(rtol=1e-9, atol=1e-11, lu_precision="fp64")  # the per-method solvers'
+# modax.solve takes the LU's precision on its method
+SOLVE_TOL = dict(rtol=1e-9, atol=1e-11, method=Rodas5P(lu_precision="fp64"))
 
 
 def rhs_a(y, t, p):
@@ -76,7 +78,7 @@ def whole():
     ids=["tsit-root", "tsit-sink", "all-tsit", "all-auto", "mixed"],
 )
 def test_mixed_methods_match_the_joint_solve(methods, whole):
-    split = np.asarray(modax.solve(chain(*methods), Y0, T_SPAN, P, **TOL))
+    split = np.asarray(modax.solve(chain(*methods), Y0, T_SPAN, P, **SOLVE_TOL))
     assert np.abs(split - whole).max() < 1e-7
 
 
@@ -172,7 +174,7 @@ def test_an_upstream_auto_block_switches_where_its_problem_turns_stiff():
 
 def test_explicit_blocks_refuse_sensitivities():
     def at(p):
-        return modax.solve(chain(Tsit5()), Y0, T_SPAN, p, **TOL)
+        return modax.solve(chain(Tsit5()), Y0, T_SPAN, p, **SOLVE_TOL)
 
     with pytest.raises(NotImplementedError, match="explicit"):
         jax.jvp(at, (P,), (jnp.ones_like(P),))
@@ -180,7 +182,7 @@ def test_explicit_blocks_refuse_sensitivities():
 
 def test_an_upstream_block_factorises_in_double():
     with pytest.raises(ValueError, match="final block only"):
-        modax.solve(chain(Rodas5P(lu_precision="fp32")), Y0, T_SPAN, P, **TOL)
+        modax.solve(chain(Rodas5P(lu_precision="fp32")), Y0, T_SPAN, P, **SOLVE_TOL)
 
 
 def test_a_method_is_checked():
@@ -188,3 +190,65 @@ def test_a_method_is_checked():
         Block(rhs_a, 1, method="tsit5")
     with pytest.raises(TypeError):
         Auto(Rodas5P(), Tsit5())
+
+
+def decay(y, t, p):
+    return (-p[0] * y[0], -p[1] * y[1])
+
+
+DECAY_Y0 = jnp.array([[1.0, 2.0]] * 32)
+DECAY_P = jnp.array([[1.0, 3.0]] * 32)
+
+
+def test_the_method_carries_its_own_options():
+    """``modax.solve`` passes each method's options through to its solver."""
+    pattern = np.eye(2, dtype=bool)
+    rodas = {
+        ordering: np.asarray(
+            modax.solve(
+                decay,
+                DECAY_Y0,
+                T_SPAN,
+                DECAY_P,
+                method=Rodas5P(lu_precision="fp64", ordering=ordering),
+                sparsity=pattern,
+                rtol=1e-9,
+                atol=1e-11,
+            )
+        )
+        for ordering in ("amd", "natural")
+    }
+    exact = np.exp(-np.outer(T_SPAN, [1.0, 3.0])) * [1.0, 2.0]
+    for hist in rodas.values():
+        assert np.abs(hist - exact).max() < 1e-7
+    tsit = {
+        backend: np.asarray(
+            modax.solve(
+                decay,
+                DECAY_Y0,
+                T_SPAN,
+                DECAY_P,
+                method=Tsit5(backend=backend),
+                rtol=1e-9,
+                atol=1e-11,
+            )
+        )
+        for backend in ("shared", "local")
+    }
+    np.testing.assert_array_equal(tsit["shared"], tsit["local"])
+
+
+def test_tsit5_refuses_the_rodas5p_only_options():
+    with pytest.raises(ValueError, match="Tsit5 does not take sparsity"):
+        modax.solve(
+            decay, DECAY_Y0, T_SPAN, DECAY_P, method=Tsit5(), sparsity=np.eye(2)
+        )
+    with pytest.raises(ValueError, match="cache"):
+        modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, method=Tsit5(), cache=True)
+
+
+def test_method_options_are_checked():
+    with pytest.raises(ValueError, match="ordering"):
+        Rodas5P(ordering="metis")
+    with pytest.raises(ValueError, match="backend"):
+        Tsit5(backend="global")

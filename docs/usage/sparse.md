@@ -6,8 +6,8 @@ linear solver to write or to select, because the kernel builds one from the
 pattern itself.
 
 ```python
-y = solve(ode_fn, y0, t_span, params,
-          sparsity=pattern)   # (n_vars, n_vars) mask, scipy sparse, or (nnz, 2)
+y = modax.solve(ode_fn, y0, t_span, params,
+                sparsity=pattern)   # (n_vars, n_vars) mask, scipy sparse, or (nnz, 2)
 ```
 
 The pattern is used in two places. The Jacobian is recovered in one Enzyme
@@ -36,8 +36,8 @@ the kernel does not branch between them.
 The variables are reordered to reduce fill-in using SuiteSparse's approximate
 minimum degree (AMD) algorithm, which reaches the package through
 [cvxopt](https://cvxopt.org); its wheel carries AMD, so no system library is
-needed. `ordering="natural"` skips the reordering, and those are the two
-options.
+needed. `method=modax.Rodas5P(ordering="natural")` skips the reordering, and
+those are the two options.
 
 AMD was chosen over COLAMD, the other obvious candidate. COLAMD orders the
 columns so that fill stays bounded whatever row permutation partial pivoting

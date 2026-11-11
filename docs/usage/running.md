@@ -1,27 +1,31 @@
 # Running a solver
 
-Both solvers expose a single `solve(...)` entry point that integrates an
-ensemble in one call:
+`modax.solve` integrates an ensemble in one call. The method and its options
+are one object, `method=`; everything else describes the problem or the
+launch:
 
 ```python
-from modax.rodas5P import solve
+import modax
 
 # ode_fn is a CUDA-device callable: (y, t, p) -> tuple
-y = solve(
+y = modax.solve(
     ode_fn,
     y0,          # (n_vars,) or (N, n_vars)     initial state(s)
     t_span,      # (n_save,) output times (shared across the ensemble)
     params,      # (n_params,) or (N, n_params) per-trajectory parameters
+    method=modax.Rodas5P(                # the default; or modax.Tsit5(), modax.Auto()
+        lu_precision="fp32",             # the LU's precision
+        gains=modax.PIDGains(0.0, 1.0, 0.0),  # PID step-controller gains
+        ordering="amd",                  # the sparse LU's fill-reducing permutation
+    ),
     rtol=1e-8,
     atol=1e-10,
     first_step=None,
     max_steps=100_000,
     return_stats=False,                  # also return per-trajectory step counters
     error_weights=None,                  # optional per-component weights (0 = ignore)
-    pcoeff=0.0, icoeff=1.0, dcoeff=0.0,  # PID step-controller gains
     sens_error_control=True,             # error-control the sensitivities too
     sparsity=None,                       # Jacobian pattern; see "Exploiting sparsity"
-    ordering="amd",                      # its fill-reducing permutation
 )
 # y has shape (N, n_save, n_vars)
 ```
