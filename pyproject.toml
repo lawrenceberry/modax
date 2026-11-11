@@ -156,8 +156,11 @@ allow_zero_version = true
 major_on_zero = false
 # uv.lock records the project's own version, so the build refreshes that one
 # entry (no dependency moves) and stages it with the release commit, or
-# `uv sync --locked` breaks on the next checkout.
+# `uv sync --locked` breaks on the next checkout. `set -e`: the command is
+# one shell script, and without it a failed step is ignored and the build
+# still ships.
 build_command = """
+set -e
 python -m pip install "uv==0.13.7"
 uv lock --upgrade-package "$PACKAGE_NAME"
 git add uv.lock
