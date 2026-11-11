@@ -109,6 +109,5 @@ benchmarks/van-der-pol
 :caption: API Reference
 
 api/solve
-api/tsit5
-api/rodas5P
+api/methods
 ```
