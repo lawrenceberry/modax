@@ -80,15 +80,18 @@ cuda13 = [
 ]
 
 [dependency-groups]
-# The docs build reads the package with griffe, which parses the source rather
-# than importing it, so `uv sync --only-group docs` is all the site needs -- no
-# CUDA toolchain, no SuiteSparse, no GPU.
+# The docs build (Sphinx, MyST and autodoc) imports the package, so its
+# environment is the project with its CPU dependencies plus this group:
+# `uv sync --no-default-groups --group docs`. No GPU or CUDA driver is needed,
+# since nothing touches the driver until a kernel launches.
 docs = [
-    "mkdocs>=1.6",
-    "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.27",
-    # mkdocstrings formats the signatures it renders with it.
-    "ruff>=0.15.5",
+    "sphinx>=8.1",
+    "myst-parser>=4.0",
+    "sphinx-book-theme>=1.1",
+    # Grids and dropdowns in MyST pages.
+    "sphinx-design>=0.6",
+    # `sphinx-autobuild docs docs/_build/html` serves the site and rebuilds on save.
+    "sphinx-autobuild>=2024.10",
 ]
 dev = [
     # The example baselines and their plotting, not runtime dependencies of the

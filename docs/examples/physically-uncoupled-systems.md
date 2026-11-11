@@ -1,1 +1,2 @@
---8<-- "examples/mukhanov_sasaki/README.md"
+```{include} ../../examples/mukhanov_sasaki/README.md
+```

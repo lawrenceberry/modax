@@ -29,7 +29,7 @@ OdeFn: TypeAlias = (
 """The right-hand side, ``(y, t, p) -> tuple`` of scalars.
 
 A plain function is compiled with ``cuda.jit(device=True)`` by
-[`as_cuda_device`][modax._numba_common.as_cuda_device]; one already compiled
+:py:obj:`as_cuda_device <modax._numba_common.as_cuda_device>`; one already compiled
 is used as it is.
 """
 

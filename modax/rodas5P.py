@@ -229,7 +229,7 @@ def dense_lu_solver(n_vars: int) -> tuple[MLIRDispatcher, MLIRDispatcher]:
     right-looking LU over the thread's own row-major buffer, then the two
     triangular solves in place. Returned as the same
     ``(factorize_local, solve_local)`` pair
-    [`sparse_direct_solver`][modax._sparse_direct.sparse_direct_solver]
+    :py:obj:`sparse_direct_solver <modax._sparse_direct.sparse_direct_solver>`
     builds from a pattern, so the kernel calls one or the other and has no branch.
 
     It replaced nvmath's ``LUPivotSolver``, whose block-collective API was the
@@ -419,7 +419,7 @@ def _make_kernel(
 
     The linear solve is one code path over a buffer the layout describes. With
     no pattern that layout is the dense row-major matrix and the solver is
-    [`dense_lu_solver`][modax.rodas5P.dense_lu_solver]; with one it is the
+    :py:obj:`dense_lu_solver <modax.rodas5P.dense_lu_solver>`; with one it is the
     sparse factorisation's own CSR image and the solver is compiled for it.
     The two differ in what they were built from and in nothing else the kernel
     can see.
@@ -1468,10 +1468,10 @@ def solve(
     follow. The Jacobian costs one Enzyme sweep per *colour* of the pattern's
     column intersection graph rather than one per column, since columns sharing
     no row can be seeded together and the pattern says which output component
-    belongs to which ([`modax._sparsity`][]). And the iteration matrix is
+    belongs to which (:py:obj:`modax._sparsity`). And the iteration matrix is
     ordered, factorised symbolically and given an in-kernel sparse LU and sparse
     triangular solves compiled for that exact structure
-    ([`modax._sparse_direct`][]). The default -- no pattern -- colours every
+    (:py:obj:`modax._sparse_direct`). The default -- no pattern -- colours every
     column apart and factorises densely, which is the same mechanism at its
     uninformative end rather than a second path.
 

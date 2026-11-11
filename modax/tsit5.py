@@ -138,7 +138,7 @@ class KernelOptions:
     """What a solve asks of the kernel besides ``ode_fn`` and the shapes.
 
     ``backend`` is resolved against the ensemble by
-    [`uses_shared`][modax.tsit5.KernelOptions.uses_shared] before a kernel is
+    :py:obj:`uses_shared <modax.tsit5.KernelOptions.uses_shared>` before a kernel is
     built, so the compiled kernels are keyed on the gains, the spec and the
     resolved storage rather than on this object.
     """

@@ -42,14 +42,13 @@ uv run ty check
 uv run pre-commit install
 uv run pre-commit run --all-files
 
-# Docs (mkdocs-material + mkdocstrings). Build them in their OWN environment:
-# `uv sync` with a group writes .venv, so syncing the docs group into the
-# default environment replaces the project's packages with the docs toolchain.
-# The group installs neither CUDA nor the project, since griffe reads modax/
-# statically.
+# Docs (Sphinx + MyST + autodoc, sphinx-book-theme). Build them in their OWN
+# environment: the project with its CPU dependencies plus the docs group, and
+# not the dev group. autodoc imports modax, which needs no GPU.
 export UV_PROJECT_ENVIRONMENT=.venv-docs
-uv sync --only-group docs --no-install-project
-uv run --no-sync mkdocs serve      # or: mkdocs build --strict
+uv sync --no-default-groups --group docs
+uv run --no-sync sphinx-autobuild docs docs/_build/html  # live preview
+uv run --no-sync sphinx-build -W docs docs/_build/html   # as CI builds it
 ```
 
 ## CI
@@ -103,15 +102,20 @@ Coverage counts `modax/` only and `[tool.coverage.report]` excludes
 `cuda.jit` bodies: CPython never executes a line of device code, so counting it
 as unreached would measure the compiler rather than the tests.
 
-The site is `docs/` plus `mkdocs.yml`, and `.github/workflows/docs.yml`
+The site is `docs/` (configured by `docs/conf.py`, navigation in the
+toctrees of `docs/index.md`), and `.github/workflows/docs.yml`
 publishes it to GitHub Pages on every push to `main`. The long-form prose
 lives in `docs/`; `README.md` is kept to an overview, installation and
 development setup. What the two share is not duplicated: the pages pull the
 README's `overview`, `install`, `quickstart`, `development`, `citation`
-and `license` sections, `LICENSE`, `wheels/README.md` and the examples' READMEs in with `pymdownx.snippets`, so
-`<!-- --8<-- [start:name] -->` / `[end:name]` markers in those files are
-load-bearing. Docstrings are rendered by mkdocstrings, so a cross-reference in
-one is written ``[`modax._sparsity`][]`` rather than as a Sphinx role.
+and `license` sections, `LICENSE`, `wheels/README.md` and the examples'
+READMEs in with MyST's `include` directive, so the `<!-- start:name -->` /
+`<!-- end:name -->` markers in those files are load-bearing. Docstrings are
+rendered by autodoc with napoleon (Google style), so a cross-reference in
+one is a Sphinx role, ``:py:obj:`modax._sparsity` ``; single backticks are
+the default role, `py:obj`, so they render as code and link when they
+resolve. Write pages in MyST: `$...$` math, `:::` fences for sphinx-design's
+grids and dropdowns.
 
 Most solver tests need a GPU and are skipped when `numba_cuda_mlir` is
 unavailable, every test module guarding itself on `cuda.is_available()`.

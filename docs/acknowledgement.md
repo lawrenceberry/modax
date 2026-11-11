@@ -2,20 +2,27 @@
 
 ## Citation
 
---8<-- "README.md:citation"
+```{include} ../README.md
+:start-after: <!-- start:citation -->
+:end-before: <!-- end:citation -->
+```
 
 ## License
 
---8<-- "README.md:license"
+```{include} ../README.md
+:start-after: <!-- start:license -->
+:end-before: <!-- end:license -->
+```
 
-??? note "Full license text"
+:::{dropdown} Full license text
 
-    ```text
-    --8<-- "LICENSE"
-    ```
+```{literalinclude} ../LICENSE
+:language: text
+```
+:::
 
 ## Acknowledgements
 
-The authors of mdoax thank the open-source developers of JAX, Numba-CUDA-MLIR, diffrax,
+The authors of modax thank the open-source developers of JAX, Numba-CUDA-MLIR, diffrax,
 torchdiffeq and DiffEqGPU.jl, whose work provided both a foundational
 reference and points of comparison for this new library.

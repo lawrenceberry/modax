@@ -31,20 +31,20 @@ site does not repeat them.
   <a href="#citation">Citation</a>
 </p>
 
-<!-- --8<-- [start:overview] -->
+<!-- start:overview -->
 
 `modax` is a library of GPU-accelerated ODE solvers optimised for solving **massive ensembles** (1k-100k) of low-dimensional (<200D) ODE trajectories, built on JAX and Numba-CUDA-MLIR. Applications include: Bayesian parameter estimation, uncertainty quantification and the integration of physically uncoupled systems.
 
 Every solver is compiled as a **custom CUDA kernel** using Numba-CUDA-MLIR. Each ODE trajectory is solved within its own CUDA thread and results are exposed to JAX as an XLA FFI custom call. Calls to `modax` therefore behave as ordinary JAX primitives. They are `jit`-traceable, auto-differentiable and a `vmap` over a single solve lowers to one native ensemble launch.
 
-<!-- --8<-- [end:overview] -->
+<!-- end:overview -->
 
 The [documentation](https://lawrenceberry.github.io/modax/) covers the solver
 API and explains how to use the library. The [paper](https://arxiv.org/abs/2609.35661) details the technical implementation, example applications and performance benchmarks against other GPU-accelerated ODE libraries in Julia and Python.
 
 ## Installation
 
-<!-- --8<-- [start:install] -->
+<!-- start:install -->
 
 ```bash
 pip install "modax-solvers[cuda13]"   # or [cuda12]; Python 3.10 needs cuda12
@@ -64,11 +64,11 @@ up) the kernels and their Enzyme derivatives are compiled for `sm_90`, the
 newest target whose LLVM dialect Enzyme's LLVM 15 toolchain reads, and linked
 for the GPU itself; `NUMBA_ENZYME_CUDA_CC` overrides that target.
 
-<!-- --8<-- [end:install] -->
+<!-- end:install -->
 
 ## Quickstart
 
-<!-- --8<-- [start:quickstart] -->
+<!-- start:quickstart -->
 
 This example demonstrates a stiff decay chain A → B → C, solved for 1000 rate constants at once, with
 a declared sparsity pattern (i.e. which inputs affect which outputs):
@@ -91,11 +91,11 @@ t_span = jnp.linspace(0.0, 10.0, 11)
 y = solve(ode_fn, y0, t_span, params, sparsity=sparsity)  # (1000, 11, 3)
 ```
 
-<!-- --8<-- [end:quickstart] -->
+<!-- end:quickstart -->
 
 ## Development
 
-<!-- --8<-- [start:development] -->
+<!-- start:development -->
 
 The repository uses [uv](https://docs.astral.sh/uv/):
 
@@ -110,19 +110,21 @@ uv run ty check
 uv run pre-commit install   # the checks above, and a commit-message check
 ```
 
-The documentation builds in an environment of its own, since syncing the docs
-group into the default one replaces the project's packages:
+The documentation (Sphinx with MyST and autodoc) builds in an environment of
+its own, the package's CPU install plus the docs group:
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.venv-docs uv sync --only-group docs --no-install-project
-UV_PROJECT_ENVIRONMENT=.venv-docs uv run --no-sync mkdocs serve
+export UV_PROJECT_ENVIRONMENT=.venv-docs
+uv sync --no-default-groups --group docs
+uv run --no-sync sphinx-autobuild docs docs/_build/html   # live preview
+uv run --no-sync sphinx-build -W docs docs/_build/html    # what CI runs
 ```
 
-<!-- --8<-- [end:development] -->
+<!-- end:development -->
 
 ## Citation
 
-<!-- --8<-- [start:citation] -->
+<!-- start:citation -->
 
 If you use modax in your research, please cite the
 [arXiv article](https://arxiv.org/abs/2609.35661):
@@ -139,13 +141,13 @@ If you use modax in your research, please cite the
 }
 ```
 
-<!-- --8<-- [end:citation] -->
+<!-- end:citation -->
 
 ## License
 
-<!-- --8<-- [start:license] -->
+<!-- start:license -->
 
 modax is released under the
 [MIT License](https://github.com/lawrenceberry/modax/blob/main/LICENSE).
 
-<!-- --8<-- [end:license] -->
+<!-- end:license -->

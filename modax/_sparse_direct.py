@@ -12,21 +12,21 @@ The analysis happens once, on the host, when the kernel is built:
 
 1. **Order.** The pattern is symmetrised and handed to SuiteSparse's AMD, which
    returns a fill-reducing permutation (see
-   [`fill_reducing_order`][modax._sparse_direct.fill_reducing_order] for
+   :py:obj:`fill_reducing_order <modax._sparse_direct.fill_reducing_order>` for
    why AMD and not COLAMD).
 2. **Factor symbolically.** The exact pattern of ``L + U`` for the permuted
    matrix, fill-in included, falls out of a pure-pattern Gaussian elimination
-   ([`fill_pattern`][modax._sparse_direct.fill_pattern]) -- no numbers, no
+   (:py:obj:`fill_pattern <modax._sparse_direct.fill_pattern>`) -- no numbers, no
    device, no sample matrix.
 3. **Lay out.** That pattern becomes one CSR image of ``L + U``, and the
    ``(row, col) -> slot`` map it defines becomes the
-   [`CompressedJacobian`][modax._sparsity.CompressedJacobian] the AD sweeps
+   :py:obj:`CompressedJacobian <modax._sparsity.CompressedJacobian>` the AD sweeps
    write into. The buffer is exactly ``nnz(L + U)`` elements: the
    symbolic pass *is* the memory footprint.
 4. **Compile.** The factorisation and the two triangular solves become
    ``cuda.jit(device=True)`` functions, in the same
    ``factorize_local(lu, ipiv)`` / ``solve_local(lu, ipiv, rhs)`` shape
-   [`modax.rodas5P.dense_lu_solver`][] has, so the kernel calls one or the
+   :py:obj:`modax.rodas5P.dense_lu_solver` has, so the kernel calls one or the
    other and has no branch. Where the structure is small enough they are emitted
    as straight-line code with every slot a literal; above that they fall back to
    loops over index tables in constant memory.
@@ -321,7 +321,7 @@ def analyse(pattern: Pattern, ordering: Ordering = "amd") -> SparseLULayout:
     """Order, factorise symbolically, and lay out ``L + U`` in CSR.
 
     ``pattern`` is the normalised form, one tuple of column indices per row, as
-    [`modax._sparsity.normalize_sparsity`][] returns it.
+    :py:obj:`modax._sparsity.normalize_sparsity` returns it.
     """
     n_vars = len(pattern)
     order = fill_reducing_order(pattern, ordering)

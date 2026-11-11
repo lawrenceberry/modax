@@ -1,1 +1,2 @@
---8<-- "examples/bbn_estimation/README.md"
+```{include} ../../examples/bbn_estimation/README.md
+```

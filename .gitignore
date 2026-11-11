@@ -13,8 +13,8 @@ wheels/*.whl
 # Claude Code local settings
 .claude/settings.json
 
-# mkdocs build output
-site/
+# Sphinx build output
+docs/_build/
 
 # Coverage output (pytest --cov); CI uploads coverage.xml as an artifact
 .coverage

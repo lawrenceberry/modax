@@ -4,8 +4,14 @@ If you wish to contribute to modax, please follow these instructions.
 
 ## Setup
 
---8<-- "README.md:development"
+```{include} ../README.md
+:start-after: <!-- start:development -->
+:end-before: <!-- end:development -->
+```
 
 ## The numba-enzyme-cuda wheel
 
---8<-- "wheels/README.md:wheel"
+```{include} ../wheels/README.md
+:start-after: <!-- start:wheel -->
+:end-before: <!-- end:wheel -->
+```
