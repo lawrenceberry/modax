@@ -5,6 +5,14 @@ Releases are cut by python-semantic-release from the Conventional Commits on
 
 <!-- version list -->
 
+## v0.2.2 (2026-11-11)
+
+### Bug Fixes
+
+- Apply the solve's LU precision to the final block
+  ([`28a235e`](https://github.com/lawrenceberry/modax/commit/28a235e0cffb2e950f5536b64238341715bf3c34))
+
+
 ## v0.2.1 (2026-11-11)
 
 ### Documentation
