@@ -35,7 +35,11 @@ def install() -> None:
     dispatcher_cls = descriptor.MLIRDispatcher
     if not all(
         hasattr(dispatcher_cls, name)
-        for name in ("get_call_template", "_compile_as_device_callee", "_compile_device_callee")
+        for name in (
+            "get_call_template",
+            "_compile_as_device_callee",
+            "_compile_device_callee",
+        )
     ):
         return  # a numba-cuda-mlir this was not written against: leave it alone
 
@@ -59,7 +63,9 @@ def install() -> None:
         kws = {}
         if self._can_compile:
             fn = lowering_dispatcher(self)
-            abi_name = generate_mangled_name(f"{fn.py_func.__qualname__}_{id(fn)}", tuple(args))
+            abi_name = generate_mangled_name(
+                f"{fn.py_func.__qualname__}_{id(fn)}", tuple(args)
+            )
             self._compile_as_device_callee(tuple(args), abi_name=abi_name)
         func_name = self.py_func.__name__
         name = "CallTemplate({0})".format(func_name)

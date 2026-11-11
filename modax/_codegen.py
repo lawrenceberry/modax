@@ -17,6 +17,7 @@ from typing import Mapping, Sequence
 from numba_cuda_mlir import cuda
 from numba_cuda_mlir.descriptor import MLIRDispatcher
 
+
 def compile_device_source(
     name: str,
     lines: Sequence[str],
@@ -37,7 +38,9 @@ def compile_device_source(
     """
     source = "\n".join(lines) + "\n"
     # named by the source's digest, so that the name is the same in every process
-    filename = f"<modax generated {name} {hashlib.sha256(source.encode()).hexdigest()[:12]}>"
+    filename = (
+        f"<modax generated {name} {hashlib.sha256(source.encode()).hexdigest()[:12]}>"
+    )
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
     scope: dict[str, object] = {}
     exec(compile(source, filename, "exec"), dict(namespace or {}), scope)  # noqa: S102

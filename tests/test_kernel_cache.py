@@ -19,7 +19,9 @@ def test_the_digest_sees_through_closures():
     table = np.array([1.0, 2.0])
     assert content_digest(_make(2.0, table)) == content_digest(_make(2.0, table.copy()))
     assert content_digest(_make(2.0, table)) != content_digest(_make(3.0, table))
-    assert content_digest(_make(2.0, table)) != content_digest(_make(2.0, np.array([1.0, 2.5])))
+    assert content_digest(_make(2.0, table)) != content_digest(
+        _make(2.0, np.array([1.0, 2.5]))
+    )
 
 
 def test_the_digest_follows_globals_and_attributes():

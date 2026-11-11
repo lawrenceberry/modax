@@ -482,7 +482,9 @@ MAX_UNROLLED_UPDATES = 8192
 
 
 def _make_factorize(
-    layout: SparseLULayout, ops: tuple[IndexTable, IndexTable, IndexTable], inline: str = "always"
+    layout: SparseLULayout,
+    ops: tuple[IndexTable, IndexTable, IndexTable],
+    inline: str = "always",
 ) -> MLIRDispatcher:
     """Up-looking LU of ``M``, in place, no pivoting.
 
@@ -512,7 +514,9 @@ def _make_factorize(
     pivot_of = layout.diag_ptr[layout.col_ind]
 
     if destination.size <= MAX_UNROLLED_UPDATES:
-        return _unrolled_factorize(layout, dst_start, destination, pivot_of, upper_end, inline)
+        return _unrolled_factorize(
+            layout, dst_start, destination, pivot_of, upper_end, inline
+        )
 
     tables, (ROW, DIAG, PIVOT, START, END, DST) = _pack(
         layout.row_ptr, layout.diag_ptr, pivot_of, dst_start, upper_end, destination

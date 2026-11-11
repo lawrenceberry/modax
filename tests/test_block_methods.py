@@ -147,12 +147,20 @@ def test_an_upstream_auto_block_switches_where_its_problem_turns_stiff():
     to want Rodas5P inside the retry loop leaves it so its warp can vote again,
     rather than rejecting at Tsit5's stability limit until ``max_steps``.
     """
-    root = Block(stiffening, 1, outputs=stiff_quantity, n_outputs=1, name="root", method=Auto())
+    root = Block(
+        stiffening, 1, outputs=stiff_quantity, n_outputs=1, name="root", method=Auto()
+    )
     sink = Block(follower, 1, reads=(root,), name="sink")
     y0 = jnp.array([[1.0, 1.0]] * 32)
     hist, stats = modax.solve(
-        Hierarchy(sink, layout=(root, sink)), y0, STIFF_T, STIFF_P,
-        rtol=1e-6, atol=1e-9, max_steps=20000, return_stats=True,
+        Hierarchy(sink, layout=(root, sink)),
+        y0,
+        STIFF_T,
+        STIFF_P,
+        rtol=1e-6,
+        atol=1e-9,
+        max_steps=20000,
+        return_stats=True,
     )
     hist = np.asarray(hist)
     assert np.abs(hist[:, :, 0] - np.cos(STIFF_T)).max() < 1e-4

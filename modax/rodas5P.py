@@ -352,11 +352,15 @@ def _make_literal_seed_jacobian(
     # direction, the coupling directions, then zero directions to fill the
     # last batch (their results are not read)
     zero_p = f"seed[{zero_row}, 0:{n_params}]"
-    directions = [(g, "0.0", zero_p) for g in range(n_colours)] + [(zero_row, "1.0", zero_p)]
+    directions = [(g, "0.0", zero_p) for g in range(n_colours)] + [
+        (zero_row, "1.0", zero_p)
+    ]
     directions += [(zero_row, "0.0", f"p_seed[{k}]") for k in range(coupling)]
     directions += [(zero_row, "0.0", zero_p)] * (-len(directions) % batch)
 
-    def stores(direction: tuple[int, str, str], value_of: Callable[[int], str]) -> list[str]:
+    def stores(
+        direction: tuple[int, str, str], value_of: Callable[[int], str]
+    ) -> list[str]:
         g, dt_seed, p_seed = direction
         if dt_seed == "1.0":
             return [f"    dT[{row}] = {value_of(row)}" for row in range(n_vars)]
@@ -365,10 +369,13 @@ def _make_literal_seed_jacobian(
             return [f"    coup[{k}, {row}] = {value_of(row)}" for row in range(n_vars)]
         if g == zero_row:
             return []  # padding
-        return [f"    lu[{slot}] = lu_dtype(-{value_of(row)})" for row, slot in slots_for(g)]
+        return [
+            f"    lu[{slot}] = lu_dtype(-{value_of(row)})" for row, slot in slots_for(g)
+        ]
 
     lines = [
-        "def write_negated_jacobian(y_local, t, p_row, lu, dT" + (", p_seed, coup):" if coupling else "):"),
+        "def write_negated_jacobian(y_local, t, p_row, lu, dT"
+        + (", p_seed, coup):" if coupling else "):"),
         "    seed = cuda.const.array_like(colour_seeds)",
         f"    column = cuda.local.array({n_vars}, float64)",
         "    clear_matrix(lu)",
@@ -379,14 +386,21 @@ def _make_literal_seed_jacobian(
         group = directions[start : start + batch]
         if len(group) == 1:
             g, dt_seed, p_seed = group[0]
-            lines.append(f"    tangent_of(column, y_local, t, p_row, seed[{g}, 0:{n_vars}], {dt_seed}, {p_seed})")
+            lines.append(
+                f"    tangent_of(column, y_local, t, p_row, seed[{g}, 0:{n_vars}], {dt_seed}, {p_seed})"
+            )
             lines += stores(group[0], lambda row: f"column[{row}]")
         else:
-            dirs = ", ".join(f"seed[{g}, 0:{n_vars}], {dt_seed}, {p_seed}" for g, dt_seed, p_seed in group)
+            dirs = ", ".join(
+                f"seed[{g}, 0:{n_vars}], {dt_seed}, {p_seed}"
+                for g, dt_seed, p_seed in group
+            )
             lines.append(f"    tangent_of(block, y_local, t, p_row, {dirs})")
             for k, direction in enumerate(group):
                 lines += stores(direction, lambda row, k=k: f"block[{k}, {row}]")
-    return compile_device_source("write_negated_jacobian", lines, namespace, inline=inline)
+    return compile_device_source(
+        "write_negated_jacobian", lines, namespace, inline=inline
+    )
 
 
 @functools.cache
@@ -1102,9 +1116,13 @@ def _make_jax_launch(
 
         blocks = analyse_blocks(options.sparsity, options.split_max_driver)
     if hierarchy is not None:
-        kernel, trajectories_per_block = make_hierarchy_kernel(hierarchy, n_params, options)
+        kernel, trajectories_per_block = make_hierarchy_kernel(
+            hierarchy, n_params, options
+        )
     elif blocks is not None:
-        kernel, trajectories_per_block = make_split_kernel(ode_fn, n_vars, n_params, options, blocks)
+        kernel, trajectories_per_block = make_split_kernel(
+            ode_fn, n_vars, n_params, options, blocks
+        )
     else:
         kernel, trajectories_per_block = _make_kernel(ode_fn, n_vars, n_params, options)
     blocks = (n + trajectories_per_block - 1) // trajectories_per_block
@@ -1596,9 +1614,13 @@ def _solve(
     hierarchy = as_hierarchy(ode_fn)
     if hierarchy is not None:
         if hierarchy.n_vars != n_vars:
-            raise ValueError(f"the hierarchy has {hierarchy.n_vars} states, y0 has {n_vars}")
+            raise ValueError(
+                f"the hierarchy has {hierarchy.n_vars} states, y0 has {n_vars}"
+            )
         if sparsity is not None:
-            raise ValueError("a hierarchy's blocks carry their own sparsity; pass none to solve")
+            raise ValueError(
+                "a hierarchy's blocks carry their own sparsity; pass none to solve"
+            )
     options = KernelOptions(
         gains=PIDGains(pcoeff, icoeff, dcoeff),
         lu_precision=lu_precision,

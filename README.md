@@ -106,7 +106,7 @@ uv sync --extra cuda13  # or --extra cuda12, for GPU
 uv run pytest tests     # most tests skip themselves without a GPU
 uv run ruff format && uv run ruff check --fix
 uv run ty check
-uv run pre-commit install   # runs the three checks above on every commit
+uv run pre-commit install   # the checks above, and a commit-message check
 ```
 
 The documentation builds in an environment of its own, since syncing the docs

@@ -219,11 +219,15 @@ def make_quantity_tangent(fn, n_outputs: int, n_vars: int, n_params: int) -> Tan
 
 
 @functools.cache
-def make_quantity_second_tangent(fn, n_outputs: int, n_vars: int, n_params: int) -> Tangent:
+def make_quantity_second_tangent(
+    fn, n_outputs: int, n_vars: int, n_params: int
+) -> Tangent:
     """``D2 q[u, v] + D q[w]`` for a quantity function, forward over forward as :func:`make_second_tangent`."""
     signature = _quantity_signature(n_outputs, n_vars, n_params)
     cc = compile_target()
-    return jvp(jvp(as_cuda_device(fn), signature=signature, cc=cc), signature=signature, cc=cc)
+    return jvp(
+        jvp(as_cuda_device(fn), signature=signature, cc=cc), signature=signature, cc=cc
+    )
 
 
 @functools.cache

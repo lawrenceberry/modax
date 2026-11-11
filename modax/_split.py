@@ -41,7 +41,9 @@ class BlockSplit:
 
     driver: tuple[int, ...]
     main: tuple[int, ...]
-    levels: tuple[tuple[int, ...], ...]  # the driver's components, in the order they joined
+    levels: tuple[
+        tuple[int, ...], ...
+    ]  # the driver's components, in the order they joined
 
     @property
     def n_drv(self) -> int:
@@ -52,7 +54,9 @@ class BlockSplit:
         return len(self.main)
 
 
-def components_in_order(pattern: tuple[tuple[int, ...], ...]) -> list[tuple[tuple[int, ...], frozenset[int]]]:
+def components_in_order(
+    pattern: tuple[tuple[int, ...], ...],
+) -> list[tuple[tuple[int, ...], frozenset[int]]]:
     """The pattern's strongly connected components in topological order, each with the states it reads.
 
     A pair ``(members, reads)`` per component: ``members`` its state indices,
@@ -129,7 +133,12 @@ def generate_driver_rhs(ode_fn, n_vars: int, split: BlockSplit):
     # compiled on its own (numba copies an inlined callee's IR at every call
     # site), except that numba-cuda-mlir cannot return a one-tuple from a called
     # device function
-    return compile_device_source("driver_rhs", lines, {"ode_fn": as_cuda_device(ode_fn)}, inline="never" if split.n_drv > 1 else "always")
+    return compile_device_source(
+        "driver_rhs",
+        lines,
+        {"ode_fn": as_cuda_device(ode_fn)},
+        inline="never" if split.n_drv > 1 else "always",
+    )
 
 
 def generate_main_rhs(ode_fn, n_vars: int, split: BlockSplit, hslot: int):
@@ -154,13 +163,20 @@ def generate_main_rhs(ode_fn, n_vars: int, split: BlockSplit, hslot: int):
             f"    d{j} = b0 * p[{c}] + hh * b1 * p[{c + 1}] + hh2 * b2 * p[{c + 2}]"
             f" + b3 * p[{c + 3}] + hh * b4 * p[{c + 4}] + hh2 * b5 * p[{c + 5}]"
         )
-    y = ", ".join(f"d{dpos[i]}" if i in dpos else f"ym[{mpos[i]}]" for i in range(n_vars))
+    y = ", ".join(
+        f"d{dpos[i]}" if i in dpos else f"ym[{mpos[i]}]" for i in range(n_vars)
+    )
     lines += [
         f"    y = ({y},)",
         "    f = ode_fn(y, t, p)",
         "    return (" + ", ".join(f"f[{i}]" for i in split.main) + ",)",
     ]
-    return compile_device_source("main_rhs", lines, {"ode_fn": as_cuda_device(ode_fn)}, inline="never" if split.n_main > 1 else "always")
+    return compile_device_source(
+        "main_rhs",
+        lines,
+        {"ode_fn": as_cuda_device(ode_fn)},
+        inline="never" if split.n_main > 1 else "always",
+    )
 
 
 # --- the kernel -------------------------------------------------------------------------
@@ -176,11 +192,24 @@ def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockS
     from modax._hierarchy import Block, Hierarchy, make_hierarchy_kernel
 
     pattern = options.sparsity
-    driver = Block(generate_driver_rhs(ode_fn, n_vars, split), split.n_drv, name="driver")
+    driver = Block(
+        generate_driver_rhs(ode_fn, n_vars, split), split.n_drv, name="driver"
+    )
     # the driver's Hermite block is the first after the user's parameters
     main_rhs = generate_main_rhs(ode_fn, n_vars, split, hslot=n_params)
-    main = Block(main_rhs, split.n_main, reads=(driver,), name="main", reads_from_params=True)
+    main = Block(
+        main_rhs, split.n_main, reads=(driver,), name="main", reads_from_params=True
+    )
     patterns = None
     if pattern is not None:
-        patterns = (restrict_pattern(pattern, split.driver), restrict_pattern(pattern, split.main))
-    return make_hierarchy_kernel(Hierarchy(main), n_params, options, layout=(split.driver, split.main), patterns=patterns)
+        patterns = (
+            restrict_pattern(pattern, split.driver),
+            restrict_pattern(pattern, split.main),
+        )
+    return make_hierarchy_kernel(
+        Hierarchy(main),
+        n_params,
+        options,
+        layout=(split.driver, split.main),
+        patterns=patterns,
+    )

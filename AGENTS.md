@@ -36,7 +36,9 @@ uv run ruff check --fix
 uv run ty check
 
 # Install the pre-commit hooks once; they then run the three checks above on
-# every commit. `--all-files` runs them over the whole repository.
+# every commit, and conventional-pre-commit checks every commit message
+# against Conventional Commits (`feat: ...`, `fix(scope): ...`, `perf: ...`).
+# `--all-files` runs the file checks over the whole repository.
 uv run pre-commit install
 uv run pre-commit run --all-files
 

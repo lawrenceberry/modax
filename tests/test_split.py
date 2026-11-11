@@ -52,7 +52,11 @@ def test_the_driver_is_closed_under_dependence():
     blocks = split_blocks(pattern, 4, max_driver=2)
     assert blocks.driver == (0, 3) and blocks.main == (1, 2)
     assert split_blocks(pattern, 4, max_driver=1).driver == (0,)
-    assert split_blocks(pattern, 4, max_driver=4).driver == (0, 1, 2)  # the pair fits; 3 would empty the main block
+    assert split_blocks(pattern, 4, max_driver=4).driver == (
+        0,
+        1,
+        2,
+    )  # the pair fits; 3 would empty the main block
     # a sink that reads the pair stays in the main block
     pattern = np.vstack([pattern, [(3, 1)]])
     assert split_blocks(pattern, 4, max_driver=2).driver == (0,)
@@ -62,7 +66,19 @@ def test_the_driver_is_closed_under_dependence():
 def test_split_matches_the_exact_solution(split):
     y0 = jnp.array([[0.3, 0.1], [1.0, -0.5]])
     p = jnp.array([[LAM, MU], [0.5 * LAM, 2.0 * MU]])
-    sol = np.asarray(solve(ode, y0, T_SPAN, p, sparsity=PATTERN, split=split, rtol=1e-9, atol=1e-11, lu_precision="fp64"))
+    sol = np.asarray(
+        solve(
+            ode,
+            y0,
+            T_SPAN,
+            p,
+            sparsity=PATTERN,
+            split=split,
+            rtol=1e-9,
+            atol=1e-11,
+            lu_precision="fp64",
+        )
+    )
     for n in range(2):
         th = np.asarray(theta_exact(T_SPAN, p[n, 0], y0[n, 0]))
         x = np.asarray(x_exact(T_SPAN, p[n, 0], p[n, 1], y0[n, 0], y0[n, 1]))
@@ -83,14 +99,23 @@ def test_split_sensitivities_match_the_closed_form():
     """d(theta, x)/d(lam, mu) and d/dy0 through the split, against the exact solution's derivatives."""
     y0 = jnp.array([0.3, 0.1])
     p = jnp.array([LAM, MU])
-    kw = dict(sparsity=PATTERN, split=True, rtol=1e-9, atol=1e-11, lu_precision="fp64", sens_error_control=False)
+    kw = dict(
+        sparsity=PATTERN,
+        split=True,
+        rtol=1e-9,
+        atol=1e-11,
+        lu_precision="fp64",
+        sens_error_control=False,
+    )
 
     def final(p_, y0_):
         return solve(ode, y0_, T_SPAN, p_, **kw)[0, -1]
 
     def exact(p_, y0_):
         t = T_SPAN[-1]
-        return jnp.array([theta_exact(t, p_[0], y0_[0]), x_exact(t, p_[0], p_[1], y0_[0], y0_[1])])
+        return jnp.array(
+            [theta_exact(t, p_[0], y0_[0]), x_exact(t, p_[0], p_[1], y0_[0], y0_[1])]
+        )
 
     jp = np.asarray(jax.jacfwd(final, argnums=0)(p, y0))
     jp_exact = np.asarray(jax.jacfwd(exact, argnums=0)(p, y0))
@@ -113,8 +138,19 @@ def test_split_with_a_save_hook_sees_the_user_layout():
 
     y0 = jnp.array([[0.3, 0.1]])
     p = jnp.array([[LAM, MU]])
-    hist, acc = solve(ode, y0, T_SPAN, p, sparsity=PATTERN, split=True, rtol=1e-8, atol=1e-10,
-                      lu_precision="fp64", save_hook=hook, hook_size=2)
+    hist, acc = solve(
+        ode,
+        y0,
+        T_SPAN,
+        p,
+        sparsity=PATTERN,
+        split=True,
+        rtol=1e-8,
+        atol=1e-10,
+        lu_precision="fp64",
+        save_hook=hook,
+        hook_size=2,
+    )
     hist = np.asarray(hist)
     assert np.allclose(np.asarray(acc)[0], hist[0].sum(axis=0), atol=1e-9)
 
@@ -122,10 +158,16 @@ def test_split_with_a_save_hook_sees_the_user_layout():
 def test_the_driver_steps_on_its_own():
     """A slow driver under a fast follower takes far fewer steps than the follower, at the same accuracy."""
     y0 = jnp.array([0.3, 0.1])
-    p = jnp.array([0.05, MU])  # a decay a hundred times slower than the follower's relaxation
-    kw = dict(sparsity=PATTERN, rtol=1e-8, atol=1e-10, lu_precision="fp64", return_stats=True)
+    p = jnp.array(
+        [0.05, MU]
+    )  # a decay a hundred times slower than the follower's relaxation
+    kw = dict(
+        sparsity=PATTERN, rtol=1e-8, atol=1e-10, lu_precision="fp64", return_stats=True
+    )
     sol, stats = solve(ode, y0, T_SPAN, p, split=True, **kw)
-    accepted, rejected, loop = (int(stats[k][0]) for k in ("accepted_steps", "rejected_steps", "loop_steps"))
+    accepted, rejected, loop = (
+        int(stats[k][0]) for k in ("accepted_steps", "rejected_steps", "loop_steps")
+    )
     driver_attempts = loop - accepted - rejected
     assert 0 < driver_attempts < accepted / 2, (driver_attempts, accepted)
     expected = x_exact(T_SPAN, 0.05, MU, 0.3, 0.1)

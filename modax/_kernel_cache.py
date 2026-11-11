@@ -18,10 +18,9 @@ in a new process loads in a second.
 from __future__ import annotations
 
 import hashlib
+import os
 import types
 from importlib.metadata import PackageNotFoundError, version
-
-import os
 
 import numpy as np
 from numba_cuda_mlir.caching import MLIRCache, MLIRCacheImpl
@@ -128,7 +127,9 @@ class _GeneratedLocator(_CacheLocator):
 
     def __init__(self, py_func):
         self._name = py_func.__name__
-        self._cache_path = os.environ.get("NUMBA_CACHE_DIR") or os.path.join(os.path.dirname(__file__), "__pycache__")
+        self._cache_path = os.environ.get("NUMBA_CACHE_DIR") or os.path.join(
+            os.path.dirname(__file__), "__pycache__"
+        )
 
     def get_cache_path(self):
         return self._cache_path
@@ -158,11 +159,15 @@ class ContentKeyedCache(MLIRCache):
         super().__init__(py_func, targetoptions)
 
     def _index_key(self, sig, codegen):
-        sig_key, magic, (code_hash, _closure_hash), option_key = super()._index_key(sig, codegen)
+        sig_key, magic, (code_hash, _closure_hash), option_key = super()._index_key(
+            sig, codegen
+        )
         return (sig_key, magic, (code_hash, self._digest), option_key)
 
 
 def enable_content_cache(kernel) -> None:
     """Give a kernel dispatcher the on-disk cache keyed by its content."""
 
-    kernel._cache = ContentKeyedCache(kernel.py_func, kernel.targetoptions, content_digest(kernel.py_func))
+    kernel._cache = ContentKeyedCache(
+        kernel.py_func, kernel.targetoptions, content_digest(kernel.py_func)
+    )
