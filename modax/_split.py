@@ -131,15 +131,6 @@ class SplitHierarchy:
     def n_vars(self) -> int:
         return self.n
 
-    def mask(self):
-        """The pattern as an ``(n, n)`` boolean mask, the form a solve takes."""
-        import numpy as np
-
-        mask = np.zeros((self.n, self.n), dtype=bool)
-        for row, cols in enumerate(self.sparsity):
-            mask[row, list(cols)] = True
-        return mask
-
     @property
     def driver(self) -> tuple[int, ...]:
         return self.split.driver

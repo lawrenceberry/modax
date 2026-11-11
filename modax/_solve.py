@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any, Sequence, cast
 
 import jax.numpy as jnp
@@ -9,6 +10,7 @@ from jax.typing import ArrayLike
 
 from modax._methods import Auto, Method, Rodas5P, Tsit5
 from modax._numba_common import OdeFn, PIDGains, SolveOutput
+from modax._sparsity import Pattern, normalize_sparsity, pattern_mask
 
 if TYPE_CHECKING:
     from modax._hierarchy import Block, Hierarchy
@@ -38,6 +40,19 @@ def _controller(method: Method) -> dict[str, Any]:
         "lu_precision": (rodas.lu_precision if rodas is not None else None) or "fp32",
         "ordering": (rodas.ordering if rodas is not None else None) or "amd",
     }
+
+
+@functools.cache
+def _one_block(rhs: OdeFn, n: int, pattern: Pattern | None, method: Method):
+    """A plain system as the one block of a hierarchy, the same object every call.
+
+    The hierarchy kernel is cached on the block, so a block built afresh on
+    every solve would compile afresh on every solve.
+    """
+    from modax._hierarchy import Block
+
+    sparsity = None if pattern is None else pattern_mask(pattern)
+    return Block(rhs, n, sparsity=sparsity, method=method)
 
 
 def solve(
@@ -152,7 +167,7 @@ def solve(
         ``(history, hook_output)`` or ``(history, hook_output, stats)``.
     """
     from modax import rodas5P, tsit5
-    from modax._hierarchy import Block, as_hierarchy
+    from modax._hierarchy import as_hierarchy
     from modax._split import SplitHierarchy
 
     method = Rodas5P() if method is None else method
@@ -197,7 +212,7 @@ def solve(
             t_span,
             params,
             method=method,
-            sparsity=split.mask(),
+            sparsity=pattern_mask(split.sparsity),
             split=True,
             split_max_driver=split.max_driver,
             **common,
@@ -239,7 +254,8 @@ def solve(
     if hierarchy is None and not isinstance(method, Rodas5P):
         # Auto, or Tsit5 asking for the hierarchy kernel's options: one block,
         # the final block of its hierarchy
-        ode_fn = Block(cast(OdeFn, ode_fn), n_vars, sparsity=sparsity, method=method)
+        pattern = None if sparsity is None else normalize_sparsity(sparsity, n_vars)
+        ode_fn = _one_block(cast(OdeFn, ode_fn), n_vars, pattern, method)
         sparsity = None
     return rodas5P._solve(
         cast(Any, ode_fn),

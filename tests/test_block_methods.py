@@ -278,3 +278,15 @@ def test_method_options_are_checked():
         Rodas5P(ordering="metis")
     with pytest.raises(ValueError, match="backend"):
         Tsit5(backend="global")
+
+
+def test_a_repeated_plain_auto_solve_reuses_its_block():
+    """The one-block wrapper is cached, so the hierarchy kernel is compiled once."""
+    from modax._solve import _one_block
+
+    kw = dict(method=Auto(), rtol=1e-6, atol=1e-9)
+    modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, **kw)
+    before = _one_block.cache_info()
+    modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, **kw)
+    after = _one_block.cache_info()
+    assert after.hits == before.hits + 1 and after.misses == before.misses

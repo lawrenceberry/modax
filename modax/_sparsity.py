@@ -177,6 +177,14 @@ def dense_jacobian(n_vars: int) -> CompressedJacobian:
     )
 
 
+def pattern_mask(pattern: Pattern) -> np.ndarray:
+    """A normalised pattern as the ``(n, n)`` boolean mask a solve takes."""
+    mask = np.zeros((len(pattern), len(pattern)), dtype=bool)
+    for row, cols in enumerate(pattern):
+        mask[row, list(cols)] = True
+    return mask
+
+
 def normalize_sparsity(sparsity: Sparsity, n_vars: int) -> Pattern:
     """Accept a dense mask, a scipy sparse matrix, or ``(row, col)`` pairs.
 
