@@ -86,7 +86,7 @@ import math
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import numpy as np
 from numba_cuda_mlir import cuda, types
@@ -464,7 +464,8 @@ def plan_hierarchy(
             for off, block in zip(hierarchy.offsets, blocks)
         )
     if patterns is None:
-        patterns = tuple(block.sparsity for block in blocks)
+        # __post_init__ has normalised each block's sparsity to a Pattern.
+        patterns = tuple(cast(Pattern | None, block.sparsity) for block in blocks)
     # directions: the user's initial-state block then the parameter block
     n_sens = spec.n_sens if spec is not None else 0
     n_y0 = spec.n_y0_dirs if spec is not None else 0
@@ -564,7 +565,7 @@ def _wrap_outputs(plan: _Plan, bp: _BlockPlan) -> MLIRDispatcher | None:
     if bp.identity or bp.m == 0:
         return None
     if not bp.reads:
-        return as_cuda_device(bp.block.outputs)  # ty: ignore[invalid-argument-type]
+        return as_cuda_device(bp.block.outputs)
     reads, q = _quintic_reads(plan, bp)
     lines = [
         f"def out_{bp.b}(y, t, p):",
@@ -575,7 +576,7 @@ def _wrap_outputs(plan: _Plan, bp: _BlockPlan) -> MLIRDispatcher | None:
     return compile_device_source(
         f"out_{bp.b}",
         lines,
-        {"user_outputs": as_cuda_device(bp.block.outputs)},  # ty: ignore[invalid-argument-type]
+        {"user_outputs": as_cuda_device(bp.block.outputs)},
         inline="never" if bp.m > 1 else "always",
     )
 
@@ -954,12 +955,14 @@ def _block_functions(
     rhs = _wrap_rhs(plan, bp)
     out_fn = _wrap_outputs(plan, bp)
     tangent = make_tangent(rhs, n, P_LOCAL)
-    second = make_second_tangent(rhs, n, P_LOCAL) if ns > 0 else None
+    # None where the block has no use for them; the device code calls them
+    # only in branches it compiles for blocks that do, which ty cannot see.
+    second: Any = make_second_tangent(rhs, n, P_LOCAL) if ns > 0 else None
     rhs_device = as_cuda_device(rhs)
-    out_tangent = (
+    out_tangent: Any = (
         make_quantity_tangent(out_fn, m, n, P_LOCAL) if out_fn is not None else None
     )
-    out_second = (
+    out_second: Any = (
         make_quantity_second_tangent(out_fn, m, n, P_LOCAL)
         if (out_fn is not None)
         else None

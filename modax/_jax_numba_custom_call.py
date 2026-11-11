@@ -16,7 +16,7 @@ import sysconfig
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, cast
 
 import jax
 import numpy as np
@@ -319,7 +319,8 @@ def compile_target() -> tuple[int, int]:
         from numba_enzyme.cuda import _compute_capability
 
         return _compute_capability(None, tools)
-    device = tools.get_gpu_compute_capability(tuple)
+    # Its overloads both match `tuple`, so ty picks the `str` one.
+    device = cast(tuple[int, int], tools.get_gpu_compute_capability(tuple))
     return device if device < (10, 0) else _NEWEST_LLVM7_TARGET
 
 

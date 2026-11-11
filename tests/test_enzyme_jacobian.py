@@ -163,8 +163,10 @@ def test_enzyme_jacobian_of_a_looped_right_hand_side():
         k, inv_tau = p[0], p[1]
         dx = cuda.local.array(n, types.float64)
         dx[0] = -k * y[1]
-        for l in range(1, n - 1):
-            dx[l] = k * (l * y[l - 1] - (l + 1) * y[l + 1]) * (1.0 / (2 * l + 1))
+        for ell in range(1, n - 1):
+            dx[ell] = (
+                k * (ell * y[ell - 1] - (ell + 1) * y[ell + 1]) * (1.0 / (2 * ell + 1))
+            )
         dx[n - 1] = k * y[n - 2] - n * y[n - 1] * inv_tau
         return (dx[0], dx[1], dx[2], dx[3])
 
