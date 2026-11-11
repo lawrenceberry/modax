@@ -102,6 +102,8 @@ from modax._methods import (
     Ordering,
     Rodas5P,
     Tsit5,
+    method_parts,
+    option_or,
 )
 from modax._numba_common import SAFETY, PIDGains, as_cuda_device
 from modax._sensitivity import (
@@ -442,16 +444,7 @@ class _Method:
 def resolve_method(bp: _BlockPlan, options) -> _Method:
     """``bp``'s method: its own, else the solve's ``default_method``, else Rodas5P; ``None`` options from the solve."""
     method = bp.block.method or getattr(options, "default_method", None) or Rodas5P()
-    rodas = (
-        method.stiff
-        if isinstance(method, Auto)
-        else (method if isinstance(method, Rodas5P) else None)
-    )
-    tsit = (
-        method.nonstiff
-        if isinstance(method, Auto)
-        else (method if isinstance(method, Tsit5) else None)
-    )
+    rodas, tsit = method_parts(method)
     kind = (
         "auto"
         if isinstance(method, Auto)
@@ -462,7 +455,7 @@ def resolve_method(bp: _BlockPlan, options) -> _Method:
         raise NotImplementedError(
             f"{name}: forward sensitivities through an explicit ({type(method).__name__}) block are not implemented"
         )
-    lu = rodas.lu_precision if rodas is not None else None
+    lu = option_or(rodas, "lu_precision", None)
     if bp.sink:
         lu_fp32 = (lu or options.lu_precision) == "fp32"
     else:
@@ -475,21 +468,16 @@ def resolve_method(bp: _BlockPlan, options) -> _Method:
     return _Method(
         kind=kind,
         lu_fp32=lu_fp32,
-        rodas_gains=(
-            rodas.gains
-            if rodas is not None and rodas.gains is not None
-            else options.gains
-        ),
-        tsit_gains=(
-            tsit.gains if tsit is not None and tsit.gains is not None else options.gains
-        ),
+        rodas_gains=option_or(rodas, "gains", options.gains),
+        tsit_gains=option_or(tsit, "gains", options.gains),
         auto=method if isinstance(method, Auto) else None,
-        ordering=(
-            rodas.ordering
-            if rodas is not None and rodas.ordering is not None
-            else options.ordering
-        ),
+        ordering=option_or(rodas, "ordering", options.ordering),
     )
+
+
+def _table(seq) -> np.ndarray:
+    """``seq`` as an int32 index table, ``(-1,)`` where it is empty."""
+    return np.asarray(seq or (-1,), dtype=np.int32)
 
 
 def hermite_slot(hslot: int, j: int) -> int:
@@ -578,46 +566,61 @@ def plan_hierarchy(
 # --- generated wrappers: the upstream quantities as polynomials of t ------------------
 
 
+def quintic_read_lines(hslot: int, names: list[str], suffix: str) -> list[str]:
+    """Lines evaluating the quantities of the Hermite block at ``hslot`` of ``p`` into ``names``."""
+    hh, hh2 = f"hh{suffix}", f"hh2{suffix}"
+    lines = [
+        f"    {hh} = p[{hslot + 1}]",
+        f"    s = (t - p[{hslot}]) / {hh}",
+        *QUINTIC_LINES,
+        f"    {hh2} = {hh} * {hh}",
+    ]
+    for j, name in enumerate(names):
+        c = hermite_slot(hslot, j)
+        lines.append(
+            f"    {name} = b0 * p[{c}] + {hh} * b1 * p[{c + 1}] + {hh2} * b2 * p[{c + 2}]"
+            f" + b3 * p[{c + 3}] + {hh} * b4 * p[{c + 4}] + {hh2} * b5 * p[{c + 5}]"
+        )
+    return lines
+
+
 def _quintic_reads(plan: _Plan, bp: _BlockPlan) -> tuple[list[str], str]:
     """Lines evaluating every upstream quantity from ``p``, and the tuple expression ``q``."""
     lines: list[str] = []
     names: list[str] = []
     for u in bp.reads:
         up = plan.blocks[u]
-        lines += [
-            f"    hh_{u} = p[{up.hslot + 1}]",
-            f"    s = (t - p[{up.hslot}]) / hh_{u}",
-            *QUINTIC_LINES,
-            f"    hh2_{u} = hh_{u} * hh_{u}",
-        ]
-        for j in range(up.m):
-            c = hermite_slot(up.hslot, j)
-            lines.append(
-                f"    q_{u}_{j} = b0 * p[{c}] + hh_{u} * b1 * p[{c + 1}] + hh2_{u} * b2 * p[{c + 2}]"
-                f" + b3 * p[{c + 3}] + hh_{u} * b4 * p[{c + 4}] + hh2_{u} * b5 * p[{c + 5}]"
-            )
-            names.append(f"q_{u}_{j}")
+        values = [f"q_{u}_{j}" for j in range(up.m)]
+        lines += quintic_read_lines(up.hslot, values, f"_{u}")
+        names += values
     return lines, "(" + ", ".join(names) + ",)"
+
+
+def _wrap(
+    plan: _Plan, bp: _BlockPlan, name: str, user: str, fn, width: int
+) -> MLIRDispatcher:
+    """``{name}_b(y, t, p)``: ``fn`` with the block's upstream read from ``p``."""
+    reads, q = _quintic_reads(plan, bp)
+    lines = [
+        f"def {name}_{bp.b}(y, t, p):",
+        *reads,
+        f"    q = {q}",
+        f"    return {user}(y, t, p, q)",
+    ]
+    # numba-cuda-mlir cannot return a one-tuple from a called device function
+    return compile_device_source(
+        f"{name}_{bp.b}",
+        lines,
+        {user: as_cuda_device(fn)},
+        inline="never" if width > 1 else "always",
+    )
 
 
 def _wrap_rhs(plan: _Plan, bp: _BlockPlan) -> MLIRDispatcher:
     """``rhs_b(y, t, p)``: the block's right-hand side with its upstream read from ``p``."""
     if not bp.reads or bp.block.reads_from_params:
         return as_cuda_device(bp.block.rhs)
-    reads, q = _quintic_reads(plan, bp)
-    lines = [
-        f"def rhs_{bp.b}(y, t, p):",
-        *reads,
-        f"    q = {q}",
-        "    return user_rhs(y, t, p, q)",
-    ]
-    # numba-cuda-mlir cannot return a one-tuple from a called device function
-    return compile_device_source(
-        f"rhs_{bp.b}",
-        lines,
-        {"user_rhs": as_cuda_device(bp.block.rhs)},
-        inline="never" if bp.n > 1 else "always",
-    )
+    return _wrap(plan, bp, "rhs", "user_rhs", bp.block.rhs, bp.n)
 
 
 def _wrap_outputs(plan: _Plan, bp: _BlockPlan) -> MLIRDispatcher | None:
@@ -626,19 +629,7 @@ def _wrap_outputs(plan: _Plan, bp: _BlockPlan) -> MLIRDispatcher | None:
         return None
     if not bp.reads:
         return as_cuda_device(bp.block.outputs)
-    reads, q = _quintic_reads(plan, bp)
-    lines = [
-        f"def out_{bp.b}(y, t, p):",
-        *reads,
-        f"    q = {q}",
-        "    return user_outputs(y, t, p, q)",
-    ]
-    return compile_device_source(
-        f"out_{bp.b}",
-        lines,
-        {"user_outputs": as_cuda_device(bp.block.outputs)},
-        inline="never" if bp.m > 1 else "always",
-    )
+    return _wrap(plan, bp, "out", "user_outputs", bp.block.outputs, bp.m)
 
 
 # --- shared device functions ------------------------------------------------------
@@ -755,33 +746,31 @@ def _rows(coeff_rows):
     return tuple(tuple(float(c) for c in row) for row in coeff_rows)
 
 
-def _jacobian_times(bp: _BlockPlan, structure, namespace) -> MLIRDispatcher:
-    """``out = dT - (-J) g`` from the block's negated Jacobian in its compressed slots."""
+def _dense_or_pattern(bp: _BlockPlan):
+    """The block's sparsity pattern, every column of every row where it has none."""
     n = bp.n
-    pattern = (
-        bp.pattern
-        if bp.pattern is not None
-        else tuple(tuple(range(n)) for _ in range(n))
-    )
+    if bp.pattern is not None:
+        return bp.pattern
+    return tuple(tuple(range(n)) for _ in range(n))
+
+
+def _jacobian_times(bp: _BlockPlan, structure) -> MLIRDispatcher:
+    """``out = dT - (-J) g`` from the block's negated Jacobian in its compressed slots."""
+    pattern = _dense_or_pattern(bp)
     lines = ["def jacobian_times(neg_a, g, dT, out):"]
-    for r in range(n):
+    for r in range(bp.n):
         terms = " + ".join(
             f"neg_a[{structure.slot(r, c)}] * g[{c}]" for c in pattern[r]
         )
         lines.append(f"    out[{r}] = dT[{r}]" + (f" - ({terms})" if terms else ""))
-    return compile_device_source("jacobian_times", lines, namespace)
+    return compile_device_source("jacobian_times", lines, {})
 
 
 def _jacobian_inf_norm(bp: _BlockPlan, structure) -> MLIRDispatcher:
     """``||J||_inf`` from the block's negated Jacobian in its slots: its largest absolute row sum."""
-    n = bp.n
-    pattern = (
-        bp.pattern
-        if bp.pattern is not None
-        else tuple(tuple(range(n)) for _ in range(n))
-    )
+    pattern = _dense_or_pattern(bp)
     lines = ["def jacobian_inf_norm(neg_a):", "    largest = 0.0"]
-    for r in range(n):
+    for r in range(bp.n):
         if not pattern[r]:
             continue
         terms = " + ".join(
@@ -1029,10 +1018,8 @@ def _block_functions(
     )
 
     # -- seeds: a unit parameter vector plus the upstream sensitivities' Hermite coefficients
-    dirs_t = np.asarray(bp.dirs if bp.dirs else (-1,), dtype=np.int32)
-    dpc_t = np.asarray(
-        plan.dir_param_col if plan.dir_param_col else (-1,), dtype=np.int32
-    )
+    dirs_t = _table(bp.dirs)
+    dpc_t = _table(plan.dir_param_col)
     copies = tuple(
         (plan.hoff(b, u), hermite_slot(plan.blocks[u].hslot, 0), 6 * plan.blocks[u].m)
         for u in bp.reads
@@ -1912,7 +1899,7 @@ def _block_functions(
                 advance(s, u, th, kd)
                 write(u, t + t_after[s] * dt_use, p_local, work, pbuf, hseed, zero)
 
-    jacobian_times = _jacobian_times(bp, slots, {})
+    jacobian_times = _jacobian_times(bp, slots)
 
     if ns > 0:
 
@@ -1986,8 +1973,8 @@ def _hermite_writer(plan: _Plan, u: int, b: int) -> MLIRDispatcher:
     """The Hermite block of upstream ``u`` for reader ``b``'s step into ``p_local`` and ``hseed_b``."""
     up, rp = plan.blocks[u], plan.blocks[b]
     m, hslot, hoff = up.m, up.hslot, plan.hoff(b, u)
-    dirs_t = np.asarray(rp.dirs if rp.dirs else (-1,), dtype=np.int32)
-    upos_t = np.asarray(up.pos if up.pos else (-1,), dtype=np.int32)
+    dirs_t = _table(rp.dirs)
+    upos_t = _table(up.pos)
     ns = rp.ns
 
     @cuda.jit(device=True)
@@ -2443,15 +2430,14 @@ def _emit_kernel(
         gains, order = (
             (meth.rodas_gains, R.ORDER) if kind == "r" else (meth.tsit_gains, T.ORDER)
         )
-        e1, e2, e3 = gains.exponents(order)
+        e3 = gains.exponents(order)[2]
         c = f"{b}{kind}"
+        w(indent, "lse = math.log(safe_err)")
         if e3 == 0.0:
             # err^E1 ep1^E2 as one exp of the logs, the history's log kept from its own step:
             # a log and an exp a step where two double-precision pows cost twice that
-            w(indent, "lse = math.log(safe_err)")
             w(indent, f"factor = SAFETY * math.exp(E1_{c} * lse + E2_{c} * lep1_{b})")
         else:
-            w(indent, "lse = math.log(safe_err)")
             w(
                 indent,
                 f"factor = SAFETY * safe_err**E1_{c} * ep1_{b}**E2_{c} * ep2_{b}**E3_{c}",
@@ -2852,16 +2838,22 @@ def _emit_kernel(
     w(2, "if accept:")
     w(3, "t_old = t")
 
-    def store_sink(value: str, ind: int) -> None:
+    def store_sink(
+        value: str,
+        ind: int,
+        row: str = "save_idx",
+        history: bool = SAVE_HISTORY,
+        hook: bool = HAS_HOOK,
+    ) -> None:
         w(ind, f"kk = jj // {S.n}")
         w(ind, f"r = jj - kk * {S.n}")
         w(
             ind,
             f"col = idx_{s}[r] if kk == 0 else {n_vars} + dirs_{s}[kk - 1] * {n_vars} + idx_{s}[r]",
         )
-        if SAVE_HISTORY:
-            w(ind, f"hist[i, save_idx, col] = {value}")
-        if HAS_HOOK:
+        if history:
+            w(ind, f"hist[i, {row}, col] = {value}")
+        if hook:
             w(ind, f"y_save[col] = {value}")
 
     def extension_coefficients(kind: str, ind: int) -> None:
@@ -3015,16 +3007,7 @@ def _emit_kernel(
     w(1, "# save times past this trajectory's own end hold its final state")
     w(1, "while save_idx < n_save:")
     w(2, f"for jj in range({S.size}):")
-    w(3, f"kk = jj // {S.n}")
-    w(3, f"r = jj - kk * {S.n}")
-    w(
-        3,
-        f"col = idx_{s}[r] if kk == 0 else {n_vars} + dirs_{s}[kk - 1] * {n_vars} + idx_{s}[r]",
-    )
-    if SAVE_HISTORY:
-        w(3, f"hist[i, save_idx, col] = y_{s}[jj]")
-    if HAS_HOOK:
-        w(3, f"y_save[col] = y_{s}[jj]")
+    store_sink(f"y_{s}[jj]", 3)
     for bp in plan.blocks:
         if not bp.sink:
             emit_block_save(w, plan, bp, f"ya_{bp.b}", 2, SAVE_HISTORY, HAS_HOOK)
@@ -3033,13 +3016,7 @@ def _emit_kernel(
     w(2, "save_idx += 1")
     if not SAVE_HISTORY:
         w(1, f"for jj in range({S.size}):")
-        w(2, f"kk = jj // {S.n}")
-        w(2, f"r = jj - kk * {S.n}")
-        w(
-            2,
-            f"col = idx_{s}[r] if kk == 0 else {n_vars} + dirs_{s}[kk - 1] * {n_vars} + idx_{s}[r]",
-        )
-        w(2, f"hist[i, 0, col] = y_{s}[jj]")
+        store_sink(f"y_{s}[jj]", 2, row="0", history=True, hook=False)
         for bp in plan.blocks:
             if not bp.sink:
                 emit_block_save(w, plan, bp, f"ya_{bp.b}", 1, True, False, row="0")
@@ -3106,8 +3083,6 @@ def make_hierarchy_kernel(
         math=math,
         SAFETY=SAFETY,
         GAMMA=R.GAMMA,
-        FACTOR_MIN=R.FACTOR_MIN,
-        FACTOR_MAX=R.FACTOR_MAX,
         TPB=tpb,
     )
     methods = tuple(resolve_method(bp, options) for bp in plan.blocks)
@@ -3135,10 +3110,8 @@ def make_hierarchy_kernel(
             namespace[f"dense_q_{b}"] = dense_eval_fn(bp.mq) if bp.m else None
             namespace[f"midpoint_{b}"] = midpoint_eval_fn(bp.size)
         namespace[f"idx_{b}"] = np.asarray(bp.idx, dtype=np.int32)
-        namespace[f"dirs_{b}"] = np.asarray(
-            bp.dirs if bp.dirs else (-1,), dtype=np.int32
-        )
-        namespace[f"pos_{b}"] = np.asarray(bp.pos if bp.pos else (-1,), dtype=np.int32)
+        namespace[f"dirs_{b}"] = _table(bp.dirs)
+        namespace[f"pos_{b}"] = _table(bp.pos)
         namespace[f"ipiv_size_{b}"] = namespace.pop(f"ipiv_{b}", 1)
         for u in bp.reads:
             namespace[f"hermite_{u}_{b}"] = _hermite_writer(plan, u, b)

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Sequence, cast
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from modax._methods import Auto, Method, Rodas5P, Tsit5
+from modax._methods import Auto, Method, Rodas5P, Tsit5, method_parts, option_or
 from modax._numba_common import OdeFn, PIDGains, SolveOutput
 from modax._sparsity import Pattern, normalize_sparsity, pattern_mask
 
@@ -25,20 +25,14 @@ def _controller(method: Method) -> dict[str, Any]:
     In a hierarchy these are what a block's own method falls back to where it
     leaves an option ``None``: an ``Auto`` contributes its stiff method's.
     """
-    rodas = method.stiff if isinstance(method, Auto) else method
-    rodas = rodas if isinstance(rodas, Rodas5P) else None
-    tsit = method.nonstiff if isinstance(method, Auto) else method
-    tsit = tsit if isinstance(tsit, Tsit5) else None
-    gains = (rodas.gains if rodas is not None else None) or (
-        tsit.gains if tsit is not None else None
-    )
-    gains = gains or PIDGains()
+    rodas, tsit = method_parts(method)
+    gains = option_or(rodas, "gains", option_or(tsit, "gains", PIDGains()))
     return {
         "pcoeff": gains.pcoeff,
         "icoeff": gains.icoeff,
         "dcoeff": gains.dcoeff,
-        "lu_precision": (rodas.lu_precision if rodas is not None else None) or "fp32",
-        "ordering": (rodas.ordering if rodas is not None else None) or "amd",
+        "lu_precision": option_or(rodas, "lu_precision", "fp32"),
+        "ordering": option_or(rodas, "ordering", "amd"),
     }
 
 

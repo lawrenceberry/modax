@@ -30,7 +30,7 @@ import functools
 from dataclasses import dataclass
 
 from modax._codegen import compile_device_source
-from modax._hierarchy import QUINTIC_LINES, hermite_slot
+from modax._hierarchy import quintic_read_lines
 from modax._numba_common import as_cuda_device
 
 # --- the pattern's blocks ---------------------------------------------------------------
@@ -194,17 +194,8 @@ def generate_main_rhs(ode_fn, n_vars: int, split: BlockSplit, hslot: int):
     mpos = {idx: k for k, idx in enumerate(split.main)}
     lines = [
         "def main_rhs(ym, t, p):",
-        f"    hh = p[{hslot + 1}]",
-        f"    s = (t - p[{hslot}]) / hh",
-        *QUINTIC_LINES,
-        "    hh2 = hh * hh",
+        *quintic_read_lines(hslot, [f"d{j}" for j in range(split.n_drv)], ""),
     ]
-    for j in range(split.n_drv):
-        c = hermite_slot(hslot, j)
-        lines.append(
-            f"    d{j} = b0 * p[{c}] + hh * b1 * p[{c + 1}] + hh2 * b2 * p[{c + 2}]"
-            f" + b3 * p[{c + 3}] + hh * b4 * p[{c + 4}] + hh2 * b5 * p[{c + 5}]"
-        )
     y = ", ".join(
         f"d{dpos[i]}" if i in dpos else f"ym[{mpos[i]}]" for i in range(n_vars)
     )

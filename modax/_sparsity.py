@@ -95,12 +95,6 @@ class CompressedJacobian:
         """Elements in one trajectory's matrix."""
         if self.n_slots is not None:
             return self.n_slots
-        if self.packed is not None:
-            # `modax._sparse_direct.compressed_jacobian` is the only thing
-            # that packs a layout and it sets both tables at once, so a packed
-            # layout always carries its diagonal slots.
-            assert self.packed_diagonal is not None
-            return 1 + max(max(self.packed), max(self.packed_diagonal))
         return self.n_vars * self.n_colours
 
     @property
@@ -241,7 +235,7 @@ def colour_sparsity(pattern: Pattern) -> CompressedJacobian:
             best = colouring
     assert best is not None
 
-    colour = tuple(int(best.get(c, 0)) for c in range(n_vars))
+    colour = tuple(int(best[c]) for c in range(n_vars))
     compressed = CompressedJacobian(
         n_vars=n_vars, n_colours=max(colour) + 1, colour=colour
     )

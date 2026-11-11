@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable
+import functools
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -21,6 +22,7 @@ from modax._sensitivity import (
     SensitivitySpec,
     augmented_error_weights,
     augmented_y0,
+    make_sensitivity_solver,
 )
 
 
@@ -190,8 +192,6 @@ def _broadcast_for_vmap(
 
 def make_custom_vmap_solver(
     solve_impl: Callable[[jax.Array, jax.Array, jax.Array], SolveOutput],
-    *,
-    return_stats: bool,
 ) -> custom_vmap:
     """Wrap a solver implementation so outer ``jax.vmap`` becomes one ensemble call.
 
@@ -240,3 +240,43 @@ def make_custom_vmap_solver(
         return (sol[:, None, :, :], stats_out), (True, stats_batched)
 
     return _solve
+
+
+def differentiable_solve(
+    impl: Callable[..., SolveOutput],
+    options: Any,
+    settings: SolveSettings,
+    return_stats: bool,
+    y0: ArrayLike,
+    t_span: ArrayLike,
+    params: ArrayLike,
+    *,
+    sens_error_control: bool,
+    sens_param_columns: Sequence[int] | None,
+) -> SolveOutput:
+    """Solve through the vmap and forward-sensitivity rules.
+
+    ``impl(y0, t_span, params, *, options, settings, return_stats)`` is the
+    plain launch, and ``options`` a dataclass with a ``spec`` field.
+    """
+
+    # The JVP rule wraps the vmap-aware solvers rather than the other way
+    # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
+    # what tells the rule which sensitivity blocks it has to integrate.
+    def solver_for(spec: SensitivitySpec | None) -> custom_vmap:
+        return make_custom_vmap_solver(
+            functools.partial(
+                impl,
+                options=replace(options, spec=spec),
+                settings=settings,
+                return_stats=return_stats,
+            )
+        )
+
+    return make_sensitivity_solver(
+        solver_for,
+        jnp.shape(y0)[-1],
+        jnp.shape(params)[-1],
+        sens_error_control=sens_error_control,
+        sens_param_columns=sens_param_columns,
+    )(y0, t_span, params)

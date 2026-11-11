@@ -200,21 +200,6 @@ def build_error_weights(
     return np.ascontiguousarray(weights, dtype=np.float64)
 
 
-def solver_stats(
-    accepted: jax.Array, rejected: jax.Array, loop_steps: jax.Array
-) -> SolverStats:
-    """The ``return_stats`` dict: per-trajectory ``(N,)`` step counters.
-
-    ``loop_steps`` counts iterations of the stepping loop, which is what
-    ``max_steps`` caps.
-    """
-    return {
-        "accepted_steps": accepted,
-        "rejected_steps": rejected,
-        "loop_steps": loop_steps,
-    }
-
-
 @functools.cache
 def as_cuda_device(fn: Callable[..., object] | MLIRDispatcher) -> MLIRDispatcher:
     """``fn`` as a CUDA device function: ``cuda.jit(device=True)`` unless it

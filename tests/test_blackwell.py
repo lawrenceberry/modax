@@ -98,7 +98,8 @@ def test_derivatives_are_built_for_the_kernel_target(device, monkeypatch):
         )
     finally:
         _sensitivity.clear_caches()
-    assert jvp.call_count == 4
+    # quantity_hook's tangent of rhs is make_tangent's, cached, so three builds
+    assert jvp.call_count == 3
     assert all(call.kwargs["cc"] == (9, 0) for call in jvp.call_args_list)
 
 

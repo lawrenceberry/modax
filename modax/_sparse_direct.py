@@ -240,15 +240,19 @@ class SparseLULayout:
     @property
     def col_origin(self) -> IndexTable:
         """Caller's index of the column each slot belongs to."""
-        return np.asarray(self.order, dtype=np.int32)[self.col_ind]
+        return self.row_origin[self.col_ind]
+
+    def _elimination_slots(self) -> npt.NDArray[np.int64]:
+        """``(n_vars, n_vars)`` of slots by elimination index, ``-1`` elsewhere."""
+        table = np.full((self.n_vars, self.n_vars), -1, dtype=np.int64)
+        rows = np.repeat(np.arange(self.n_vars), np.diff(self.row_ptr))
+        table[rows, self.col_ind] = np.arange(self.nnz)
+        return table
 
     def slot_table(self) -> npt.NDArray[np.int64]:
         """``(n_vars, n_vars)`` of slots, ``-1`` where the structure has nothing."""
-        table = np.full((self.n_vars, self.n_vars), -1, dtype=np.int64)
-        origin = np.asarray(self.order, dtype=np.int64)
-        for i in range(self.n_vars):
-            start, stop = int(self.row_ptr[i]), int(self.row_ptr[i + 1])
-            table[origin[i], origin[self.col_ind[start:stop]]] = np.arange(start, stop)
+        table = np.empty((self.n_vars, self.n_vars), dtype=np.int64)
+        table[np.ix_(self.order, self.order)] = self._elimination_slots()
         return table
 
     def factorization_ops(self) -> tuple[IndexTable, IndexTable, IndexTable]:
@@ -279,10 +283,7 @@ class SparseLULayout:
             np.asarray(self.col_ind, dtype=np.int64)
         ]
         dst: list[int] = []
-        table = np.full((n, n), -1, dtype=np.int64)
-        for i in range(n):
-            start, stop = int(self.row_ptr[i]), int(self.row_ptr[i + 1])
-            table[i, self.col_ind[start:stop]] = np.arange(start, stop)
+        table = self._elimination_slots()
         for i in range(n):
             for p in range(int(self.row_ptr[i]), int(self.diag_ptr[i])):
                 k = int(self.col_ind[p])
@@ -340,17 +341,8 @@ def analyse(pattern: Pattern, ordering: Ordering = "amd") -> SparseLULayout:
     )
     row_ptr = np.zeros(n_vars + 1, dtype=np.int32)
     row_ptr[1:] = np.cumsum(filled.sum(axis=1))
-    col_ind = np.concatenate([np.flatnonzero(filled[i]) for i in range(n_vars)]).astype(
-        np.int32
-    )
-    diag_ptr = np.array(
-        [
-            int(row_ptr[i])
-            + int(np.searchsorted(col_ind[row_ptr[i] : row_ptr[i + 1]], i))
-            for i in range(n_vars)
-        ],
-        dtype=np.int32,
-    )
+    col_ind = np.nonzero(filled)[1].astype(np.int32)
+    diag_ptr = (row_ptr[:-1] + np.tril(filled, -1).sum(axis=1)).astype(np.int32)
     return SparseLULayout(
         n_vars=n_vars,
         order=tuple(int(i) for i in order),
@@ -390,11 +382,10 @@ def compressed_jacobian(pattern: Pattern, layout: SparseLULayout) -> CompressedJ
                     "were built from different patterns"
                 )
             packed[row * compressed.n_colours + compressed.colour[col]] = slot
-    diagonal = np.array([int(table[i, i]) for i in range(layout.n_vars)])
     return replace(
         compressed,
         packed=tuple(int(s) for s in packed),
-        packed_diagonal=tuple(int(s) for s in diagonal),
+        packed_diagonal=tuple(int(table[i, i]) for i in range(layout.n_vars)),
         n_slots=layout.nnz,
     )
 
@@ -446,7 +437,7 @@ def sparse_direct_solver_for(
     return SparseDirectSolver(
         layout,
         compressed_jacobian(pattern, layout),
-        _make_factorize(layout, layout.factorization_ops(), inline),
+        _make_factorize(layout, inline),
         _make_solve(layout, inline),
     )
 
@@ -481,11 +472,7 @@ MAX_UNROLLED_SUBSTITUTIONS = 2048
 MAX_UNROLLED_UPDATES = 8192
 
 
-def _make_factorize(
-    layout: SparseLULayout,
-    ops: tuple[IndexTable, IndexTable, IndexTable],
-    inline: str = "always",
-) -> MLIRDispatcher:
+def _make_factorize(layout: SparseLULayout, inline: str = "always") -> MLIRDispatcher:
     """Up-looking LU of ``M``, in place, no pivoting.
 
     Row ``i`` is finished before row ``i + 1`` begins, so by the time the
@@ -508,7 +495,7 @@ def _make_factorize(
     step it then takes puts a larger ``1/(h*gamma)`` on this very diagonal.
     """
     n = layout.n_vars
-    dst_start, destination, upper_end = ops
+    dst_start, destination, upper_end = layout.factorization_ops()
     # Slot of the pivot each multiplier divides by: diag_ptr[col_ind[p]],
     # resolved here so the factorisation never touches col_ind.
     pivot_of = layout.diag_ptr[layout.col_ind]
@@ -601,7 +588,7 @@ def _make_solve(layout: SparseLULayout, inline: str = "always") -> MLIRDispatche
     _, _, substitutions = layout.flop_counts()
 
     if substitutions <= MAX_UNROLLED_SUBSTITUTIONS:
-        return _unrolled_solve(n, row_ptr, diag_ptr, origin, col_origin, inline)
+        return _unrolled_solve(layout, inline)
 
     tables, (ROW, DIAG, ROW_ORIG, COL_ORIG) = _pack(
         row_ptr, diag_ptr, origin, col_origin
@@ -627,15 +614,11 @@ def _make_solve(layout: SparseLULayout, inline: str = "always") -> MLIRDispatche
     return sparse_direct_solve
 
 
-def _unrolled_solve(
-    n: int,
-    row_ptr: IndexTable,
-    diag_ptr: IndexTable,
-    origin: IndexTable,
-    col_origin: IndexTable,
-    inline: str = "always",
-) -> MLIRDispatcher:
+def _unrolled_solve(layout: SparseLULayout, inline: str = "always") -> MLIRDispatcher:
     """Generate the two sweeps with every slot spelled out as a literal."""
+    n = layout.n_vars
+    row_ptr, diag_ptr = layout.row_ptr, layout.diag_ptr
+    origin, col_origin = layout.row_origin, layout.col_origin
 
     def terms(span: range) -> str:
         return "".join(

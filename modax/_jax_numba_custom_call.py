@@ -27,8 +27,6 @@ from numba_cuda_mlir.numba_cuda.types import Type
 _CAPSULE_NAME = b"xla._CUSTOM_CALL_TARGET"
 _TARGET_NAME = "modax_numba_cuda_abi_launch"
 _CUSTOM_CALL_API_VERSION = 4
-_REGISTERED = False
-_LOADED_LIB: ctypes.CDLL | None = None
 
 ABI_ARRAY = 0
 ABI_SCALAR_F64 = 1
@@ -46,26 +44,21 @@ class CudaLaunch:
 
 
 def _as_3d(value: int | Sequence[int]) -> tuple[int, int, int]:
-    if isinstance(value, int):
-        return (int(value), 1, 1)
-    parts = tuple(int(v) for v in value)
-    if len(parts) == 1:
-        return (parts[0], 1, 1)
-    if len(parts) == 2:
-        return (parts[0], parts[1], 1)
-    if len(parts) == 3:
-        return parts
-    raise ValueError(f"launch dimensions must have rank 1, 2, or 3; got {value!r}")
+    parts = (int(value),) if isinstance(value, int) else tuple(int(v) for v in value)
+    if not 1 <= len(parts) <= 3:
+        raise ValueError(f"launch dimensions must have rank 1, 2, or 3; got {value!r}")
+    x, y, z = (*parts, 1, 1)[:3]
+    return x, y, z
 
 
-def _pycapsule_new(ptr: int, name: bytes = _CAPSULE_NAME) -> object:
+def _pycapsule_new(ptr: int) -> object:
     ctypes.pythonapi.PyCapsule_New.argtypes = [
         ctypes.c_void_p,
         ctypes.c_char_p,
         ctypes.c_void_p,
     ]
     ctypes.pythonapi.PyCapsule_New.restype = ctypes.py_object
-    return ctypes.pythonapi.PyCapsule_New(ctypes.c_void_p(ptr), name, None)
+    return ctypes.pythonapi.PyCapsule_New(ctypes.c_void_p(ptr), _CAPSULE_NAME, None)
 
 
 def _source() -> str:
@@ -264,22 +257,19 @@ def _build_bridge() -> Path:
     return so_path
 
 
-def register_target() -> None:
+@functools.cache
+def register_target() -> ctypes.CDLL:
     """Register the generic CUDA launcher with JAX once per process."""
 
-    global _LOADED_LIB, _REGISTERED
-    if _REGISTERED:
-        return
-    so_path = _build_bridge()
-    _LOADED_LIB = ctypes.CDLL(str(so_path))
-    symbol = getattr(_LOADED_LIB, _TARGET_NAME)
+    lib = ctypes.CDLL(str(_build_bridge()))
+    symbol = getattr(lib, _TARGET_NAME)
     address = ctypes.cast(symbol, ctypes.c_void_p).value
     # A symbol resolved out of a loaded library always has one; the
     # `None` is what `c_void_p` carries for a null pointer.
     assert address is not None
     capsule = _pycapsule_new(address)
     jax.ffi.register_ffi_target(_TARGET_NAME, capsule, platform="CUDA", api_version=1)
-    _REGISTERED = True
+    return lib
 
 
 # Loaded modules are held for the process lifetime: the ``CUfunction`` handed to

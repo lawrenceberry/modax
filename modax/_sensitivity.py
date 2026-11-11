@@ -106,6 +106,14 @@ class SensitivitySpec:
                     "parameter columns"
                 )
 
+    def check_extents(self, n_vars: int, n_params: int, against: str) -> None:
+        """Raise unless the spec is for ``n_vars`` states and ``n_params`` parameters."""
+        if self.n_vars != n_vars or self.n_params != n_params:
+            raise ValueError(
+                f"the sensitivity spec is for {self.n_vars} variables and "
+                f"{self.n_params} parameters, {against} {n_vars} and {n_params}"
+            )
+
     @property
     def n_y0_dirs(self) -> int:
         return self.n_vars if self.wrt_y0 else 0
@@ -145,16 +153,6 @@ class SensitivitySpec:
 
 
 @functools.cache
-def _primal_signature(n_vars: int, n_params: int) -> Signature:
-    """The concrete ``ode_fn`` specialisation every derivative is built for."""
-    return types.UniTuple(types.float64, n_vars)(
-        types.UniTuple(types.float64, n_vars),
-        types.float64,
-        types.UniTuple(types.float64, n_params),
-    )
-
-
-@functools.cache
 def _quantity_signature(n_outputs: int, n_vars: int, n_params: int) -> Signature:
     """The specialisation a :func:`quantity_hook`'s quantities are differentiated in."""
     return types.UniTuple(types.float64, n_outputs)(
@@ -172,12 +170,7 @@ def make_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     derivative: seed ``(S_k, 0, e_k)`` and it comes out whole.  Assembling it
     from unit columns instead costs ``n_vars + 1`` sweeps where this costs one.
     """
-    # For the kernel's own target (compile_target), so the two link on Blackwell.
-    return jvp(
-        as_cuda_device(ode_fn),
-        signature=_primal_signature(n_vars, n_params),
-        cc=compile_target(),
-    )
+    return make_quantity_tangent(ode_fn, n_vars, n_vars, n_params)
 
 
 @functools.cache
@@ -199,18 +192,13 @@ def make_second_tangent(ode_fn: OdeFn, n_vars: int, n_params: int) -> Tangent:
     inner direction's own variation; every caller here passes zero for it,
     which leaves the plain bilinear form.
     """
-    signature = _primal_signature(n_vars, n_params)
-    cc = compile_target()
-    return jvp(
-        jvp(as_cuda_device(ode_fn), signature=signature, cc=cc),
-        signature=signature,
-        cc=cc,
-    )
+    return make_quantity_second_tangent(ode_fn, n_vars, n_vars, n_params)
 
 
 @functools.cache
 def make_quantity_tangent(fn, n_outputs: int, n_vars: int, n_params: int) -> Tangent:
     """``D q(y, t, p)[u]`` for a quantity function of ``n_outputs`` values of ``n_vars`` states."""
+    # For the kernel's own target (compile_target), so the two link on Blackwell.
     return jvp(
         as_cuda_device(fn),
         signature=_quantity_signature(n_outputs, n_vars, n_params),
@@ -343,14 +331,8 @@ def quantity_hook(
     """
     if n_outputs < 1:
         raise ValueError("a quantity hook stores at least one quantity")
-    if sensitivity is not None and (
-        sensitivity.n_vars != n_vars or sensitivity.n_params != n_params
-    ):
-        raise ValueError(
-            f"the sensitivity spec is for {sensitivity.n_vars} variables and "
-            f"{sensitivity.n_params} parameters, the quantities for {n_vars} "
-            f"and {n_params}"
-        )
+    if sensitivity is not None:
+        sensitivity.check_extents(n_vars, n_params, "the quantities for")
     fn_device = as_cuda_device(quantities)
 
     if sensitivity is None:
@@ -370,12 +352,7 @@ def quantity_hook(
     length = max(n_vars, n_params)
     width = n_outputs * (1 + n_sens)
     seeds = seed_table(sensitivity)
-    # For the kernel's own target (compile_target), so the two link on Blackwell.
-    tangent_of = jvp(
-        fn_device,
-        signature=_quantity_signature(n_outputs, n_vars, n_params),
-        cc=compile_target(),
-    )
+    tangent_of = make_quantity_tangent(quantities, n_outputs, n_vars, n_params)
 
     @cuda.jit(device=True)
     def store_values_and_tangents(save_idx, y, t, p_row, acc):
@@ -413,6 +390,8 @@ def clear_caches() -> None:
     """
     make_tangent.cache_clear()
     make_second_tangent.cache_clear()
+    make_quantity_tangent.cache_clear()
+    make_quantity_second_tangent.cache_clear()
     seed_table.cache_clear()
     make_augmented_local_writer.cache_clear()
     quantity_hook.cache_clear()

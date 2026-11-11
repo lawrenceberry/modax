@@ -5,18 +5,17 @@ from __future__ import annotations
 import functools
 import gc
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal, Sequence, overload
 
 import jax
-import jax.numpy as jnp
 from jax.typing import ArrayLike
 from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.descriptor import MLIRDispatcher
 
 from modax._jax_common import (
+    differentiable_solve,
     ensemble_ffi_call,
-    make_custom_vmap_solver,
     prepare_inputs,
 )
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
@@ -26,17 +25,14 @@ from modax._numba_common import (
     OdeFn,
     PIDGains,
     SolveOutput,
-    Solver,
     SolverStats,
     SolveSettings,
     make_cuda_local_vector_writer,
     make_step_controller,
-    solver_stats,
 )
 from modax._sensitivity import (
     SensitivitySpec,
     make_augmented_local_writer,
-    make_sensitivity_solver,
 )
 from modax._sensitivity import (
     clear_caches as clear_sensitivity_caches,
@@ -778,28 +774,17 @@ def solve(
     options = KernelOptions(PIDGains(pcoeff, icoeff, dcoeff), backend)
     settings = SolveSettings(rtol, atol, first_step, max_steps, error_weights)
 
-    # The JVP rule wraps the vmap-aware solvers rather than the other way
-    # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
-    # what tells the rule which sensitivity blocks it has to integrate.
-    def solver_for(spec: SensitivitySpec | None) -> Solver:
-        return make_custom_vmap_solver(
-            functools.partial(
-                _solve_impl,
-                ode_fn,
-                options=replace(options, spec=spec),
-                settings=settings,
-                return_stats=return_stats,
-            ),
-            return_stats=return_stats,
-        )
-
-    return make_sensitivity_solver(
-        solver_for,
-        jnp.shape(y0)[-1],
-        jnp.shape(params)[-1],
+    return differentiable_solve(
+        functools.partial(_solve_impl, ode_fn),
+        options,
+        settings,
+        return_stats,
+        y0,
+        t_span,
+        params,
         sens_error_control=sens_error_control,
         sens_param_columns=sens_param_columns,
-    )(y0, t_span, params)
+    )
 
 
 def _solve_impl(
@@ -822,4 +807,6 @@ def _solve_impl(
     hist, accepted, rejected, loop_steps = ensemble_ffi_call(launch, inputs, settings)
     if not return_stats:
         return hist
-    return hist, solver_stats(accepted, rejected, loop_steps)
+    return hist, SolverStats(
+        accepted_steps=accepted, rejected_steps=rejected, loop_steps=loop_steps
+    )

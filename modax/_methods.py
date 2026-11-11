@@ -150,3 +150,19 @@ class Auto:
 
 
 Method = Rodas5P | Tsit5 | Auto
+
+
+def method_parts(method: Method) -> tuple[Rodas5P | None, Tsit5 | None]:
+    """``method``'s implicit and explicit methods, ``None`` where it has none."""
+    if isinstance(method, Auto):
+        return method.stiff, method.nonstiff
+    return (
+        method if isinstance(method, Rodas5P) else None,
+        method if isinstance(method, Tsit5) else None,
+    )
+
+
+def option_or(method: Rodas5P | Tsit5 | None, name: str, default):
+    """``method``'s option ``name``, or ``default`` where there is no method or it leaves the option ``None``."""
+    value = getattr(method, name) if method is not None else None
+    return default if value is None else value

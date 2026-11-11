@@ -27,8 +27,8 @@ from numba_cuda_mlir.descriptor import MLIRDispatcher
 from modax._codegen import compile_device_source
 from modax._hierarchy import as_hierarchy
 from modax._jax_common import (
+    differentiable_solve,
     ensemble_ffi_call,
-    make_custom_vmap_solver,
     prepare_inputs,
 )
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
@@ -40,19 +40,16 @@ from modax._numba_common import (
     OdeFn,
     PIDGains,
     SolveOutput,
-    Solver,
     SolverStats,
     SolveSettings,
     as_cuda_device,
     make_cuda_local_vector_writer,
     make_step_controller,
-    solver_stats,
 )
 from modax._sensitivity import (
     SensitivitySpec,
     make_augmented_local_writer,
     make_second_tangent,
-    make_sensitivity_solver,
     make_tangent,
     seed_table,
 )
@@ -1104,7 +1101,7 @@ def split_blocks(sparsity: Sparsity, n_vars: int, max_driver: int = 16):
 def _make_jax_launch(
     ode_fn: OdeFn, n: int, n_vars: int, n_params: int, options: KernelOptions
 ) -> CudaLaunch:
-    from modax._hierarchy import as_hierarchy, make_hierarchy_kernel
+    from modax._hierarchy import make_hierarchy_kernel
 
     hierarchy = as_hierarchy(ode_fn)
     blocks = None
@@ -1122,11 +1119,11 @@ def _make_jax_launch(
         )
     else:
         kernel, trajectories_per_block = _make_kernel(ode_fn, n_vars, n_params, options)
-    blocks = (n + trajectories_per_block - 1) // trajectories_per_block
+    grid = (n + trajectories_per_block - 1) // trajectories_per_block
     return make_launch(
         kernel,
         SOLVER_ARGTYPES + (HOOK_OUT_ARGTYPE,),
-        grid=blocks,
+        grid=grid,
         block=(trajectories_per_block, 1, 1),
     )
 
@@ -1647,13 +1644,7 @@ def _solve(
     if save_hook is None and not save_history:
         raise ValueError("save_history=False needs a save_hook to consume the saves")
     if sensitivity is not None:
-        n_params = jnp.shape(params)[-1]
-        if sensitivity.n_vars != n_vars or sensitivity.n_params != n_params:
-            raise ValueError(
-                f"the sensitivity spec is for {sensitivity.n_vars} variables and "
-                f"{sensitivity.n_params} parameters, the problem has {n_vars} and "
-                f"{n_params}"
-            )
+        sensitivity.check_extents(n_vars, jnp.shape(params)[-1], "the problem has")
         options = replace(options, spec=sensitivity)
     if save_hook is not None or sensitivity is not None:
         # The hook's accumulator is a second output the vmap and JVP rules do
@@ -1664,28 +1655,17 @@ def _solve(
             return (hist, stats) if return_stats else hist
         return (hist, hook_out, stats) if return_stats else (hist, hook_out)
 
-    # The JVP rule wraps the vmap-aware solvers rather than the other way
-    # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
-    # what tells the rule which sensitivity blocks it has to integrate.
-    def solver_for(spec: SensitivitySpec | None) -> Solver:
-        return make_custom_vmap_solver(
-            functools.partial(
-                _solve_impl,
-                ode_fn,
-                options=replace(options, spec=spec),
-                settings=settings,
-                return_stats=return_stats,
-            ),
-            return_stats=return_stats,
-        )
-
-    return make_sensitivity_solver(
-        solver_for,
-        n_vars,
-        jnp.shape(params)[-1],
+    return differentiable_solve(
+        functools.partial(_solve_impl, ode_fn),
+        options,
+        settings,
+        return_stats,
+        y0,
+        t_span,
+        params,
         sens_error_control=sens_error_control,
         sens_param_columns=sens_param_columns,
-    )(y0, t_span, params)
+    )
 
 
 def _solve_impl(
@@ -1723,4 +1703,10 @@ def _launch(
         n_save_hist=inputs.n_save if options.save_history else 1,
         hook_size=max(1, options.hook_size),
     )
-    return hist, hook_out, solver_stats(accepted, rejected, loop_steps)
+    return (
+        hist,
+        hook_out,
+        SolverStats(
+            accepted_steps=accepted, rejected_steps=rejected, loop_steps=loop_steps
+        ),
+    )
