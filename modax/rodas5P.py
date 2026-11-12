@@ -26,7 +26,6 @@ from modax._hierarchy import as_hierarchy
 from modax._jax_common import (
     differentiable_solve,
     ensemble_ffi_call,
-    pack_output,
     prepare_inputs,
 )
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
@@ -1112,7 +1111,6 @@ def solve(
     max_registers: int | None = None,
     save_hook: None = None,
     save_history: bool = True,
-    sensitivity: SensitivitySpec | None = None,
 ) -> jax.Array: ...
 
 
@@ -1140,7 +1138,6 @@ def solve(
     max_registers: int | None = None,
     save_hook: None = None,
     save_history: bool = True,
-    sensitivity: SensitivitySpec | None = None,
 ) -> tuple[jax.Array, SolverStats]: ...
 
 
@@ -1168,7 +1165,6 @@ def solve(
     max_registers: int | None = None,
     save_hook: SaveHook,
     save_history: bool = True,
-    sensitivity: SensitivitySpec | None = None,
 ) -> tuple[jax.Array, jax.Array]: ...
 
 
@@ -1196,7 +1192,6 @@ def solve(
     max_registers: int | None = None,
     save_hook: SaveHook,
     save_history: bool = True,
-    sensitivity: SensitivitySpec | None = None,
 ) -> tuple[jax.Array, jax.Array, SolverStats]: ...
 
 
@@ -1224,7 +1219,6 @@ def solve(
     max_registers: int | None = None,
     save_hook: SaveHook | None = None,
     save_history: bool = True,
-    sensitivity: SensitivitySpec | None = None,
 ) -> SolveOutput | HookedOutput: ...
 
 
@@ -1251,7 +1245,6 @@ def solve(
     max_registers: int | None = None,
     save_hook: SaveHook | None = None,
     save_history: bool = True,
-    sensitivity: SensitivitySpec | None = None,
     split: bool = False,
     split_max_driver: int = 16,
     cache: bool = False,
@@ -1353,13 +1346,6 @@ def solve(
             direction.
         save_history: Keep the full history. ``False`` keeps only the final
             state, and needs a ``save_hook`` to consume the saves.
-        sensitivity: A :class:`~modax._sensitivity.SensitivitySpec` whose joint
-            ``[y, S]`` system the solve integrates as its primal, in place of
-            the JVP rule. The output is ``n_aug`` wide in the layout
-            ``split_augmented`` reads, and a save hook's output is
-            ``(N, n_save, 1 + n_sens, n_out)``: the values, then their tangent
-            along each direction of the spec. ``y0`` stays the plain state, and
-            the spec supplies the initial sensitivities.
         split: Integrate the pattern's one-way-coupled leading block on steps
             of its own, ahead of the rest, which reads it as a quintic Hermite
             interpolant (:mod:`modax._split`).
@@ -1407,7 +1393,6 @@ def solve(
         max_registers=max_registers,
         save_hook=save_hook,
         save_history=save_history,
-        sensitivity=sensitivity,
         split=split,
         split_max_driver=split_max_driver,
         cache=cache,
@@ -1437,7 +1422,6 @@ def _solve(
     max_registers: int | None = None,
     save_hook: SaveHook | None = None,
     save_history: bool = True,
-    sensitivity: SensitivitySpec | None = None,
     split: bool = False,
     split_max_driver: int = 16,
     cache: bool = False,
@@ -1492,14 +1476,6 @@ def _solve(
         # Typed here, on the host, so a hook of the wrong shape fails before
         # any tracing does.
         quantity_count(save_hook, n_vars, param_width(params))
-    if sensitivity is not None:
-        sensitivity.check_extents(n_vars, param_width(params), "the problem has")
-        # A joint solve asked for by name is its own primal: the plain
-        # ensemble launch, with the quantities' tangents left in place.
-        options = replace(options, spec=sensitivity)
-        hist, quantities, stats = _launch(ode_fn, y0, t_span, params, options, settings)
-        return pack_output(hist, quantities, stats, return_stats)
-
     return differentiable_solve(
         functools.partial(_solve_impl, ode_fn),
         options,

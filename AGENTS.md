@@ -153,10 +153,12 @@ and `rodas5P._launch` turns the user's hook into the kernel's
 `hook(save_idx, y, t, p_row, acc)` with `quantity_hook` for the launch's spec,
 which stores each save's values and then one Enzyme tangent per direction.
 The JVP rule contracts those tangents with the input tangents exactly as it
-does `S`. `sensitivity=` still returns them raw, `(N, n_save, 1 + n_sens,
-n_out)`, for a caller that lays out its own joint system (DISCO-EB's one
-column per replica). `tests/test_save_hook.py` pins all of it against the
-history.
+does `S`. There is no `sensitivity=` to ask for a joint launch by hand: a
+caller that wants its own layout of directions says so through the leaves of
+`params`. DISCO-EB's one column per replica is a leaf holding its `eps`
+column, differentiated with `jax.jvp` and `sens_error_control=False`, which
+derives the very spec it used to pass (measured bit-identical, same compile
+and run time). `tests/test_save_hook.py` pins all of it against the history.
 
 Shared support modules:
 

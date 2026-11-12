@@ -15,7 +15,6 @@ from modax._sparsity import Pattern, normalize_sparsity, pattern_mask
 
 if TYPE_CHECKING:
     from modax._hierarchy import Block, Hierarchy
-    from modax._sensitivity import SensitivitySpec
     from modax._sparsity import Sparsity
 
 
@@ -66,7 +65,6 @@ def solve(
     sens_error_control: bool = True,
     save_hook: SaveHook | None = None,
     save_history: bool = True,
-    sensitivity: SensitivitySpec | None = None,
     trajectories_per_block: int | None = None,
     max_registers: int | None = None,
     cache: bool = False,
@@ -147,11 +145,6 @@ def solve(
             hook returns. They are differentiable like the history.
         save_history: ``False`` keeps only the final state, for a hook that
             consumes the saves itself.
-        sensitivity: A sensitivity spec the solve integrates as its primal,
-            in place of the JVP rule. The history is the joint ``[y, S]``
-            state, and a save hook's quantities ``(N, n_save, 1 + n_sens,
-            n_out)``, their values and then their tangents. Tsit5's own kernel
-            does not take it.
         trajectories_per_block: Trajectories per CUDA block. ``None`` means
             a warp.
         max_registers: A cap on the kernel's registers per thread.
@@ -189,7 +182,6 @@ def solve(
     kernel: dict[str, Any] = dict(
         save_hook=save_hook,
         save_history=save_history,
-        sensitivity=sensitivity,
         trajectories_per_block=trajectories_per_block,
         max_registers=max_registers,
         cache=cache,
@@ -221,7 +213,6 @@ def solve(
         on_hierarchy_kernel = (
             save_hook is not None
             or not save_history
-            or sensitivity is not None
             or trajectories_per_block is not None
             or max_registers is not None
             or cache

@@ -309,7 +309,7 @@ def quantity_hook(
     The hook stores ``n_outputs * (1 + n_sens)`` numbers per save, save-major, so
     its ``hook_size`` is that times the number of saves. Without ``sensitivity``
     (``n_sens = 0``) it stores the values alone, for a plain hooked solve. With
-    it, for the joint launch of ``solve(..., sensitivity=spec)``, it follows each
+    it, for a joint launch of ``spec``, it follows each
     save's values with their total derivative along every direction ``k`` of the
     spec, direction after direction::
 

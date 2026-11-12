@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from numba_cuda_mlir import cuda
 
-from modax._sensitivity import SensitivitySpec, quantity_hook, split_augmented
+from modax._sensitivity import SensitivitySpec, quantity_hook
 from modax.rodas5P import solve as rodas5P_solve
 
 jax.config.update("jax_enable_x64", True)
@@ -198,78 +198,40 @@ def test_a_vmapped_hooked_solve_is_one_ensemble():
     )
 
 
-# --- a joint solve asked for by its spec --------------------------------------
+# --- one direction per trajectory, the layout DISCO-EB uses ------------------
 @requires_cuda
 @QUANTITIES
-@pytest.mark.parametrize(
-    "wrt_y0, wrt_params, param_columns",
-    [(False, True, None), (True, True, None), (False, True, (0,))],
-)
-def test_an_explicit_spec_returns_values_and_tangents(
-    quantities, n_out, wrt_y0, wrt_params, param_columns
-):
-    """``(N, n_save, 1 + n_sens, n_out)``: values, then each direction's tangent.
+def test_jvp_along_one_leaf_carries_one_column(quantities, n_out):
+    """A leaf of its own for one parameter column, differentiated by ``jax.jvp``.
 
-    The initial-state directions come first, then the parameter columns.
+    The rule then integrates that column alone (``param_columns=(0,)``), out of
+    step control with ``sens_error_control=False``, and the quantities'
+    tangent is that column of their Jacobian.
     """
-    y0, t_span, params = _problem()
-    spec = SensitivitySpec(
-        2,
-        2,
-        wrt_y0=wrt_y0,
-        wrt_params=wrt_params,
-        error_control=False,
-        param_columns=param_columns,
-    )
-    final, q = rodas5P_solve(
-        damped_oscillator,
-        y0,
-        t_span,
-        params,
-        save_hook=quantities,
-        save_history=False,
-        sensitivity=spec,
-        **SETTINGS,
-    )
-    assert np.asarray(final).shape == (3, 1, spec.n_aug)
-    q = np.asarray(q)
-    assert q.shape == (3, N_SAVE, 1 + spec.n_sens, n_out)
+    y0, _, params = _problem()
+    stiffness, damping = jnp.asarray(params[:, :1]), jnp.asarray(params[:, 1:])
 
-    y0_j, p_j = jnp.asarray(y0), jnp.asarray(params)
-    d_y0, d_p = jax.jacfwd(
-        lambda a, p: _over_history(quantities, n_out, a, p), argnums=(0, 1)
-    )(y0_j, p_j)
-    rows = np.arange(3)
-    d_y0, d_p = np.asarray(d_y0)[rows, :, :, rows], np.asarray(d_p)[rows, :, :, rows]
-    values = np.asarray(_over_history(quantities, n_out, y0_j, p_j))
-    np.testing.assert_allclose(q[:, :, 0], values, rtol=1e-12, atol=1e-15)
-    columns = [d_y0[..., r] for r in range(spec.n_y0_dirs)] + [
-        d_p[..., c] for c in spec.param_seed_columns
-    ]
-    for k, expected in enumerate(columns):
-        np.testing.assert_allclose(q[:, :, 1 + k], expected, rtol=1e-6, atol=1e-9)
-
-    # The joint history is the state the hook read.
-    hist = rodas5P_solve(
-        damped_oscillator, y0, t_span, params, sensitivity=spec, **SETTINGS
-    )
-    state, sens = split_augmented(hist, spec)
-    np.testing.assert_allclose(
-        np.asarray(state)[:, -1], np.asarray(final)[:, 0, :2], atol=1e-13
-    )
-    assert sens.shape == (3, N_SAVE, 2, spec.n_sens)
-
-
-def test_sensitivity_spec_must_fit_the_problem():
-    y0, t_span, params = _problem()
-    with pytest.raises(ValueError, match="sensitivity spec"):
-        rodas5P_solve(
-            damped_oscillator,
+    values, tangent = jax.jvp(
+        lambda k: _hooked(
+            quantities,
             y0,
-            t_span,
-            params,
-            sensitivity=SensitivitySpec(3, 2, wrt_y0=False, wrt_params=True),
-        )
+            (k, damping),
+            save_history=False,
+            sens_error_control=False,
+        ),
+        (stiffness,),
+        (jnp.ones_like(stiffness),),
+    )
+    assert values.shape == tangent.shape == (3, N_SAVE, n_out)
+    y0_j, p_j = jnp.asarray(y0), jnp.asarray(params)
+    rows = np.arange(3)
+    d_p = np.asarray(
+        jax.jacfwd(lambda p: _over_history(quantities, n_out, y0_j, p))(p_j)
+    )[rows, :, :, rows]
+    np.testing.assert_allclose(
+        values, _over_history(quantities, n_out, y0_j, p_j), rtol=1e-12, atol=1e-15
+    )
+    np.testing.assert_allclose(tangent, d_p[..., 0], rtol=1e-6, atol=1e-9)
 
 
 def test_quantity_hook_needs_a_spec_of_its_problem():
