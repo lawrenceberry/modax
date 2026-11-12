@@ -5,6 +5,19 @@ Releases are cut by python-semantic-release from the Conventional Commits on
 
 <!-- version list -->
 
+## v0.3.0 (2026-11-12)
+
+### Features
+
+- Per-trajectory save times in t_span
+  ([`678d384`](https://github.com/lawrenceberry/modax/commit/678d384021bacef96c6b8ac1f805623933cbf9fe))
+
+### Breaking Changes
+
+- Solve and rodas5P.solve drop tf_index and array_rhs. Pass an (N, n_save) t_span for per-trajectory
+  end times.
+
+
 ## v0.2.2 (2026-11-11)
 
 ### Bug Fixes
