@@ -6,9 +6,7 @@ import functools
 import gc
 import math
 from dataclasses import dataclass
-from typing import Literal, overload
 
-import jax
 from jax.typing import ArrayLike
 from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.descriptor import MLIRDispatcher
@@ -629,69 +627,6 @@ def _make_jax_launch(
     threads = _SHARED_BLOCK if shared else _LOCAL_BLOCK
     blocks = (n + threads - 1) // threads
     return make_launch(kernel, SOLVER_ARGTYPES, grid=blocks, block=threads)
-
-
-@overload
-def solve(
-    ode_fn: OdeFn,
-    y0: ArrayLike,
-    t_span: ArrayLike,
-    params: Params,
-    *,
-    rtol: float = 1e-8,
-    atol: float = 1e-10,
-    first_step: float | None = None,
-    max_steps: int = 100000,
-    return_stats: Literal[False] = False,
-    error_weights: ArrayLike | None = None,
-    pcoeff: float = 0.0,
-    icoeff: float = 1.0,
-    dcoeff: float = 0.0,
-    backend: Backend = "auto",
-    sens_error_control: bool = True,
-) -> jax.Array: ...
-
-
-@overload
-def solve(
-    ode_fn: OdeFn,
-    y0: ArrayLike,
-    t_span: ArrayLike,
-    params: Params,
-    *,
-    rtol: float = 1e-8,
-    atol: float = 1e-10,
-    first_step: float | None = None,
-    max_steps: int = 100000,
-    return_stats: Literal[True],
-    error_weights: ArrayLike | None = None,
-    pcoeff: float = 0.0,
-    icoeff: float = 1.0,
-    dcoeff: float = 0.0,
-    backend: Backend = "auto",
-    sens_error_control: bool = True,
-) -> tuple[jax.Array, SolverStats]: ...
-
-
-@overload
-def solve(
-    ode_fn: OdeFn,
-    y0: ArrayLike,
-    t_span: ArrayLike,
-    params: Params,
-    *,
-    rtol: float = 1e-8,
-    atol: float = 1e-10,
-    first_step: float | None = None,
-    max_steps: int = 100000,
-    return_stats: bool,
-    error_weights: ArrayLike | None = None,
-    pcoeff: float = 0.0,
-    icoeff: float = 1.0,
-    dcoeff: float = 0.0,
-    backend: Backend = "auto",
-    sens_error_control: bool = True,
-) -> SolveOutput: ...
 
 
 def solve(
