@@ -274,14 +274,6 @@ def test_a_plain_tsit5_solve_takes_a_save_hook_on_the_hierarchy_kernel():
     )
 
 
-def test_array_rhs_is_for_a_plain_rodas5p_solve_only():
-    for method in (Tsit5(), Auto()):
-        with pytest.raises(ValueError, match="array_rhs"):
-            modax.solve(
-                decay, DECAY_Y0, T_SPAN, DECAY_P, method=method, array_rhs=decay
-            )
-
-
 def test_method_options_are_checked():
     with pytest.raises(ValueError, match="ordering"):
         Rodas5P(ordering="metis")

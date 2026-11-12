@@ -86,6 +86,7 @@ class EnsembleInputs:
     weights: jax.Array
     n_vars: int
     n_system: int
+    time_rows: int = 1  # 1 for a shared save grid, N for one per trajectory
 
     @property
     def n(self) -> int:
@@ -97,7 +98,7 @@ class EnsembleInputs:
 
     @property
     def n_save(self) -> int:
-        return self.times.shape[0]
+        return self.times.shape[0] // self.time_rows
 
     @property
     def arrays(self) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
@@ -113,21 +114,43 @@ def prepare_inputs(
 ) -> EnsembleInputs:
     """Normalise a solve's arguments into the arrays the kernel reads.
 
-    With a ``spec`` the kernel integrates the joint ``[y, S]`` system, so this
+    A shared ``t_span`` stays as it is. An ``(N, n_save)`` one, one grid per
+    trajectory, flattens row by row, and also sets ``N`` when ``y0`` and
+    ``params`` are both 1-D. With a ``spec`` the kernel integrates the joint ``[y, S]`` system, so this
     widens the initial state and error weights to the augmented extent.
     """
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
+    times = jnp.asarray(t_span, dtype=jnp.float64)
+    if times.ndim not in (1, 2):
+        raise ValueError(
+            f"t_span must be (n_save,) or (N, n_save), got shape {times.shape}"
+        )
+    time_rows = 1
+    if times.ndim == 2 and times.shape[0] == 1:
+        times = times[0]
+    elif times.ndim == 2:
+        if n == 1 and jnp.ndim(y0) == 1 and jnp.ndim(params) == 1:
+            n = times.shape[0]
+            y0_arr = jnp.broadcast_to(y0_arr, (n, y0_arr.shape[1]))
+            params_arr = jnp.broadcast_to(params_arr, (n, params_arr.shape[1]))
+        elif times.shape[0] != n:
+            raise ValueError(
+                f"t_span has {times.shape[0]} rows, the ensemble {n} trajectories"
+            )
+        time_rows = n
+        times = times.reshape(-1)
     weights = build_error_weights(settings.error_weights, n, n_vars)
     if spec is not None:
         y0_arr = augmented_y0(y0_arr, spec)
         weights = augmented_error_weights(weights, spec)
     return EnsembleInputs(
         y0=y0_arr,
-        times=jnp.asarray(t_span, dtype=jnp.float64),
+        times=times,
         params=params_arr,
         weights=jnp.asarray(weights),
         n_vars=n_vars,
         n_system=n_vars if spec is None else spec.n_aug,
+        time_rows=time_rows,
     )
 
 
@@ -169,7 +192,7 @@ def ensemble_ffi_call(
         output_specs,
         input_kinds=SOLVER_INPUT_KINDS,
         scalar_f64_values=(settings.dt0, settings.rtol, settings.atol),
-        scalar_i32_values=(settings.max_steps,),
+        scalar_i32_values=(settings.max_steps, inputs.time_rows),
     )
 
 
@@ -204,11 +227,12 @@ def make_custom_vmap_solver(
     ``solve_impl(y0, t_span, params)`` returns the public solver result. The
     batching rule handles a ``vmap`` of single-trajectory solves over ``y0``,
     ``params`` or both, and runs it as one ensemble solve with a leading
-    trajectory axis. A batched ``t_span`` counts as one shared time grid.
+    trajectory axis. A batched ``t_span`` gives each trajectory its own save
+    times.
 
     Raises:
-        NotImplementedError: If the mapped ``y0`` or ``params`` is already an
-            ensemble, or a batched ``t_span`` is not 2-D.
+        NotImplementedError: If the mapped ``y0``, ``params`` or ``t_span`` is
+            already an ensemble.
     """
 
     @custom_vmap
@@ -225,15 +249,8 @@ def make_custom_vmap_solver(
     ) -> tuple[SolveOutput, object]:
         y0_batched, t_span_batched, params_batched = in_batched
         if t_span_batched:
-            t_span_arr = jnp.asarray(t_span)
-            if t_span_arr.ndim != 2:
-                raise NotImplementedError(
-                    "vmap over nested t_span values is not supported; use a shared "
-                    "t_span and vmap over y0 and/or params, or call the solver directly."
-                )
-            # JAX can mark closed-over constant save times as batched inside
-            # a larger vmapped function.  Treat that as a shared time grid.
-            t_span = t_span_arr[0]
+            # one grid per trajectory, (axis_size, n_save)
+            t_span = _broadcast_for_vmap(t_span, True, axis_size, "t_span")
 
         y0_arr = _broadcast_for_vmap(y0, y0_batched, axis_size, "y0")
         params_arr = _broadcast_for_vmap(params, params_batched, axis_size, "params")

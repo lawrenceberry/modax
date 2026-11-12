@@ -157,12 +157,13 @@ _F64_2D = types.float64[:, ::1]
 _I32_1D = types.int32[::1]
 SOLVER_ARGTYPES: tuple[Type, ...] = (
     _F64_2D,  # y0
-    _F64_1D,  # times
+    _F64_1D,  # times: n_save shared, or N * n_save, one row per trajectory
     _F64_2D,  # params
     types.float64,  # dt0
     types.float64,  # rtol
     types.float64,  # atol
     types.int32,  # max_steps
+    types.int32,  # time_rows: 1 for a shared grid, else N
     _F64_2D,  # error weights
     types.float64[:, :, ::1],  # hist
     _I32_1D,  # accepted steps
@@ -178,6 +179,7 @@ SOLVER_INPUT_KINDS: tuple[int, ...] = (
     ABI_SCALAR_F64,
     ABI_SCALAR_F64,
     ABI_SCALAR_F64,
+    ABI_SCALAR_I32,
     ABI_SCALAR_I32,
     ABI_ARRAY,
 )

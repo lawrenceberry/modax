@@ -215,6 +215,7 @@ def _make_body(
         rtol,
         atol,
         max_steps,
+        time_rows,
         weights,
         hist,
         accepted_out,
@@ -237,9 +238,12 @@ def _make_body(
             hist[i, 0, j] = y0[i, j]
             k7[j] = 0.0
 
-        n_save = times.shape[0]
-        t = times[0]
-        tf = times[n_save - 1]
+        # one save grid shared by the ensemble, or one row per trajectory,
+        # read at an offset into the whole array
+        n_save = times.shape[0] // time_rows
+        t_row = (i if time_rows > 1 else 0) * n_save
+        t = times[t_row]
+        tf = times[t_row + n_save - 1]
         # A non-positive dt0 is the "no first step given" sentinel: start from
         # 1e-6 of the integration window.
         dt = dt0 if dt0 > 0.0 else (tf - t) * 1e-6
@@ -320,10 +324,10 @@ def _make_body(
             t_new = t
             if accept:
                 t_new = t + dt_use
-                while save_idx < n_save and times[save_idx] <= t_new + 1e-12 * max(
-                    1.0, abs(times[save_idx])
-                ):
-                    theta = (times[save_idx] - t) / dt_use
+                while save_idx < n_save and times[
+                    t_row + save_idx
+                ] <= t_new + 1e-12 * max(1.0, abs(times[t_row + save_idx])):
+                    theta = (times[t_row + save_idx] - t) / dt_use
                     b1 = (
                         -1.0530884977290216
                         * theta
@@ -442,6 +446,7 @@ def _make_kernel(
             rtol,
             atol,
             max_steps,
+            time_rows,
             weights,
             hist,
             accepted_out,
@@ -468,6 +473,7 @@ def _make_kernel(
                 rtol,
                 atol,
                 max_steps,
+                time_rows,
                 weights,
                 hist,
                 accepted_out,
@@ -504,6 +510,7 @@ def _make_kernel(
         rtol,
         atol,
         max_steps,
+        time_rows,
         weights,
         hist,
         accepted_out,
@@ -529,6 +536,7 @@ def _make_kernel(
             rtol,
             atol,
             max_steps,
+            time_rows,
             weights,
             hist,
             accepted_out,
@@ -555,6 +563,7 @@ def _make_kernel(
         rtol,
         atol,
         max_steps,
+        time_rows,
         weights,
         hist,
         accepted_out,
@@ -582,6 +591,7 @@ def _make_kernel(
             rtol,
             atol,
             max_steps,
+            time_rows,
             weights,
             hist,
             accepted_out,
@@ -718,11 +728,13 @@ def solve(
             Writing ODE callbacks. A plain function is ``cuda.jit``-ed for you.
         y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``. Every trajectory
             shares a 1-D state.
-        t_span: Save times, ``(n_save,)``, shared across the ensemble. Not
-            differentiable.
+        t_span: Save times, ``(n_save,)`` shared by the ensemble or
+            ``(N, n_save)`` with one increasing row per trajectory. A row's
+            first entry is where that trajectory starts and its last where it
+            stops. Not differentiable.
         params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
-            from whichever of ``y0`` and ``params`` has a batch axis. If both do,
-            they must agree.
+            from whichever of ``y0``, ``params`` and ``t_span`` has a batch
+            axis. Batched ones must agree.
         rtol: Relative tolerance of the weighted RMS error norm.
         atol: Absolute tolerance of the weighted RMS error norm.
         first_step: Initial step size. ``None`` or any non-positive value

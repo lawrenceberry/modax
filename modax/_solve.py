@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from modax._hierarchy import Block, Hierarchy
     from modax._sensitivity import SensitivitySpec
     from modax._sparsity import Sparsity
-    from modax.rodas5P import ArrayRhs, HookedOutput, SaveHook
+    from modax.rodas5P import HookedOutput, SaveHook
 
 
 def _controller(method: Method) -> dict[str, Any]:
@@ -69,8 +69,6 @@ def solve(
     hook_size: int = 0,
     save_history: bool = True,
     sensitivity: SensitivitySpec | None = None,
-    tf_index: int | None = None,
-    array_rhs: ArrayRhs | None = None,
     trajectories_per_block: int | None = None,
     max_registers: int | None = None,
     cache: bool = False,
@@ -107,11 +105,14 @@ def solve(
         y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``. Every trajectory
             shares a 1-D state. For a hierarchy, the blocks' states upstream
             first (or in its ``layout``'s order).
-        t_span: Save times, ``(n_save,)``, shared across the ensemble. Not
-            differentiable.
+        t_span: Save times, ``(n_save,)`` shared by the ensemble or
+            ``(N, n_save)`` with one increasing row per trajectory. A row's
+            first entry is where that trajectory starts and its last where it
+            stops, so trajectories can start and end at times of their own.
+            Not differentiable.
         params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
-            from whichever of ``y0`` and ``params`` has a batch axis. If both do,
-            they must agree.
+            from whichever of ``y0``, ``params`` and ``t_span`` has a batch
+            axis. Batched ones must agree.
         method: :class:`~modax.Rodas5P` (``None`` means ``Rodas5P()``),
             :class:`~modax.Tsit5` or :class:`~modax.Auto`.
         rtol: Relative tolerance of the weighted RMS error norm.
@@ -144,10 +145,6 @@ def solve(
             consumes the saves itself.
         sensitivity: A sensitivity spec the solve integrates as its primal,
             so a save hook can form tangents. Tsit5 does not take it.
-        tf_index: A ``params`` column holding each trajectory's own end time.
-        array_rhs: An ``f(y, t, p, out)`` device function for the stage
-            evaluations, so they skip the tuple form ``ode_fn`` keeps for
-            differentiation. Plain Rodas5P solves only.
         trajectories_per_block: Trajectories per CUDA block. ``None`` means
             a warp.
         max_registers: A cap on the kernel's registers per thread.
@@ -161,9 +158,8 @@ def solve(
 
     Raises:
         TypeError: If ``method`` is not a Rodas5P, Tsit5 or Auto.
-        ValueError: If ``array_rhs`` comes with anything but a plain Rodas5P
-            solve, or a split system gets a ``sparsity`` or a ``y0`` of the
-            wrong width.
+        ValueError: If ``t_span``'s rows disagree with the ensemble, or a
+            split system gets a ``sparsity`` or a ``y0`` of the wrong width.
     """
     from modax import rodas5P, tsit5
     from modax._hierarchy import as_hierarchy
@@ -188,7 +184,6 @@ def solve(
         hook_size=hook_size,
         save_history=save_history,
         sensitivity=sensitivity,
-        tf_index=tf_index,
         trajectories_per_block=trajectories_per_block,
         max_registers=max_registers,
         cache=cache,
@@ -196,9 +191,6 @@ def solve(
     n_vars = int(jnp.shape(y0)[-1])
     hierarchy = as_hierarchy(ode_fn)
     split = ode_fn if isinstance(ode_fn, SplitHierarchy) else None
-    plain_rodas = hierarchy is None and split is None and isinstance(method, Rodas5P)
-    if array_rhs is not None and not plain_rodas:
-        raise ValueError("array_rhs applies to a plain system under Rodas5P only")
 
     if split is not None:
         if sparsity is not None:
@@ -224,7 +216,6 @@ def solve(
             save_hook is not None
             or not save_history
             or sensitivity is not None
-            or tf_index is not None
             or trajectories_per_block is not None
             or max_registers is not None
             or cache
@@ -263,7 +254,6 @@ def solve(
         params,
         method=method,
         sparsity=sparsity,
-        array_rhs=array_rhs,
         **common,
         **kernel,
         **_controller(method),

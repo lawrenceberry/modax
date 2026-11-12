@@ -11,7 +11,7 @@ import modax
 y = modax.solve(
     ode_fn,
     y0,          # (n_vars,) or (N, n_vars)     initial state(s)
-    t_span,      # (n_save,) output times (shared across the ensemble)
+    t_span,      # (n_save,) shared save times, or (N, n_save) one row each
     params,      # (n_params,) or (N, n_params) per-trajectory parameters
     method=modax.Rodas5P(                # the default; or modax.Tsit5(), modax.Auto()
         lu_precision="fp32",             # the LU's precision
@@ -37,11 +37,11 @@ Importing `modax` enables JAX float64. All arguments and their defaults are docu
 | Argument | Description | Shape | Notes |
 |----------|-------------|-------|-------|
 | `y0` | the initial state $\mathbf{y}(t_0)$ of each trajectory | `(n_vars,)` or `(N, n_vars)` | broadcast across the ensemble when 1-D |
-| `t_span` | the times at which the solution is saved; the first is $t_0$ and the last the end of the integration | `(n_save,)` | output times, shared across the ensemble |
+| `t_span` | the times at which the solution is saved; the first is $t_0$ and the last the end of the integration | `(n_save,)` or `(N, n_save)` | shared by the ensemble when 1-D, otherwise one grid per trajectory, so each can start and end at times of its own |
 | `params` | the parameters $\mathbf{p}$ passed to `ode_fn` for each trajectory | `(n_params,)` or `(N, n_params)` | one row per trajectory |
 | result | the state of every trajectory at every save time | `(N, n_save, n_vars)` | |
 
-`N` is taken from whichever input is batched; if both are, they must agree.
+`N` comes from whichever of `y0`, `params` and `t_span` is batched. Batched inputs must agree.
 `return_stats=True` adds a dict of per-trajectory step counters alongside the
 history.
 

@@ -201,10 +201,9 @@ A method's numerics live on its object (`modax/_methods.py`): `Rodas5P`'s
 `lu_precision`, `gains` and `ordering`, `Tsit5`'s `gains` and `backend`.
 Two kernels sit under it: Rodas5P's, which also runs hierarchies (and so
 Tsit5 and `Auto` blocks), and the plain Tsit5 kernel, which has no save hook,
-`tf_index`, `cache` or launch tuning. A plain Tsit5 solve that asks for one of
-those is routed to a one-block hierarchy, as a plain `Auto` solve always is;
-Tsit5 ignores `sparsity`. `array_rhs` is the one option only a plain Rodas5P
-solve takes, and it raises elsewhere. `modax.rodas5P.solve` and
+`cache` or launch tuning. A plain Tsit5 solve that asks for one of those is
+routed to a one-block hierarchy, as a plain `Auto` solve always is; Tsit5
+ignores `sparsity`. `modax.rodas5P.solve` and
 `modax.tsit5.solve` are the per-method solvers underneath, with the flat
 keyword arguments (including `split=True`); the benchmarks, examples and most
 tests call them directly.
@@ -371,7 +370,13 @@ Things to know when touching this:
   (`write_sensitivity_time_derivative`). Dropping it does not merely lose order:
   those rows of `dT` are thread-local and hold whatever was there before, so
   every step is rejected and the solve silently returns its initial state.
-- `tf_index` names a `params` column holding each trajectory's own end time;
+- `t_span` is `(n_save,)`, shared, or `(N, n_save)`, one grid per trajectory
+  (its start, saves and end). The kernels always take it flat, `n_save` or
+  `N * n_save` long, with an `int32` scalar `time_rows` (1 or `N`), and
+  each reads its row at offset `(i if time_rows > 1 else 0) * n_save`. A
+  shared grid then reaches the launch without a reshape, which cost 0.15 ms
+  of eager dispatch per solve when it was 2-D. A batched `t_span` under
+  `jax.vmap` becomes per-trajectory grids.
   `max_registers` caps the per-thread register count.
 
 ### Writing ODE callbacks
@@ -438,10 +443,6 @@ for a right-hand side whose coefficients depend on `t` alone, all of it -- is
 one computation for LLVM to CSE rather than one per sweep. Measured at N128:
 665.9 ms with the loop, 594.7 ms with literal seeds, 508.8 ms with eight seeds
 per call, against 552 ms for the hand-written Jacobian the sweeps replaced.
-`array_rhs` is the last piece: the primal stage evaluations do not need the
-tuple form (that exists for Enzyme), so a caller with an `f(y, t, p, out)`
-device function hands it in and the eight evaluations per step call it
-directly, worth 15 ms on DISCO-EB.
 
 Enzyme's `opt` pipeline is `-passes=enzyme,adce,globaldce,instnamer`.
 `instcombine` used to sit in it and had to come out: on a large kernel it

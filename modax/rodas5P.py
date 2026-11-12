@@ -59,13 +59,6 @@ from modax._sensitivity import quantity_hook as quantity_hook
 from modax._sparse_direct import Ordering, sparse_direct_solver_for
 from modax._sparsity import Pattern, Sparsity, dense_jacobian, normalize_sparsity
 
-ArrayRhs: TypeAlias = (
-    Callable[[Sequence[float], float, Sequence[float], MutableSequence[float]], None]
-    | MLIRDispatcher
-)
-"""A right-hand side over arrays, ``f(y, t, p, out)``, equivalent to the
-tuple-form ``ode_fn``."""
-
 SaveHook: TypeAlias = (
     Callable[
         [int, Sequence[float], float, Sequence[float], MutableSequence[float]], None
@@ -193,9 +186,7 @@ class KernelOptions:
     spec: SensitivitySpec | None = None
     sparsity: Pattern | None = None
     ordering: Ordering = "amd"
-    tf_index: int = -1
     max_registers: int | None = None
-    array_rhs: ArrayRhs | None = None
     # A save hook ``hook(save_idx, y, t, p_row, acc)`` the kernel calls at every
     # save time with the dense-output state, accumulating into the trajectory's
     # ``hook_size``-wide output row; ``save_history=False`` then keeps only the
@@ -415,7 +406,6 @@ def _make_kernel(
         The kernel and its trajectories per block.
     """
     spec, sparsity, lu_precision = options.spec, options.sparsity, options.lu_precision
-    tf_index, array_rhs = options.tf_index, options.array_rhs
     # Both compile-time constants: numba prunes the hook call and the history
     # writes it does not need, so a solve without a hook compiles as before.
     HAS_HOOK = options.save_hook is not None
@@ -466,17 +456,6 @@ def _make_kernel(
 
     if spec is not None:
         ode_write = make_augmented_local_writer(ode_fn, spec)
-    elif array_rhs is not None:
-        # The primal stage evaluations need no tuple form: that exists for
-        # Enzyme, which only ever sees ode_fn. A caller whose right-hand side
-        # also comes as ``f(y, t, p, out)`` over arrays can hand that in, and
-        # the eight stage evaluations per step call it directly.
-        _array_rhs = as_cuda_device(array_rhs)
-
-        @cuda.jit(device=True)
-        def ode_write(y_row, t, p_row, out):
-            _array_rhs(y_row, t, p_row, out)
-
     else:
         ode_write = make_cuda_local_vector_writer(ode_fn, n_vars)
 
@@ -766,12 +745,13 @@ def _make_kernel(
     @cuda.jit(**jit_options)
     def kernel(
         y0,
-        times,
+        times_all,
         params,
         dt0,
         rtol,
         atol,
         max_steps,
+        time_rows,
         weights,
         hist,
         accepted_out,
@@ -790,7 +770,10 @@ def _make_kernel(
             return
         diag = cuda.const.array_like(diag_table)
 
-        n_save = times.shape[0]
+        # one save grid shared by the ensemble, or one row per trajectory
+        n_save = times_all.shape[0] // time_rows
+        t_row = (i if time_rows > 1 else 0) * n_save
+        times = times_all[t_row : t_row + n_save]
         tf = times[n_save - 1]
         # A non-positive dt0 is the "no first step given" sentinel: start from
         # 1e-6 of the integration window.
@@ -829,12 +812,6 @@ def _make_kernel(
         err_prev = 1.0
         err_prev2 = 1.0
 
-        # Each trajectory may finish at its own end time, read from a parameter
-        # column; the save times it never reaches hold its final state.
-        tf_local = tf
-        if tf_index >= 0:
-            tf_local = params[i, tf_index]
-
         p_row = params[i]
 
         if HAS_HOOK:
@@ -845,10 +822,10 @@ def _make_kernel(
         # Purely this thread's loop: it steps until its own trajectory is done
         # and then falls out, with no reference to what the rest of the block is
         # doing.
-        while save_idx < n_save and t < tf_local and n_steps < max_steps:
+        while save_idx < n_save and t < tf and n_steps < max_steps:
             dt_use = dt
-            if dt_use > tf_local - t:
-                dt_use = tf_local - t
+            if dt_use > tf - t:
+                dt_use = tf - t
             if dt_use < 1e-30:
                 dt_use = 1e-30
             inv_dt = 1.0 / dt_use
@@ -1144,9 +1121,7 @@ def solve(
     sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
-    tf_index: int | None = None,
     max_registers: int | None = None,
-    array_rhs: ArrayRhs | None = None,
     save_hook: None = None,
     hook_size: int = 0,
     save_history: bool = True,
@@ -1176,9 +1151,7 @@ def solve(
     sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
-    tf_index: int | None = None,
     max_registers: int | None = None,
-    array_rhs: ArrayRhs | None = None,
     save_hook: None = None,
     hook_size: int = 0,
     save_history: bool = True,
@@ -1208,9 +1181,7 @@ def solve(
     sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
-    tf_index: int | None = None,
     max_registers: int | None = None,
-    array_rhs: ArrayRhs | None = None,
     save_hook: SaveHook,
     hook_size: int = 0,
     save_history: bool = True,
@@ -1240,9 +1211,7 @@ def solve(
     sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
-    tf_index: int | None = None,
     max_registers: int | None = None,
-    array_rhs: ArrayRhs | None = None,
     save_hook: SaveHook,
     hook_size: int = 0,
     save_history: bool = True,
@@ -1272,9 +1241,7 @@ def solve(
     sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
-    tf_index: int | None = None,
     max_registers: int | None = None,
-    array_rhs: ArrayRhs | None = None,
     save_hook: SaveHook | None = None,
     hook_size: int = 0,
     save_history: bool = True,
@@ -1303,9 +1270,7 @@ def solve(
     sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
-    tf_index: int | None = None,
     max_registers: int | None = None,
-    array_rhs: ArrayRhs | None = None,
     save_hook: SaveHook | None = None,
     hook_size: int = 0,
     save_history: bool = True,
@@ -1340,11 +1305,13 @@ def solve(
             :func:`modax.solve` instead.
         y0: Initial state, ``(n_vars,)`` or ``(N, n_vars)``. Every trajectory
             shares a 1-D state.
-        t_span: Save times, ``(n_save,)``, shared across the ensemble. Not
-            differentiable.
+        t_span: Save times, ``(n_save,)`` shared by the ensemble or
+            ``(N, n_save)`` with one increasing row per trajectory. A row's
+            first entry is where that trajectory starts and its last where it
+            stops. Not differentiable.
         params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
-            from whichever of ``y0`` and ``params`` has a batch axis. If both do,
-            they must agree.
+            from whichever of ``y0``, ``params`` and ``t_span`` has a batch
+            axis. Batched ones must agree.
         rtol: Relative tolerance of the weighted RMS error norm.
         atol: Absolute tolerance of the weighted RMS error norm.
         first_step: Initial step size. ``None`` or any non-positive value
@@ -1391,18 +1358,11 @@ def solve(
         ordering: Fill-reducing permutation for the sparse LU: ``"amd"``
             (SuiteSparse's AMD from ``cvxopt``) or ``"natural"``. Ignored
             without a pattern.
-        tf_index: A ``params`` column holding each trajectory's own end time.
-            Save times past it hold the final state. ``None`` ends every
-            trajectory at ``t_span[-1]``.
         max_registers: Cap on the kernel's per-thread register count, trading
             spills against occupancy.
-        array_rhs: An ``f(y, t, p, out)`` device function equivalent to
-            ``ode_fn``. The eight stage evaluations per step call it directly,
-            since only Enzyme needs the tuple form.
         save_hook: A device function ``hook(save_idx, y, t, p_row, acc)`` the
-            kernel calls at every save time (the initial state, each
-            dense-output save and the frozen saves past ``tf_index``) with
-            the state at that time. ``acc`` is the trajectory's row of the
+            kernel calls at every save time (the initial state and each
+            dense-output save) with the state at that time. ``acc`` is the trajectory's row of the
             ``(N, hook_size)`` output, zeroed at the start and kept across
             saves, so the hook can accumulate or store per-save quantities.
             :func:`quantity_hook` builds one from a device function of
@@ -1464,9 +1424,7 @@ def solve(
         sens_param_columns=sens_param_columns,
         sparsity=sparsity,
         ordering=ordering,
-        tf_index=tf_index,
         max_registers=max_registers,
-        array_rhs=array_rhs,
         save_hook=save_hook,
         hook_size=hook_size,
         save_history=save_history,
@@ -1498,9 +1456,7 @@ def _solve(
     sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
-    tf_index: int | None = None,
     max_registers: int | None = None,
-    array_rhs: ArrayRhs | None = None,
     save_hook: SaveHook | None = None,
     hook_size: int = 0,
     save_history: bool = True,
@@ -1543,9 +1499,7 @@ def _solve(
         # value twice.
         sparsity=None if sparsity is None else normalize_sparsity(sparsity, n_vars),
         ordering=ordering,
-        tf_index=-1 if tf_index is None else int(tf_index),
         max_registers=max_registers,
-        array_rhs=array_rhs,
         save_hook=save_hook,
         hook_size=int(hook_size),
         save_history=bool(save_history),

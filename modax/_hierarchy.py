@@ -2050,7 +2050,7 @@ def _emit_kernel(
 
     w(
         0,
-        "def kernel(y0, times, params, dt0, rtol, atol, max_steps, weights, hist, accepted_out, rejected_out, loop_out, hook_out):",
+        "def kernel(y0, times_all, params, dt0, rtol, atol, max_steps, time_rows, weights, hist, accepted_out, rejected_out, loop_out, hook_out):",
     )
     w(1, "i = cuda.blockIdx.x * TPB + cuda.threadIdx.x")
     w(
@@ -2060,7 +2060,10 @@ def _emit_kernel(
     w(1, "lane_mask = cuda.ballot_sync(0xFFFFFFFF, i < y0.shape[0])")
     w(1, "if i >= y0.shape[0]:")
     w(2, "return")
-    w(1, "n_save = times.shape[0]")
+    w(1, "# one save grid shared by the ensemble, or one row per trajectory")
+    w(1, "n_save = times_all.shape[0] // time_rows")
+    w(1, "t_row = (i if time_rows > 1 else 0) * n_save")
+    w(1, "times = times_all[t_row : t_row + n_save]")
     w(1, "tf = times[n_save - 1]")
     w(1, "dt_init = dt0 if dt0 > 0.0 else (tf - times[0]) * 1e-6")
     w(1, f"p_local = cuda.local.array({P}, np.float64)")
@@ -2210,9 +2213,6 @@ def _emit_kernel(
     w(1, "n_steps = 0")
     w(1, "accepted = 0")
     w(1, "rejected = 0")
-    w(1, "tf_local = tf")
-    if options.tf_index >= 0:
-        w(1, f"tf_local = params[i, {options.tf_index}]")
     for bp in plan.blocks:
         b = bp.b
         w(1, f"dt_{b} = dt_init")
@@ -2610,7 +2610,7 @@ def _emit_kernel(
         )
         w(
             indent,
-            f"need_{b} = {active} and nt_{b}[nn_{b} - 1] < {target} and nt_{b}[nn_{b} - 1] < tf_local and nn_{b} < {N} and n_steps < max_steps",
+            f"need_{b} = {active} and nt_{b}[nn_{b} - 1] < {target} and nt_{b}[nn_{b} - 1] < tf and nn_{b} < {N} and n_steps < max_steps",
         )
         w(indent, f"while cuda.any_sync(lane_mask, need_{b}):")
         i1 = indent + 1
@@ -2620,7 +2620,7 @@ def _emit_kernel(
         )
         w(
             i1,
-            f"go_{b} = {active} and nt_{b}[nn_{b} - 1] < tf_local and nn_{b} < {N} and n_steps < max_steps",
+            f"go_{b} = {active} and nt_{b}[nn_{b} - 1] < tf and nn_{b} < {N} and n_steps < max_steps",
         )
         w(i1, f"acc_{b} = False")
         w(i1, f"bail_{b} = False")
@@ -2663,8 +2663,8 @@ def _emit_kernel(
         i3 = i2 + 1
         w(i3, f"h_{b} = dt_{b}")
         w(i3, f"clamped_{b} = False")
-        w(i3, f"if h_{b} > tf_local - t0_{b}:")
-        w(i3 + 1, f"h_{b} = tf_local - t0_{b}")
+        w(i3, f"if h_{b} > tf - t0_{b}:")
+        w(i3 + 1, f"h_{b} = tf - t0_{b}")
         for u in bp.reads:
             w(i3, f"if h_{b} > nt_{u}[nn_{u} - 1] - t0_{b}:")
             w(i3 + 1, f"h_{b} = nt_{u}[nn_{u} - 1] - t0_{b}")
@@ -2767,7 +2767,7 @@ def _emit_kernel(
             auto_update(b, i3)
         w(
             i1,
-            f"need_{b} = (acc_{b} or bail_{b}) and nt_{b}[nn_{b} - 1] < {target} and nt_{b}[nn_{b} - 1] < tf_local and nn_{b} < {N} and n_steps < max_steps",
+            f"need_{b} = (acc_{b} or bail_{b}) and nt_{b}[nn_{b} - 1] < {target} and nt_{b}[nn_{b} - 1] < tf and nn_{b} < {N} and n_steps < max_steps",
         )
 
     # -- the main loop: the sink's steps --
@@ -2777,7 +2777,7 @@ def _emit_kernel(
         "# Every lane of the warp stays in the loop until all are done, so that the warp can vote.",
     )
     w(1, "while True:")
-    w(2, "running = save_idx < n_save and t < tf_local and n_steps < max_steps")
+    w(2, "running = save_idx < n_save and t < tf and n_steps < max_steps")
     w(2, "if not cuda.any_sync(lane_mask, running):")
     w(3, "break")
     for u in S.reads:
