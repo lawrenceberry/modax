@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Sequence
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
@@ -18,6 +18,7 @@ from modax._numba_common import (
     SolveSettings,
     build_error_weights,
 )
+from modax._params import Params, as_param_row, param_leaves
 from modax._sensitivity import (
     SensitivitySpec,
     augmented_error_weights,
@@ -108,7 +109,7 @@ class EnsembleInputs:
 def prepare_inputs(
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     settings: SolveSettings,
     spec: SensitivitySpec | None,
 ) -> EnsembleInputs:
@@ -119,6 +120,7 @@ def prepare_inputs(
     ``params`` are both 1-D. With a ``spec`` the kernel integrates the joint ``[y, S]`` system, so this
     widens the initial state and error weights to the augmented extent.
     """
+    params = as_param_row(params)
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
     times = jnp.asarray(t_span, dtype=jnp.float64)
     if times.ndim not in (1, 2):
@@ -274,15 +276,16 @@ def differentiable_solve(
     return_stats: bool,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     sens_error_control: bool,
-    sens_param_columns: Sequence[int] | None,
 ) -> SolveOutput:
     """Solve through the ``vmap`` and forward-sensitivity rules.
 
     ``impl(y0, t_span, params, *, options, settings, return_stats)`` is the
     plain launch, and ``options`` a dataclass with a ``spec`` field.
+    ``params`` may be a pytree, and the parameter columns differentiated are
+    those of its leaves JAX differentiates (:mod:`modax._params`).
     """
 
     # The JVP rule wraps the vmap-aware solvers rather than the other way
@@ -298,10 +301,10 @@ def differentiable_solve(
             )
         )
 
+    leaves = param_leaves(params)
     return make_sensitivity_solver(
         solver_for,
         jnp.shape(y0)[-1],
-        jnp.shape(params)[-1],
+        [leaf.shape[-1] for leaf in leaves],
         sens_error_control=sens_error_control,
-        sens_param_columns=sens_param_columns,
-    )(y0, t_span, params)
+    )(y0, t_span, *leaves)

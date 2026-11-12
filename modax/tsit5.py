@@ -6,7 +6,7 @@ import functools
 import gc
 import math
 from dataclasses import dataclass
-from typing import Literal, Sequence, overload
+from typing import Literal, overload
 
 import jax
 from jax.typing import ArrayLike
@@ -30,6 +30,7 @@ from modax._numba_common import (
     make_cuda_local_vector_writer,
     make_step_controller,
 )
+from modax._params import Params
 from modax._sensitivity import (
     SensitivitySpec,
     make_augmented_local_writer,
@@ -634,7 +635,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -647,7 +648,6 @@ def solve(
     dcoeff: float = 0.0,
     backend: Backend = "auto",
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
 ) -> jax.Array: ...
 
 
@@ -656,7 +656,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -669,7 +669,6 @@ def solve(
     dcoeff: float = 0.0,
     backend: Backend = "auto",
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
 ) -> tuple[jax.Array, SolverStats]: ...
 
 
@@ -678,7 +677,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -691,7 +690,6 @@ def solve(
     dcoeff: float = 0.0,
     backend: Backend = "auto",
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
 ) -> SolveOutput: ...
 
 
@@ -699,7 +697,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -712,7 +710,6 @@ def solve(
     dcoeff: float = 0.0,
     backend: Backend = "auto",
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
 ) -> SolveOutput:
     """Integrate an ensemble with the Tsit5 kernel, callable from JAX.
 
@@ -732,7 +729,14 @@ def solve(
             ``(N, n_save)`` with one increasing row per trajectory. A row's
             first entry is where that trajectory starts and its last where it
             stops. Not differentiable.
-        params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
+        params: Parameters: an array, ``(n_params,)`` or ``(N, n_params)``,
+            or a pytree of them (a tuple, a dict) whose leaves are ``()``,
+            ``(k,)`` or ``(N, k)`` and concatenate, in ``jax.tree.leaves``
+            order, into the row ``ode_fn`` sees. Differentiation follows the
+            leaves: only the columns of the leaves JAX differentiates get a
+            sensitivity, so ``jax.grad(loss)(rates, temp)`` with
+            ``params=(rates, temp)`` integrates the rates' columns alone,
+            when ``temp`` is a constant or wrapped in ``stop_gradient``. ``N`` comes
             from whichever of ``y0``, ``params`` and ``t_span`` has a batch
             axis. Batched ones must agree.
         rtol: Relative tolerance of the weighted RMS error norm.
@@ -762,8 +766,7 @@ def solve(
             error norm, so the joint solve takes the plain solve's steps and
             returns its value bit for bit, but nothing then ties the
             sensitivities' accuracy to ``rtol``.
-        sens_param_columns: The ``params`` columns to carry sensitivities
-            for. ``None`` means every column.
+
 
     Returns:
         The history, ``(N, n_save, n_vars)``, followed by the stats dict when
@@ -788,7 +791,6 @@ def solve(
         t_span,
         params,
         sens_error_control=sens_error_control,
-        sens_param_columns=sens_param_columns,
     )
 
 
@@ -796,7 +798,7 @@ def _solve_impl(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     options: KernelOptions,
     settings: SolveSettings,

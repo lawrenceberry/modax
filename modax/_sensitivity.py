@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, cast
 
 import jax
 import jax.numpy as jnp
@@ -59,6 +59,7 @@ from numba_enzyme import jvp
 
 from modax._jax_numba_custom_call import compile_target
 from modax._numba_common import OdeFn, SolveOutput, Solver, as_cuda_device
+from modax._params import combine_params
 
 Tangent = Callable[..., None]
 """An Enzyme forward sweep: ``(out, *args, *directions)``, writing ``out``."""
@@ -460,11 +461,10 @@ def _zero_tangent(x: ArrayLike) -> jax.Array | npt.NDArray[np.void]:
 def make_sensitivity_solver(
     solver_for: Callable[[SensitivitySpec | None], Solver],
     n_vars: int,
-    n_params: int,
+    leaf_widths: Sequence[int],
     *,
     sens_error_control: bool,
-    sens_param_columns: Sequence[int] | None = None,
-) -> Solver:
+) -> Callable[..., SolveOutput]:
     """Attach a forward-sensitivity JVP rule to one solver implementation.
 
     ``solver_for(None)`` is the plain solve, ``(y0, t_span, params)``, and
@@ -474,6 +474,11 @@ def make_sensitivity_solver(
     JVP path traces to a jaxpr and instantiates every symbolic zero, hiding which
     blocks the rule needs to integrate.
 
+    The returned function takes ``(y0, t_span, *leaves)``, the leaves of a
+    ``params`` pytree (:mod:`modax._params`) with ``leaf_widths`` columns
+    each. JAX's symbolic zeros are per leaf, so the leaves whose tangent is a
+    ``SymbolicZero`` are the parameter columns the joint solve leaves out.
+
     The rule fires only under a JAX differentiation transform, so an
     undifferentiated call pays nothing. It contracts ``S``, which depends only on
     the primals, with the input tangents. That contraction is linear, so JAX
@@ -482,25 +487,22 @@ def make_sensitivity_solver(
     NotImplementedError.
     """
     primal_solver = solver_for(None)
-    param_columns = (
-        None
-        if sens_param_columns is None
-        else tuple(int(c) for c in sens_param_columns)
-    )
+    widths = tuple(int(w) for w in leaf_widths)
+    n_params = sum(widths)
+    starts = tuple(sum(widths[:i]) for i in range(len(widths)))
 
     @jax.custom_jvp
-    def solve_fn(y0: ArrayLike, t_span: ArrayLike, params: ArrayLike) -> SolveOutput:
-        return primal_solver(y0, t_span, params)
+    def solve_fn(y0: ArrayLike, t_span: ArrayLike, *leaves: jax.Array) -> SolveOutput:
+        return primal_solver(y0, t_span, combine_params(leaves))
 
     @functools.partial(solve_fn.defjvp, symbolic_zeros=True)
     def solve_jvp(
-        primals: tuple[ArrayLike, ArrayLike, ArrayLike],
-        tangents: tuple[
-            ArrayLike | SymbolicZero, ArrayLike | SymbolicZero, ArrayLike | SymbolicZero
-        ],
+        primals: tuple[ArrayLike, ...],
+        tangents: tuple[ArrayLike | SymbolicZero, ...],
     ) -> tuple[SolveOutput, Any]:
-        y0, t_span, params = primals
-        dy0, dt_span, dparams = tangents
+        y0, t_span, *leaves = primals
+        dy0, dt_span, *dleaves = tangents
+        params = combine_params(tuple(jnp.asarray(leaf) for leaf in leaves))
 
         if not isinstance(dt_span, SymbolicZero):
             raise NotImplementedError(
@@ -509,12 +511,20 @@ def make_sensitivity_solver(
                 "differentiate with respect to y0 and/or params only"
             )
 
+        live = [i for i, d in enumerate(dleaves) if not isinstance(d, SymbolicZero)]
         wrt_y0 = not isinstance(dy0, SymbolicZero)
-        wrt_params = not isinstance(dparams, SymbolicZero)
+        wrt_params = bool(live)
         if not (wrt_y0 or wrt_params):
             out = primal_solver(y0, t_span, params)
             return out, jax.tree_util.tree_map(_zero_tangent, out)
 
+        # All leaves live is the whole row and none is no parameter block.
+        # Both keep the spec, and so the kernel, the same as a plain array's.
+        param_columns = (
+            None
+            if len(live) in (0, len(widths))
+            else tuple(c for i in live for c in range(starts[i], starts[i] + widths[i]))
+        )
         spec = SensitivitySpec(
             n_vars, n_params, wrt_y0, wrt_params, sens_error_control, param_columns
         )
@@ -533,13 +543,16 @@ def make_sensitivity_solver(
             )
             offset = spec.n_y0_dirs
         if wrt_params:
-            dp = _match_shape(dparams, axis_size, "params")
-            if spec.param_columns is not None:
-                # Only the chosen columns were integrated, so contract against
-                # just those. The transpose of this gather is a scatter, which
-                # is what makes jax.grad return a cotangent of the full width
-                # with zeros where no sensitivity was carried.
-                dp = dp[:, jnp.asarray(spec.param_columns)]
+            # Only the live leaves' columns were integrated, in leaf order, so
+            # their tangents side by side are the directions to contract with.
+            # Each leaf gets a cotangent of its own under transposition.
+            dp = jnp.concatenate(
+                [
+                    _match_shape(cast(ArrayLike, dleaves[i]), axis_size, "params")
+                    for i in live
+                ],
+                axis=1,
+            )
             tangent += jnp.einsum("nsik,nk->nsi", sens[..., offset:], dp)
         if stats is None:
             return state, tangent

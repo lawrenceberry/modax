@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, Any, Sequence, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from modax._methods import Auto, Method, Rodas5P, Tsit5, method_parts, option_or
 from modax._numba_common import OdeFn, PIDGains, SolveOutput
+from modax._params import Params
 from modax._sparsity import Pattern, normalize_sparsity, pattern_mask
 
 if TYPE_CHECKING:
@@ -53,7 +54,7 @@ def solve(
     ode_fn: OdeFn | Block | Hierarchy,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     method: Method | None = None,
     rtol: float = 1e-8,
@@ -64,7 +65,6 @@ def solve(
     return_stats: bool = False,
     sparsity: Sparsity | None = None,
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
     save_hook: SaveHook | None = None,
     hook_size: int = 0,
     save_history: bool = True,
@@ -110,7 +110,15 @@ def solve(
             first entry is where that trajectory starts and its last where it
             stops, so trajectories can start and end at times of their own.
             Not differentiable.
-        params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
+        params: Parameters: an array, ``(n_params,)`` or ``(N, n_params)``,
+            or a pytree of them (a tuple, a dict) whose leaves are ``()``,
+            ``(k,)`` or ``(N, k)`` and concatenate, in ``jax.tree.leaves``
+            order, into the row ``ode_fn`` sees. Differentiation follows the
+            leaves: only the columns of the leaves JAX differentiates get a
+            sensitivity, so ``jax.grad(loss)(rates, temp)`` with
+            ``params=(rates, temp)`` integrates the rates' columns alone,
+            when ``temp`` is a constant or wrapped in ``stop_gradient``. Each
+            column costs a second-order Enzyme sweep per stage. ``N`` comes
             from whichever of ``y0``, ``params`` and ``t_span`` has a batch
             axis. Batched ones must agree.
         method: :class:`~modax.Rodas5P` (``None`` means ``Rodas5P()``),
@@ -133,8 +141,7 @@ def solve(
         sens_error_control: Hold the sensitivities to the tolerance too, when
             differentiated. ``False`` takes them out of step-size control, so
             the joint solve takes the plain solve's steps.
-        sens_param_columns: The ``params`` columns to differentiate with
-            respect to. ``None`` means all of them.
+
         save_hook: A device function ``hook(save_idx, y, t, p_row, acc)``
             the kernel calls at every save time with the dense-output state,
             accumulating into an ``(N, hook_size)`` output (see
@@ -176,7 +183,6 @@ def solve(
         error_weights=error_weights,
         return_stats=return_stats,
         sens_error_control=sens_error_control,
-        sens_param_columns=sens_param_columns,
     )
     # what the hierarchy kernel and Rodas5P's have, and Tsit5's does not
     kernel: dict[str, Any] = dict(
@@ -234,7 +240,6 @@ def solve(
                 error_weights=error_weights,
                 return_stats=return_stats,
                 sens_error_control=sens_error_control,
-                sens_param_columns=sens_param_columns,
                 pcoeff=gains.pcoeff,
                 icoeff=gains.icoeff,
                 dcoeff=gains.dcoeff,

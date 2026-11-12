@@ -46,6 +46,7 @@ from modax._numba_common import (
     make_cuda_local_vector_writer,
     make_step_controller,
 )
+from modax._params import Params, param_width
 from modax._sensitivity import (
     SensitivitySpec,
     make_augmented_local_writer,
@@ -1104,7 +1105,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -1118,7 +1119,6 @@ def solve(
     lu_precision: LUPrecision = "fp32",
     trajectories_per_block: int | None = None,
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
     max_registers: int | None = None,
@@ -1134,7 +1134,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -1148,7 +1148,6 @@ def solve(
     lu_precision: LUPrecision = "fp32",
     trajectories_per_block: int | None = None,
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
     max_registers: int | None = None,
@@ -1164,7 +1163,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -1178,7 +1177,6 @@ def solve(
     lu_precision: LUPrecision = "fp32",
     trajectories_per_block: int | None = None,
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
     max_registers: int | None = None,
@@ -1194,7 +1192,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -1208,7 +1206,6 @@ def solve(
     lu_precision: LUPrecision = "fp32",
     trajectories_per_block: int | None = None,
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
     max_registers: int | None = None,
@@ -1224,7 +1221,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -1238,7 +1235,6 @@ def solve(
     lu_precision: LUPrecision = "fp32",
     trajectories_per_block: int | None = None,
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
     max_registers: int | None = None,
@@ -1253,7 +1249,7 @@ def solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -1267,7 +1263,6 @@ def solve(
     lu_precision: LUPrecision = "fp32",
     trajectories_per_block: int | None = None,
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
     max_registers: int | None = None,
@@ -1309,7 +1304,15 @@ def solve(
             ``(N, n_save)`` with one increasing row per trajectory. A row's
             first entry is where that trajectory starts and its last where it
             stops. Not differentiable.
-        params: Parameters, ``(n_params,)`` or ``(N, n_params)``. ``N`` comes
+        params: Parameters: an array, ``(n_params,)`` or ``(N, n_params)``,
+            or a pytree of them (a tuple, a dict) whose leaves are ``()``,
+            ``(k,)`` or ``(N, k)`` and concatenate, in ``jax.tree.leaves``
+            order, into the row ``ode_fn`` sees. Differentiation follows the
+            leaves: only the columns of the leaves JAX differentiates get a
+            sensitivity, so ``jax.grad(loss)(rates, temp)`` with
+            ``params=(rates, temp)`` integrates the rates' columns alone,
+            when ``temp`` is a constant or wrapped in ``stop_gradient``. Each
+            column costs a second-order Enzyme sweep per stage. ``N`` comes
             from whichever of ``y0``, ``params`` and ``t_span`` has a batch
             axis. Batched ones must agree.
         rtol: Relative tolerance of the weighted RMS error norm.
@@ -1343,10 +1346,7 @@ def solve(
             so the joint solve takes the plain solve's steps and matches its
             value bit for bit, but nothing then ties the sensitivities'
             accuracy to ``rtol``.
-        sens_param_columns: The ``params`` columns to carry sensitivities for.
-            Each costs a second-order Enzyme sweep per stage, so naming only
-            the ones you want skips columns that are not parameters at all,
-            like integration bounds. ``None`` means every column.
+
         sparsity: The Jacobian's pattern, as an ``(n_vars, n_vars)`` mask, a
             scipy sparse matrix or an ``(nnz, 2)`` index array. The Jacobian
             then costs one Enzyme sweep per colour of the column intersection
@@ -1421,7 +1421,6 @@ def solve(
         lu_precision=lu_precision,
         trajectories_per_block=trajectories_per_block,
         sens_error_control=sens_error_control,
-        sens_param_columns=sens_param_columns,
         sparsity=sparsity,
         ordering=ordering,
         max_registers=max_registers,
@@ -1439,7 +1438,7 @@ def _solve(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     rtol: float = 1e-8,
     atol: float = 1e-10,
@@ -1453,7 +1452,6 @@ def _solve(
     lu_precision: LUPrecision = "fp32",
     trajectories_per_block: int | None = None,
     sens_error_control: bool = True,
-    sens_param_columns: Sequence[int] | None = None,
     sparsity: Sparsity | None = None,
     ordering: Ordering = "amd",
     max_registers: int | None = None,
@@ -1515,7 +1513,7 @@ def _solve(
     if save_hook is None and not save_history:
         raise ValueError("save_history=False needs a save_hook to consume the saves")
     if sensitivity is not None:
-        sensitivity.check_extents(n_vars, jnp.shape(params)[-1], "the problem has")
+        sensitivity.check_extents(n_vars, param_width(params), "the problem has")
         options = replace(options, spec=sensitivity)
     if save_hook is not None or sensitivity is not None:
         # The hook's accumulator is a second output the vmap and JVP rules do
@@ -1535,7 +1533,6 @@ def _solve(
         t_span,
         params,
         sens_error_control=sens_error_control,
-        sens_param_columns=sens_param_columns,
     )
 
 
@@ -1543,7 +1540,7 @@ def _solve_impl(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     *,
     options: KernelOptions,
     settings: SolveSettings,
@@ -1558,7 +1555,7 @@ def _launch(
     ode_fn: OdeFn,
     y0: ArrayLike,
     t_span: ArrayLike,
-    params: ArrayLike,
+    params: Params,
     options: KernelOptions,
     settings: SolveSettings,
 ) -> tuple[jax.Array, jax.Array, SolverStats]:

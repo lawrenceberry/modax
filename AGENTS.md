@@ -531,6 +531,13 @@ touching the code.
 - **`jax.grad` needs no adjoint.** The rule materialises `S` and contracts it
   with the input tangents; that contraction is linear in the tangents, so JAX
   transposes it and reverse mode falls out of the same rule.
+- **`params` is a pytree, and its leaves pick the parameter columns.**
+  `modax/_params.py` concatenates the leaves into the kernel's row, and the
+  rule takes them as separate arguments, `(y0, t_span, *leaves)`, so a leaf
+  whose tangent is a `SymbolicZero` drops its columns from the joint solve.
+  There is no `sens_param_columns`: symbolic zeros are per leaf, never per
+  element, and that is the whole reason params are split this way. All leaves
+  live gives `param_columns=None`, the plain array's spec and kernel.
 - **Everything is a directional derivative, never a Jacobian.** `J_y S_k + J_p_k`
   is `jvp` of `ode_fn` seeded with `(S_k, 0, e_k)` — one sweep per column at any
   `n_vars`, where unit columns would cost `n_vars + 1`. The joint Jacobian's

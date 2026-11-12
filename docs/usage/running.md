@@ -38,7 +38,7 @@ Importing `modax` enables JAX float64. All arguments and their defaults are docu
 |----------|-------------|-------|-------|
 | `y0` | the initial state $\mathbf{y}(t_0)$ of each trajectory | `(n_vars,)` or `(N, n_vars)` | broadcast across the ensemble when 1-D |
 | `t_span` | the times at which the solution is saved; the first is $t_0$ and the last the end of the integration | `(n_save,)` or `(N, n_save)` | shared by the ensemble when 1-D, otherwise one grid per trajectory, so each can start and end at times of its own |
-| `params` | the parameters $\mathbf{p}$ passed to `ode_fn` for each trajectory | `(n_params,)` or `(N, n_params)` | one row per trajectory |
+| `params` | the parameters $\mathbf{p}$ passed to `ode_fn` for each trajectory | `(n_params,)` or `(N, n_params)`, or a pytree of such leaves | one row per trajectory;see [choosing what to differentiate](gradients.md#choosing-what-to-differentiate) |
 | result | the state of every trajectory at every save time | `(N, n_save, n_vars)` | |
 
 `N` comes from whichever of `y0`, `params` and `t_span` is batched. Batched inputs must agree.

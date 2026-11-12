@@ -20,6 +20,30 @@ runs the same kernel as before at no additional cost.
 
 Sensitivity analysis is implemented in `modax/_sensitivity.py`.
 
+## Choosing what to differentiate
+
+Every parameter column you differentiate adds `n_vars` components to the
+joint system, so only differentiate the ones you need. `params` can
+be a pytree of arrays (a tuple, a dict, any registered node) as well as a
+single array. Its leaves are concatenated in `jax.tree.leaves` order into the
+row `ode_fn` sees, so the callback is unchanged. Each leaf is `()` (one shared
+column), `(k,)` (`k` shared columns) or `(N, k)` (one row per trajectory), and
+shared leaves broadcast beside per-trajectory ones.
+
+```python
+def loss(rates, temp):
+    y = modax.solve(ode_fn, y0, t_span, (rates, temp))   # p = (*rates, temp)
+    return jnp.sum((y[:, -1, :] - observed) ** 2)
+
+jax.grad(loss)(rates, temp)                  # integrates the rates' columns only
+jax.jacfwd(lambda r: modax.solve(ode_fn, y0, t_span, (r, temp)))(rates)
+modax.solve(ode_fn, y0, t_span, (rates, jax.lax.stop_gradient(temp)))
+```
+
+This works because JAX tracks symbolic zeros per leaf. A leaf that does not
+depend on what is being differentiated becomes a
+symbolic zero and the senstitivy rules will leave those columns out of the joint system.
+
 ## Forward sensitivity analysis
 
 Requesting a derivative integrates the continuous forward-sensitivity system
