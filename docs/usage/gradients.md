@@ -42,7 +42,7 @@ modax.solve(ode_fn, y0, t_span, (rates, jax.lax.stop_gradient(temp)))
 
 This works because JAX tracks symbolic zeros per leaf. A leaf that does not
 depend on what is being differentiated becomes a
-symbolic zero and the senstitivy rules will leave those columns out of the joint system.
+symbolic zero, and the sensitivity rule leaves its columns out of the joint system.
 
 ## Forward sensitivity analysis
 
