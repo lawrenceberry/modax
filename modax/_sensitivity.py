@@ -58,7 +58,7 @@ from numba_cuda_mlir.numba_cuda.typing.templates import Signature
 from numba_enzyme import jvp
 
 from modax._jax_numba_custom_call import compile_target
-from modax._numba_common import OdeFn, SolveOutput, Solver, as_cuda_device
+from modax._numba_common import OdeFn, SolverStats, as_cuda_device
 from modax._params import combine_params
 
 Tangent = Callable[..., None]
@@ -156,6 +156,35 @@ def _quantity_signature(n_outputs: int, n_vars: int, n_params: int) -> Signature
         types.float64,
         types.UniTuple(types.float64, n_params),
     )
+
+
+@functools.cache
+def quantity_count(quantities: Callable[..., Any], n_vars: int, n_params: int) -> int:
+    """How many values ``quantities(y, t, p)`` returns, from its inferred type.
+
+    numba types the function for the tuple arguments the kernel's own state
+    and parameter row stand for, which is all it takes to read the length of
+    the tuple it returns. Nothing is launched and no derivative is built.
+
+    Raises:
+        TypeError: If the function does not return a tuple of numbers.
+    """
+    args = (
+        types.UniTuple(types.float64, n_vars),
+        types.float64,
+        types.UniTuple(types.float64, n_params),
+    )
+    returned = as_cuda_device(quantities).compile_device(args).signature.return_type
+    if not (
+        isinstance(returned, types.BaseTuple)
+        and len(returned) > 0
+        and all(isinstance(t, types.Number) for t in returned)
+    ):
+        raise TypeError(
+            "a save_hook returns a non-empty tuple of numbers, one per quantity "
+            f"(write a single one as (q,)); this one returns {returned}"
+        )
+    return len(returned)
 
 
 @functools.cache
@@ -380,6 +409,7 @@ def clear_caches() -> None:
     seed_table.cache_clear()
     make_augmented_local_writer.cache_clear()
     quantity_hook.cache_clear()
+    quantity_count.cache_clear()
 
 
 def augmented_y0(y0_arr: jax.Array, spec: SensitivitySpec) -> jax.Array:
@@ -458,21 +488,33 @@ def _zero_tangent(x: ArrayLike) -> jax.Array | npt.NDArray[np.void]:
     return np.zeros(jnp.shape(x), dtype=jax.dtypes.float0)
 
 
+RawOutput = tuple[jax.Array, "jax.Array | None", "SolverStats | None"]
+"""What the solvers under the JVP and vmap rules return.
+
+``(hist, quantities, stats)``. ``hist`` is ``(N, n_save, n_system)``.
+``quantities`` is a save hook's output, ``(N, n_save, 1 + n_sens, n_out)``:
+each save's values and then their tangent along every direction of the
+launch's spec (``n_sens = 0`` without one), or ``None`` without a hook.
+``stats`` is the step counters, or ``None`` when not asked for.
+"""
+
+
 def make_sensitivity_solver(
-    solver_for: Callable[[SensitivitySpec | None], Solver],
+    solver_for: Callable[[SensitivitySpec | None], Callable[..., RawOutput]],
     n_vars: int,
     leaf_widths: Sequence[int],
     *,
     sens_error_control: bool,
-) -> Callable[..., SolveOutput]:
+) -> Callable[..., RawOutput]:
     """Attach a forward-sensitivity JVP rule to one solver implementation.
 
     ``solver_for(None)`` is the plain solve, ``(y0, t_span, params)``, and
     ``solver_for(spec)`` the solver for the joint ``[y, S]`` system of ``spec``,
-    with ``n_aug`` components in place of ``n_vars``. Both must already
-    handle ``vmap``. The rule sits *outside* ``custom_vmap`` because that
-    JVP path traces to a jaxpr and instantiates every symbolic zero, hiding which
-    blocks the rule needs to integrate.
+    with ``n_aug`` components in place of ``n_vars``. Both return a
+    :data:`RawOutput` and must already handle ``vmap``. The rule sits
+    *outside* ``custom_vmap`` because that JVP path traces to a jaxpr and
+    instantiates every symbolic zero, hiding which blocks the rule needs to
+    integrate.
 
     The returned function takes ``(y0, t_span, *leaves)``, the leaves of a
     ``params`` pytree (:mod:`modax._params`) with ``leaf_widths`` columns
@@ -480,10 +522,11 @@ def make_sensitivity_solver(
     ``SymbolicZero`` are the parameter columns the joint solve leaves out.
 
     The rule fires only under a JAX differentiation transform, so an
-    undifferentiated call pays nothing. It contracts ``S``, which depends only on
-    the primals, with the input tangents. That contraction is linear, so JAX
-    transposes it and ``jax.grad`` and ``jax.jacrev`` work off the same rule
-    with no adjoint solve. Differentiating with respect to ``t_span`` raises
+    undifferentiated call pays nothing. It contracts ``S``, and a save hook's
+    quantity tangents, which depend only on the primals, with the input
+    tangents. That contraction is linear, so JAX transposes it and
+    ``jax.grad`` and ``jax.jacrev`` work off the same rule with no adjoint
+    solve. Differentiating with respect to ``t_span`` raises
     NotImplementedError.
     """
     primal_solver = solver_for(None)
@@ -492,14 +535,14 @@ def make_sensitivity_solver(
     starts = tuple(sum(widths[:i]) for i in range(len(widths)))
 
     @jax.custom_jvp
-    def solve_fn(y0: ArrayLike, t_span: ArrayLike, *leaves: jax.Array) -> SolveOutput:
+    def solve_fn(y0: ArrayLike, t_span: ArrayLike, *leaves: jax.Array) -> RawOutput:
         return primal_solver(y0, t_span, combine_params(leaves))
 
     @functools.partial(solve_fn.defjvp, symbolic_zeros=True)
     def solve_jvp(
         primals: tuple[ArrayLike, ...],
         tangents: tuple[ArrayLike | SymbolicZero, ...],
-    ) -> tuple[SolveOutput, Any]:
+    ) -> tuple[RawOutput, Any]:
         y0, t_span, *leaves = primals
         dy0, dt_span, *dleaves = tangents
         params = combine_params(tuple(jnp.asarray(leaf) for leaf in leaves))
@@ -528,36 +571,30 @@ def make_sensitivity_solver(
         spec = SensitivitySpec(
             n_vars, n_params, wrt_y0, wrt_params, sens_error_control, param_columns
         )
-        out = solver_for(spec)(y0, t_span, params)
-        hist, stats = out if isinstance(out, tuple) else (out, None)
+        hist, quantities, stats = solver_for(spec)(y0, t_span, params)
         state, sens = split_augmented(hist, spec)
 
+        # The input tangents side by side, in the spec's direction order: the
+        # initial state, then the live leaves' columns in leaf order. Each
+        # leaf gets a cotangent of its own under transposition.
         axis_size = state.shape[0]
-        tangent = jnp.zeros_like(state)
-        offset = 0
+        directions = []
         if wrt_y0:
-            tangent += jnp.einsum(
-                "nsij,nj->nsi",
-                sens[..., : spec.n_y0_dirs],
-                _match_shape(dy0, axis_size, "y0"),
-            )
-            offset = spec.n_y0_dirs
-        if wrt_params:
-            # Only the live leaves' columns were integrated, in leaf order, so
-            # their tangents side by side are the directions to contract with.
-            # Each leaf gets a cotangent of its own under transposition.
-            dp = jnp.concatenate(
-                [
-                    _match_shape(cast(ArrayLike, dleaves[i]), axis_size, "params")
-                    for i in live
-                ],
-                axis=1,
-            )
-            tangent += jnp.einsum("nsik,nk->nsi", sens[..., offset:], dp)
-        if stats is None:
-            return state, tangent
+            directions.append(_match_shape(cast(ArrayLike, dy0), axis_size, "y0"))
+        directions += [
+            _match_shape(cast(ArrayLike, dleaves[i]), axis_size, "params") for i in live
+        ]
+        dirs = jnp.concatenate(directions, axis=1)
+        tangent = jnp.einsum("nsik,nk->nsi", sens, dirs)
+
+        if quantities is None:
+            q_out, dq_out = None, None
+        else:
+            q_out = quantities[:, :, :1]
+            dq_out = jnp.einsum("nsko,nk->nso", quantities[:, :, 1:], dirs)[:, :, None]
         # Step counters are integers and carry no derivative, but JAX still
         # wants a tangent of the right (float0) type for every output.
-        return (state, stats), (tangent, jax.tree_util.tree_map(_zero_tangent, stats))
+        d_stats = jax.tree_util.tree_map(_zero_tangent, stats)
+        return (state, q_out, stats), (tangent, dq_out, d_stats)
 
     return solve_fn

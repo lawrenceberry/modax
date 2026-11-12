@@ -45,6 +45,21 @@ Importing `modax` enables JAX float64. All arguments and their defaults are docu
 `return_stats=True` adds a dict of per-trajectory step counters alongside the
 history.
 
+## Keeping derived quantities
+
+A `save_hook` is a function that computes quantities derived from the state at every save time. It takes the same form as `ode_fn`, `(y, t, p) -> tuple`, is compiled the same way, and it returns values alongside the state history. If you set `save_history=False`, the solver does not store the state history, only the derived quantities. This is a helpful memory-saving option when the state is large and you only need a few derived quantities.
+
+```python
+def energy(y, t, p):
+    return (0.5 * (y[1] * y[1] + p[0] * y[0] * y[0]),)   # one quantity: (q,)
+
+final, q = modax.solve(ode_fn, y0, t_span, params,
+                       save_hook=energy, save_history=False)
+# final: (N, 1, n_vars), q: (N, n_save, 1)
+```
+
+The quantities differentiate as normal: `jax.grad` of a loss of `q` integrates the sensitivities and stores each quantity's tangents in the kernel.
+
 ## Writing ODE function callbacks
 
 The right-hand side of the ODE is compiled with

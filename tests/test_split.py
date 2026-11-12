@@ -136,9 +136,8 @@ def test_split_with_a_save_hook_sees_the_user_layout():
     from numba_cuda_mlir import cuda as nbcuda
 
     @nbcuda.jit(device=True)
-    def hook(save_idx, y, t, p_row, acc):
-        acc[0] += y[0]
-        acc[1] += y[1]
+    def hook(y, t, p):
+        return (y[0], y[1])
 
     y0 = jnp.array([[0.3, 0.1]])
     p = jnp.array([[LAM, MU]])
@@ -153,10 +152,9 @@ def test_split_with_a_save_hook_sees_the_user_layout():
         atol=1e-10,
         lu_precision="fp64",
         save_hook=hook,
-        hook_size=2,
     )
     hist = np.asarray(hist)
-    assert np.allclose(np.asarray(acc)[0], hist[0].sum(axis=0), atol=1e-9)
+    assert np.allclose(np.asarray(acc), hist, atol=1e-9)
 
 
 def test_the_driver_steps_on_its_own():

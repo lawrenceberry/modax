@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass, replace
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import jax
 import jax.numpy as jnp
@@ -14,12 +14,15 @@ from jax.typing import ArrayLike
 from modax._jax_numba_custom_call import CudaLaunch, ffi_abi_call
 from modax._numba_common import (
     SOLVER_INPUT_KINDS,
+    HookedOutput,
     SolveOutput,
+    SolverStats,
     SolveSettings,
     build_error_weights,
 )
 from modax._params import Params, as_param_row, param_leaves
 from modax._sensitivity import (
+    RawOutput,
     SensitivitySpec,
     augmented_error_weights,
     augmented_y0,
@@ -222,15 +225,15 @@ def _broadcast_for_vmap(
 
 
 def make_custom_vmap_solver(
-    solve_impl: Callable[[jax.Array, jax.Array, jax.Array], SolveOutput],
+    solve_impl: Callable[[jax.Array, jax.Array, jax.Array], RawOutput],
 ) -> custom_vmap:
     """Wrap a solver so an outer ``jax.vmap`` becomes one ensemble launch.
 
-    ``solve_impl(y0, t_span, params)`` returns the public solver result. The
-    batching rule handles a ``vmap`` of single-trajectory solves over ``y0``,
-    ``params`` or both, and runs it as one ensemble solve with a leading
-    trajectory axis. A batched ``t_span`` gives each trajectory its own save
-    times.
+    ``solve_impl(y0, t_span, params)`` returns a :data:`RawOutput`, every
+    array of it with a leading trajectory axis. The batching rule handles a
+    ``vmap`` of single-trajectory solves over ``y0``, ``params`` or both, and
+    runs it as one ensemble solve. A batched ``t_span`` gives each trajectory
+    its own save times.
 
     Raises:
         NotImplementedError: If the mapped ``y0``, ``params`` or ``t_span`` is
@@ -238,7 +241,7 @@ def make_custom_vmap_solver(
     """
 
     @custom_vmap
-    def _solve(y0: ArrayLike, t_span: ArrayLike, params: ArrayLike) -> SolveOutput:
+    def _solve(y0: ArrayLike, t_span: ArrayLike, params: ArrayLike) -> RawOutput:
         return solve_impl(jnp.asarray(y0), jnp.asarray(t_span), jnp.asarray(params))
 
     @_solve.def_vmap
@@ -248,7 +251,7 @@ def make_custom_vmap_solver(
         y0: ArrayLike,
         t_span: ArrayLike,
         params: ArrayLike,
-    ) -> tuple[SolveOutput, object]:
+    ) -> tuple[RawOutput, object]:
         y0_batched, t_span_batched, params_batched = in_batched
         if t_span_batched:
             # one grid per trajectory, (axis_size, n_save)
@@ -257,20 +260,35 @@ def make_custom_vmap_solver(
         y0_arr = _broadcast_for_vmap(y0, y0_batched, axis_size, "y0")
         params_arr = _broadcast_for_vmap(params, params_batched, axis_size, "params")
         result = solve_impl(y0_arr, jnp.asarray(t_span), params_arr)
-
-        if not isinstance(result, tuple):
-            return result[:, None, :, :], True
-
-        sol, stats = result
-        stats_out = jax.tree_util.tree_map(lambda x: x[:, None], stats)
-        stats_batched = jax.tree_util.tree_map(lambda _: True, stats_out)
-        return (sol[:, None, :, :], stats_out), (True, stats_batched)
+        # Each mapped solve is an ensemble of one, so its outputs keep a
+        # trajectory axis of length 1 behind the vmap axis.
+        out = jax.tree_util.tree_map(lambda x: x[:, None], result)
+        return out, jax.tree_util.tree_map(lambda _: True, out)
 
     return _solve
 
 
+def pack_output(
+    hist: jax.Array,
+    quantities: jax.Array | None,
+    stats: SolverStats | None,
+    return_stats: bool,
+) -> SolveOutput | HookedOutput:
+    """A solve's outputs in the shape it returns.
+
+    The history alone, then the save hook's quantities when there is a hook,
+    then the stats when asked for.
+    """
+    out: tuple[Any, ...] = (hist,)
+    if quantities is not None:
+        out += (quantities,)
+    if return_stats:
+        out += (stats,)
+    return cast(Any, out[0] if len(out) == 1 else out)
+
+
 def differentiable_solve(
-    impl: Callable[..., SolveOutput],
+    impl: Callable[..., RawOutput],
     options: Any,
     settings: SolveSettings,
     return_stats: bool,
@@ -279,11 +297,13 @@ def differentiable_solve(
     params: Params,
     *,
     sens_error_control: bool,
-) -> SolveOutput:
+) -> SolveOutput | HookedOutput:
     """Solve through the ``vmap`` and forward-sensitivity rules.
 
     ``impl(y0, t_span, params, *, options, settings, return_stats)`` is the
-    plain launch, and ``options`` a dataclass with a ``spec`` field.
+    plain launch, returning a :data:`RawOutput`, and ``options`` a dataclass
+    with a ``spec`` field. A save hook's quantities are differentiable like
+    the history: the joint launch stores their tangents beside them.
     ``params`` may be a pytree, and the parameter columns differentiated are
     those of its leaves JAX differentiates (:mod:`modax._params`).
     """
@@ -302,9 +322,13 @@ def differentiable_solve(
         )
 
     leaves = param_leaves(params)
-    return make_sensitivity_solver(
+    raw = make_sensitivity_solver(
         solver_for,
         jnp.shape(y0)[-1],
         [leaf.shape[-1] for leaf in leaves],
         sens_error_control=sens_error_control,
     )(y0, t_span, *leaves)
+    hist, quantities, stats = raw
+    # the values alone: (N, n_save, n_out)
+    values = None if quantities is None else quantities[:, :, 0]
+    return pack_output(hist, values, stats, return_stats)

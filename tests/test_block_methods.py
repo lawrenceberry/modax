@@ -258,20 +258,15 @@ def test_a_plain_tsit5_solve_ignores_sparsity():
 
 def test_a_plain_tsit5_solve_takes_a_save_hook_on_the_hierarchy_kernel():
     """A hook routes a plain Tsit5 solve to a one-block hierarchy, still Tsit5."""
-    weights = cuda.to_device(np.full(T_SPAN.size, 1.0))
 
-    def total(save_idx, y, t, p_row, acc):
-        acc[0] += weights[save_idx] * y[0]
+    def first(y, t, p):
+        return (y[0],)
 
     kw = dict(method=Tsit5(), rtol=1e-9, atol=1e-11)
     hist = np.asarray(modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, **kw))
-    hooked, acc = modax.solve(
-        decay, DECAY_Y0, T_SPAN, DECAY_P, save_hook=total, hook_size=1, **kw
-    )
+    hooked, q = modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, save_hook=first, **kw)
     assert np.abs(np.asarray(hooked) - hist).max() < 1e-8
-    np.testing.assert_allclose(
-        np.asarray(acc)[:, 0], hist[:, :, 0].sum(axis=1), rtol=1e-8
-    )
+    np.testing.assert_allclose(np.asarray(q)[..., 0], hist[:, :, 0], rtol=1e-8)
 
 
 def test_method_options_are_checked():

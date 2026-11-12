@@ -79,13 +79,14 @@ N_VARS, N_SAVE = 2, 3
 
 
 def _recording_solver(specs: list[SensitivitySpec | None]):
-    """A stand-in for the kernels that notes each spec and returns zeros."""
+    """A stand-in for the kernels that notes each spec and returns a zero history."""
 
     def solver_for(spec):
         def solve(y0, t_span, params):
             specs.append(spec)
             n_system = N_VARS if spec is None else spec.n_aug
-            return jnp.zeros((jnp.shape(params)[0], N_SAVE, n_system))
+            hist = jnp.zeros((jnp.shape(params)[0], N_SAVE, n_system))
+            return hist, None, None
 
         return solve
 
@@ -97,7 +98,8 @@ def _solve_with_leaves(specs, leaves):
     fn = make_sensitivity_solver(
         _recording_solver(specs), N_VARS, widths, sens_error_control=True
     )
-    return fn(jnp.zeros((1, N_VARS)), jnp.arange(N_SAVE * 1.0), *leaves)
+    hist, _, _ = fn(jnp.zeros((1, N_VARS)), jnp.arange(N_SAVE * 1.0), *leaves)
+    return hist
 
 
 def test_only_the_differentiated_leaves_columns_are_integrated():
@@ -141,7 +143,7 @@ def test_differentiating_y0_alone_carries_no_parameter_block():
     fn = make_sensitivity_solver(
         _recording_solver(specs), N_VARS, widths, sens_error_control=True
     )
-    jax.jacfwd(lambda y: fn(y, jnp.arange(N_SAVE * 1.0), *leaves))(
+    jax.jacfwd(lambda y: fn(y, jnp.arange(N_SAVE * 1.0), *leaves)[0])(
         jnp.zeros((1, N_VARS))
     )
     assert specs[-1] == SensitivitySpec(N_VARS, 3, True, False, True, None)

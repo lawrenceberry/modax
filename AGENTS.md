@@ -138,14 +138,25 @@ without one. Very little of the suite therefore runs on a machine with no GPU.
 | Tsit5    | Explicit RK (order 5)  | Non-stiff systems | `tsit5.py`    |
 | Rodas5P  | Rosenbrock-W (order 5) | Stiff systems     | `rodas5P.py`  |
 
-Rodas5P also takes a **save hook**: a device function
-`hook(save_idx, y, t, p_row, acc)` the kernel calls at every save time with the
-dense-output state, accumulating into a per-trajectory `(n, hook_size)` output
-row (`save_hook=`, `hook_size=`; `save_history=False` then keeps only the final
-state). It lets a consumer of the history -- a line-of-sight integral, derived
-per-save quantities -- run inside the launch instead of storing the history.
-A hooked solve is a plain ensemble launch: no `jax.vmap`, no differentiation.
-`tests/test_save_hook.py` pins it against the history.
+Rodas5P also takes a **save hook**: a function `hook(y, t, p) -> tuple`,
+shaped like `ode_fn`, whose values the kernel keeps at every save time, so the
+solve returns `(history, quantities)` with quantities `(N, n_save, n_out)`
+(`save_history=False` then keeps only the final state). There is no
+`hook_size`: `quantity_count` types the hook for the tuple signature with
+`compile_device` and reads the length of its return type. It lets derived
+per-save quantities -- the source functions of a line-of-sight integral -- be
+kept instead of the whole history.
+
+The quantities differentiate and `vmap` like the history. Under both rules the
+solvers return `(hist, quantities, stats)` (`RawOutput` in `_sensitivity.py`),
+and `rodas5P._launch` turns the user's hook into the kernel's
+`hook(save_idx, y, t, p_row, acc)` with `quantity_hook` for the launch's spec,
+which stores each save's values and then one Enzyme tangent per direction.
+The JVP rule contracts those tangents with the input tangents exactly as it
+does `S`. `sensitivity=` still returns them raw, `(N, n_save, 1 + n_sens,
+n_out)`, for a caller that lays out its own joint system (DISCO-EB's one
+column per replica). `tests/test_save_hook.py` pins all of it against the
+history.
 
 Shared support modules:
 

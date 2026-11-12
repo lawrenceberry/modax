@@ -10,9 +10,6 @@ from typing import (
     Callable,
     Iterator,
     Literal,
-    MutableSequence,
-    Sequence,
-    TypeAlias,
     overload,
 )
 
@@ -29,6 +26,7 @@ from modax._hierarchy import as_hierarchy
 from modax._jax_common import (
     differentiable_solve,
     ensemble_ffi_call,
+    pack_output,
     prepare_inputs,
 )
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
@@ -37,8 +35,10 @@ from modax._methods import LUPrecision, Method
 from modax._numba_common import (
     HOOK_OUT_ARGTYPE,
     SOLVER_ARGTYPES,
+    HookedOutput,
     OdeFn,
     PIDGains,
+    SaveHook,
     SolveOutput,
     SolverStats,
     SolveSettings,
@@ -48,31 +48,17 @@ from modax._numba_common import (
 )
 from modax._params import Params, param_width
 from modax._sensitivity import (
+    RawOutput,
     SensitivitySpec,
     make_augmented_local_writer,
     make_second_tangent,
     make_tangent,
+    quantity_count,
+    quantity_hook,
     seed_table,
 )
-
-# Re-exported: the save hook of a quantity and its tangents, for solve(...).
-from modax._sensitivity import quantity_hook as quantity_hook
 from modax._sparse_direct import Ordering, sparse_direct_solver_for
 from modax._sparsity import Pattern, Sparsity, dense_jacobian, normalize_sparsity
-
-SaveHook: TypeAlias = (
-    Callable[
-        [int, Sequence[float], float, Sequence[float], MutableSequence[float]], None
-    ]
-    | MLIRDispatcher
-)
-"""A save hook ``hook(save_idx, y, t, p_row, acc)``, called at every save time."""
-
-HookedOutput: TypeAlias = (
-    tuple[jax.Array, jax.Array] | tuple[jax.Array, jax.Array, SolverStats]
-)
-"""What a hooked solve returns: the history and the hook rows, with the stats
-when asked."""
 
 # fmt: off
 # Rodas5P W-transformed coefficients (Steinebach 2023, BIT 63:27).
@@ -188,11 +174,13 @@ class KernelOptions:
     sparsity: Pattern | None = None
     ordering: Ordering = "amd"
     max_registers: int | None = None
-    # A save hook ``hook(save_idx, y, t, p_row, acc)`` the kernel calls at every
-    # save time with the dense-output state, accumulating into the trajectory's
-    # ``hook_size``-wide output row; ``save_history=False`` then keeps only the
-    # final state instead of the whole history.
-    save_hook: SaveHook | None = None
+    # The kernel's save hook, ``hook(save_idx, y, t, p_row, acc)``, called at
+    # every save time with the dense-output state and writing into the
+    # trajectory's ``hook_size``-wide output row; ``save_history=False`` then
+    # keeps only the final state instead of the whole history. A solve takes
+    # the user's quantities ``(y, t, p) -> tuple`` here, and ``_launch``
+    # replaces them with the hook ``quantity_hook`` builds for its spec.
+    save_hook: Any = None
     hook_size: int = 0
     save_history: bool = True
     # ``split=True`` integrates a pattern's one-way-coupled leading block as a
@@ -1123,7 +1111,6 @@ def solve(
     ordering: Ordering = "amd",
     max_registers: int | None = None,
     save_hook: None = None,
-    hook_size: int = 0,
     save_history: bool = True,
     sensitivity: SensitivitySpec | None = None,
 ) -> jax.Array: ...
@@ -1152,7 +1139,6 @@ def solve(
     ordering: Ordering = "amd",
     max_registers: int | None = None,
     save_hook: None = None,
-    hook_size: int = 0,
     save_history: bool = True,
     sensitivity: SensitivitySpec | None = None,
 ) -> tuple[jax.Array, SolverStats]: ...
@@ -1181,7 +1167,6 @@ def solve(
     ordering: Ordering = "amd",
     max_registers: int | None = None,
     save_hook: SaveHook,
-    hook_size: int = 0,
     save_history: bool = True,
     sensitivity: SensitivitySpec | None = None,
 ) -> tuple[jax.Array, jax.Array]: ...
@@ -1210,7 +1195,6 @@ def solve(
     ordering: Ordering = "amd",
     max_registers: int | None = None,
     save_hook: SaveHook,
-    hook_size: int = 0,
     save_history: bool = True,
     sensitivity: SensitivitySpec | None = None,
 ) -> tuple[jax.Array, jax.Array, SolverStats]: ...
@@ -1239,7 +1223,6 @@ def solve(
     ordering: Ordering = "amd",
     max_registers: int | None = None,
     save_hook: SaveHook | None = None,
-    hook_size: int = 0,
     save_history: bool = True,
     sensitivity: SensitivitySpec | None = None,
 ) -> SolveOutput | HookedOutput: ...
@@ -1267,7 +1250,6 @@ def solve(
     ordering: Ordering = "amd",
     max_registers: int | None = None,
     save_hook: SaveHook | None = None,
-    hook_size: int = 0,
     save_history: bool = True,
     sensitivity: SensitivitySpec | None = None,
     split: bool = False,
@@ -1360,25 +1342,24 @@ def solve(
             without a pattern.
         max_registers: Cap on the kernel's per-thread register count, trading
             spills against occupancy.
-        save_hook: A device function ``hook(save_idx, y, t, p_row, acc)`` the
-            kernel calls at every save time (the initial state and each
-            dense-output save) with the state at that time. ``acc`` is the trajectory's row of the
-            ``(N, hook_size)`` output, zeroed at the start and kept across
-            saves, so the hook can accumulate or store per-save quantities.
-            :func:`quantity_hook` builds one from a device function of
-            ``(y, t, p)``. A hooked solve supports neither ``jax.vmap`` nor
-            differentiation.
-        hook_size: Width of the hook's per-trajectory output row. Must be
-            positive when you pass a ``save_hook``.
+        save_hook: A function ``(y, t, p) -> tuple`` of the quantities to keep,
+            shaped like ``ode_fn`` and compiled the same way. The kernel
+            evaluates it at every save time on the dense-output state and
+            stores what it returns, so the solve returns them as
+            ``(N, n_save, n_out)``, with ``n_out`` read from the length of the
+            returned tuple. The quantities are differentiable, and work under
+            ``jax.vmap``, like the history: a differentiated solve stores
+            their tangents beside them, one Enzyme sweep of ``save_hook`` per
+            direction.
         save_history: Keep the full history. ``False`` keeps only the final
             state, and needs a ``save_hook`` to consume the saves.
         sensitivity: A :class:`~modax._sensitivity.SensitivitySpec` whose joint
             ``[y, S]`` system the solve integrates as its primal, in place of
             the JVP rule. The output is ``n_aug`` wide in the layout
-            ``split_augmented`` reads, and a save hook sees the state followed
-            by one ``n_vars`` block per direction, so it can form its own
-            tangents. ``y0`` stays the plain state, and the spec supplies the
-            initial sensitivities.
+            ``split_augmented`` reads, and a save hook's output is
+            ``(N, n_save, 1 + n_sens, n_out)``: the values, then their tangent
+            along each direction of the spec. ``y0`` stays the plain state, and
+            the spec supplies the initial sensitivities.
         split: Integrate the pattern's one-way-coupled leading block on steps
             of its own, ahead of the rest, which reads it as a quintic Hermite
             interpolant (:mod:`modax._split`).
@@ -1389,16 +1370,16 @@ def solve(
 
     Returns:
         The history, ``(N, n_save, n_vars)``, or ``(N, 1, n_vars)`` with
-        ``save_history=False``. A hooked solve returns ``(hist, hook_out)``,
-        with ``hook_out`` of shape ``(N, hook_size)``, and ``return_stats=True``
-        appends the stats dict to either.
+        ``save_history=False``. A hooked solve returns ``(hist, quantities)``,
+        with ``quantities`` of shape ``(N, n_save, n_out)``, and
+        ``return_stats=True`` appends the stats dict to either.
 
     Raises:
         TypeError: If ``ode_fn`` is a :class:`~modax.Block` or
             :class:`~modax.Hierarchy`.
-        ValueError: If ``trajectories_per_block`` is not positive,
-            you pass a ``save_hook`` without a positive ``hook_size``, or
-            ``save_history=False`` without a ``save_hook``.
+        TypeError: If ``save_hook`` does not return a tuple of numbers.
+        ValueError: If ``trajectories_per_block`` is not positive, or
+            ``save_history=False`` comes without a ``save_hook``.
     """
     if as_hierarchy(ode_fn) is not None:
         raise TypeError(
@@ -1425,7 +1406,6 @@ def solve(
         ordering=ordering,
         max_registers=max_registers,
         save_hook=save_hook,
-        hook_size=hook_size,
         save_history=save_history,
         sensitivity=sensitivity,
         split=split,
@@ -1456,7 +1436,6 @@ def _solve(
     ordering: Ordering = "amd",
     max_registers: int | None = None,
     save_hook: SaveHook | None = None,
-    hook_size: int = 0,
     save_history: bool = True,
     sensitivity: SensitivitySpec | None = None,
     split: bool = False,
@@ -1499,7 +1478,6 @@ def _solve(
         ordering=ordering,
         max_registers=max_registers,
         save_hook=save_hook,
-        hook_size=int(hook_size),
         save_history=bool(save_history),
         split=bool(split),
         split_max_driver=int(split_max_driver),
@@ -1508,21 +1486,19 @@ def _solve(
     )
     settings = SolveSettings(rtol, atol, first_step, max_steps, error_weights)
 
-    if save_hook is not None and hook_size <= 0:
-        raise ValueError("a save_hook needs a positive hook_size")
     if save_hook is None and not save_history:
         raise ValueError("save_history=False needs a save_hook to consume the saves")
+    if save_hook is not None:
+        # Typed here, on the host, so a hook of the wrong shape fails before
+        # any tracing does.
+        quantity_count(save_hook, n_vars, param_width(params))
     if sensitivity is not None:
         sensitivity.check_extents(n_vars, param_width(params), "the problem has")
+        # A joint solve asked for by name is its own primal: the plain
+        # ensemble launch, with the quantities' tangents left in place.
         options = replace(options, spec=sensitivity)
-    if save_hook is not None or sensitivity is not None:
-        # The hook's accumulator is a second output the vmap and JVP rules do
-        # not know, and a joint solve asked for by name is its own primal, so
-        # either is the plain ensemble launch.
-        hist, hook_out, stats = _launch(ode_fn, y0, t_span, params, options, settings)
-        if save_hook is None:
-            return (hist, stats) if return_stats else hist
-        return (hist, hook_out, stats) if return_stats else (hist, hook_out)
+        hist, quantities, stats = _launch(ode_fn, y0, t_span, params, options, settings)
+        return pack_output(hist, quantities, stats, return_stats)
 
     return differentiable_solve(
         functools.partial(_solve_impl, ode_fn),
@@ -1545,10 +1521,10 @@ def _solve_impl(
     options: KernelOptions,
     settings: SolveSettings,
     return_stats: bool,
-) -> SolveOutput:
-    """Run an unhooked solve and return the history, with the stats when asked."""
-    hist, _, stats = _launch(ode_fn, y0, t_span, params, options, settings)
-    return (hist, stats) if return_stats else hist
+) -> RawOutput:
+    """Run a solve and return its :data:`~modax._sensitivity.RawOutput`."""
+    hist, quantities, stats = _launch(ode_fn, y0, t_span, params, options, settings)
+    return hist, quantities, (stats if return_stats else None)
 
 
 def _launch(
@@ -1558,9 +1534,28 @@ def _launch(
     params: Params,
     options: KernelOptions,
     settings: SolveSettings,
-) -> tuple[jax.Array, jax.Array, SolverStats]:
-    """Run the kernel and return the history, the hook rows and the step counters."""
+) -> tuple[jax.Array, jax.Array | None, SolverStats]:
+    """Run the kernel and return the history, the hook's quantities and the step counters.
+
+    The quantities are ``(N, n_save, 1 + n_sens, n_out)``, each save's values
+    and then their tangents along the spec's directions, or ``None`` without
+    a hook.
+    """
     inputs = prepare_inputs(y0, t_span, params, settings, options.spec)
+    spec = options.spec
+    n_out = n_dirs = 0
+    if options.save_hook is not None:
+        # The user's quantities become the kernel's hook here, where the spec
+        # and the save count are known: values and tangents, save after save.
+        n_out = quantity_count(options.save_hook, inputs.n_vars, inputs.n_params)
+        n_dirs = 1 + (spec.n_sens if spec is not None else 0)
+        options = replace(
+            options,
+            save_hook=quantity_hook(
+                options.save_hook, n_out, inputs.n_vars, inputs.n_params, spec
+            ),
+            hook_size=n_out * n_dirs * inputs.n_save,
+        )
     launch = _make_jax_launch(ode_fn, inputs.n, inputs.n_vars, inputs.n_params, options)
     # No global scratch: the kernel keeps the state, the ten stage vectors and
     # df/dt in registers and thread-local memory.
@@ -1571,9 +1566,12 @@ def _launch(
         n_save_hist=inputs.n_save if options.save_history else 1,
         hook_size=max(1, options.hook_size),
     )
+    quantities = (
+        None if n_out == 0 else hook_out.reshape(inputs.n, inputs.n_save, n_dirs, n_out)
+    )
     return (
         hist,
-        hook_out,
+        quantities,
         SolverStats(
             accepted_steps=accepted, rejected_steps=rejected, loop_steps=loop_steps
         ),

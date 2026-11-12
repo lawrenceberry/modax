@@ -44,6 +44,22 @@ class SolverStats(TypedDict):
 SolveOutput: TypeAlias = jax.Array | tuple[jax.Array, SolverStats]
 """What an unhooked solve returns: the history, with the stats when asked."""
 
+HookedOutput: TypeAlias = (
+    tuple[jax.Array, jax.Array] | tuple[jax.Array, jax.Array, SolverStats]
+)
+"""What a hooked solve returns: the history and the hook's ``(N, n_save,
+n_out)`` quantities, with the stats when asked."""
+
+SaveHook: TypeAlias = (
+    Callable[[Sequence[float], float, Sequence[float]], tuple[float, ...]]
+    | MLIRDispatcher
+)
+"""A save hook, ``(y, t, p) -> tuple`` of the quantities to keep at every save.
+
+Shaped like the right-hand side, and compiled the same way. The length of the
+tuple it returns is the number of quantities, read from its inferred type.
+"""
+
 Solver: TypeAlias = Callable[[ArrayLike, ArrayLike, ArrayLike], SolveOutput]
 """A ``(y0, t_span, params)`` solve of fixed callback and settings."""
 

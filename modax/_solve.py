@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from modax._methods import Auto, Method, Rodas5P, Tsit5, method_parts, option_or
-from modax._numba_common import OdeFn, PIDGains, SolveOutput
+from modax._numba_common import HookedOutput, OdeFn, PIDGains, SaveHook, SolveOutput
 from modax._params import Params
 from modax._sparsity import Pattern, normalize_sparsity, pattern_mask
 
@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from modax._hierarchy import Block, Hierarchy
     from modax._sensitivity import SensitivitySpec
     from modax._sparsity import Sparsity
-    from modax.rodas5P import HookedOutput, SaveHook
 
 
 def _controller(method: Method) -> dict[str, Any]:
@@ -66,7 +65,6 @@ def solve(
     sparsity: Sparsity | None = None,
     sens_error_control: bool = True,
     save_hook: SaveHook | None = None,
-    hook_size: int = 0,
     save_history: bool = True,
     sensitivity: SensitivitySpec | None = None,
     trajectories_per_block: int | None = None,
@@ -142,16 +140,18 @@ def solve(
             differentiated. ``False`` takes them out of step-size control, so
             the joint solve takes the plain solve's steps.
 
-        save_hook: A device function ``hook(save_idx, y, t, p_row, acc)``
-            the kernel calls at every save time with the dense-output state,
-            accumulating into an ``(N, hook_size)`` output (see
-            :func:`modax.rodas5P.quantity_hook`). The solve then returns
-            ``(history, hook_output)`` and is not differentiable.
-        hook_size: The width of the save hook's output row.
+        save_hook: A function ``(y, t, p) -> tuple`` of quantities to keep
+            at every save time, shaped like ``ode_fn`` and compiled the same
+            way. The solve returns ``(history, quantities)``, the quantities
+            ``(N, n_save, n_out)`` with ``n_out`` the length of the tuple the
+            hook returns. They are differentiable like the history.
         save_history: ``False`` keeps only the final state, for a hook that
             consumes the saves itself.
         sensitivity: A sensitivity spec the solve integrates as its primal,
-            so a save hook can form tangents. Tsit5 does not take it.
+            in place of the JVP rule. The history is the joint ``[y, S]``
+            state, and a save hook's quantities ``(N, n_save, 1 + n_sens,
+            n_out)``, their values and then their tangents. Tsit5's own kernel
+            does not take it.
         trajectories_per_block: Trajectories per CUDA block. ``None`` means
             a warp.
         max_registers: A cap on the kernel's registers per thread.
@@ -161,10 +161,11 @@ def solve(
     Returns:
         The integration history, ``(N, n_save, n_vars)``. With
         ``return_stats``, ``(history, stats)``. With a save hook,
-        ``(history, hook_output)`` or ``(history, hook_output, stats)``.
+        ``(history, quantities)`` or ``(history, quantities, stats)``.
 
     Raises:
-        TypeError: If ``method`` is not a Rodas5P, Tsit5 or Auto.
+        TypeError: If ``method`` is not a Rodas5P, Tsit5 or Auto, or a
+            ``save_hook`` does not return a tuple of numbers.
         ValueError: If ``t_span``'s rows disagree with the ensemble, or a
             split system gets a ``sparsity`` or a ``y0`` of the wrong width.
     """
@@ -187,7 +188,6 @@ def solve(
     # what the hierarchy kernel and Rodas5P's have, and Tsit5's does not
     kernel: dict[str, Any] = dict(
         save_hook=save_hook,
-        hook_size=hook_size,
         save_history=save_history,
         sensitivity=sensitivity,
         trajectories_per_block=trajectories_per_block,

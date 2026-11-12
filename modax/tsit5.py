@@ -32,6 +32,7 @@ from modax._numba_common import (
 )
 from modax._params import Params
 from modax._sensitivity import (
+    RawOutput,
     SensitivitySpec,
     make_augmented_local_writer,
 )
@@ -782,7 +783,8 @@ def solve(
     options = KernelOptions(PIDGains(pcoeff, icoeff, dcoeff), backend)
     settings = SolveSettings(rtol, atol, first_step, max_steps, error_weights)
 
-    return differentiable_solve(
+    # no hook here, so never a HookedOutput
+    return differentiable_solve(  # ty: ignore[invalid-return-type]
         functools.partial(_solve_impl, ode_fn),
         options,
         settings,
@@ -803,7 +805,7 @@ def _solve_impl(
     options: KernelOptions,
     settings: SolveSettings,
     return_stats: bool,
-) -> SolveOutput:
+) -> RawOutput:
     inputs = prepare_inputs(y0, t_span, params, settings, options.spec)
     shared = options.uses_shared(inputs.n, inputs.n_system)
     launch = _make_jax_launch(
@@ -812,8 +814,9 @@ def _solve_impl(
     # No global scratch either way: the kernel keeps the state and the stage
     # vectors on chip or in thread-local memory.
     hist, accepted, rejected, loop_steps = ensemble_ffi_call(launch, inputs, settings)
-    if not return_stats:
-        return hist
-    return hist, SolverStats(
+    stats = SolverStats(
         accepted_steps=accepted, rejected_steps=rejected, loop_steps=loop_steps
     )
+    # Tsit5's own kernel has no save hook; a hooked Tsit5 solve runs on the
+    # hierarchy kernel.
+    return hist, None, (stats if return_stats else None)
