@@ -77,7 +77,7 @@ import numpy as np
 from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.descriptor import MLIRDispatcher
 
-from modax import tsit5 as T
+from modax import _tsit5 as T
 from modax._codegen import compile_device_source
 from modax._kernel_cache import enable_content_cache
 from modax._methods import (
@@ -449,8 +449,8 @@ class _Method:
 
 
 def resolve_method(bp: _BlockPlan, options) -> _Method:
-    """``bp``'s method: its own, else the solve's ``default_method``, else Rodas5P, with ``None`` options taken from the solve."""
-    method = bp.block.method or getattr(options, "default_method", None) or Rodas5P()
+    """``bp``'s method: its own, else the solve's, with ``None`` options taken from the solve."""
+    method = bp.block.method or options.method
     rodas, tsit = method_parts(method)
     kind = (
         "auto"
@@ -2035,7 +2035,7 @@ def _emit_kernel(
     plan: _Plan, options, n_nodes: tuple[int, ...], methods: tuple[_Method, ...]
 ) -> str:
     """The kernel's source: every block's buffers, the advance loops, the sink's step and the saves."""
-    from modax import rodas5P as R
+    from modax import _rodas5P as R
 
     S = plan.blocks[-1]
     n_vars, n_params, P = plan.n_vars, plan.n_params, plan.p_local
@@ -3078,11 +3078,11 @@ def make_hierarchy_kernel(
 ):
     """Rodas5P over a hierarchy of blocks, one trajectory per thread.
 
-    ``options`` is the :class:`modax.rodas5P.KernelOptions`. Returns
+    ``options`` is the :class:`~modax._options.KernelOptions`. Returns
     ``(kernel, trajectories_per_block)``. The kernel takes the standard argument
     list and writes the history in the user's layout.
     """
-    from modax import rodas5P as R
+    from modax import _rodas5P as R
 
     spec: SensitivitySpec | None = options.spec
     plan = plan_hierarchy(hierarchy, n_params, spec, layout, patterns)

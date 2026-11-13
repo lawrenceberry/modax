@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # the `reference.systems.python` modules build device arrays at import time,
 # which initialises the backend and fixes that policy for the whole process.
 import benchmarks.benchmark_common  # noqa: E402,F401
+import modax
 from benchmarks._sweep import (
     IDENTICAL_DIVERGENCE,
     Problem,
@@ -42,7 +43,6 @@ from benchmarks.benchmark_common import (  # noqa: E402
     JULIA_COLOR,
     MODAX_COLOR,
 )
-from modax.rodas5P import solve as rodas5P_solve
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
 from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import vdp
@@ -96,7 +96,7 @@ BENCHMARK = SweepBenchmark(
             color=MODAX_COLOR,
             marker="P",
             linestyle="--",
-            solve_fn=rodas5P_solve,
+            solve_fn=modax.solve,
             kwargs=_SOLVER_KWARGS,
             sparse=True,
         ),
@@ -105,7 +105,7 @@ BENCHMARK = SweepBenchmark(
             label="modax Rodas5P FP32 (non-sparse)",
             color=MODAX_COLOR,
             marker="X",
-            solve_fn=rodas5P_solve,
+            solve_fn=modax.solve,
             kwargs=_SOLVER_KWARGS,
         ),
         SweepCase(

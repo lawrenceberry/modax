@@ -23,7 +23,7 @@ The host runs the analysis once, at kernel build time:
 4. **Compile.** The factorisation and the two triangular solves become
    ``cuda.jit(device=True)`` functions with the same
    ``factorize_local(lu, ipiv)`` / ``solve_local(lu, ipiv, rhs)`` shape as
-   :py:obj:`modax.rodas5P.dense_lu_solver`, so the kernel has no branch.
+   :py:obj:`modax._rodas5P.dense_lu_solver`, so the kernel has no branch.
    Small structures get straight-line code with every slot a literal. Larger
    ones fall back to loops over index tables in constant memory.
 
@@ -358,7 +358,7 @@ def compressed_jacobian(pattern: Pattern, layout: SparseLULayout) -> CompressedJ
 class SparseDirectSolver:
     """A Rodas5P linear solver compiled for one sparsity pattern.
 
-    ``rodas5P.solve`` builds this from its ``sparsity``, so callers never hold
+    :func:`modax.solve` builds this from its ``sparsity``, so callers never hold
     one. :attr:`compressed` is both the layout the solver defines and the one
     the kernel fills, so the Enzyme sweeps and the factorisation agree on where
     each entry lives.

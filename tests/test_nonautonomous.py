@@ -1,4 +1,4 @@
-"""Non-autonomous correctness tests for the Rodas5P solver.
+"""Non-autonomous correctness tests for the Rodas5P solver, the default method.
 
 For a Rosenbrock-Wanner method to retain its order on a non-autonomous ODE,
 each stage must include the explicit ``dt * d_i * df/dt`` correction in
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from numba_cuda_mlir import cuda
 
-from modax.rodas5P import solve as rodas5Pnumba_solve
+from modax import solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -45,7 +45,7 @@ def _setup():
 @pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 def test_rodas5P_nonautonomous_matches_analytical():
     y0, t_span, params, exact = _setup()
-    sol = rodas5Pnumba_solve(
+    sol = solve(
         ode_fn,
         y0,
         t_span,
@@ -71,7 +71,7 @@ def test_rodas5P_autonomous_unchanged():
     params = np.array([[LAMBDA, 0.0]], dtype=np.float64)
     exact = np.exp(-LAMBDA * t_span)
 
-    sol = rodas5Pnumba_solve(
+    sol = solve(
         ode_fn,
         y0,
         t_span,

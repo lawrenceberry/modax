@@ -11,13 +11,13 @@ import numpy as np
 import pytest
 from numba_cuda_mlir import cuda
 
+from modax import Rodas5P, solve
 from modax._sparsity import (
     CompressedJacobian,
     colour_sparsity,
     dense_jacobian,
     normalize_sparsity,
 )
-from modax.rodas5P import solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -119,7 +119,9 @@ def test_a_pattern_solves_what_no_pattern_solves():
     y0 = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (64, 1))
     p = np.tile(np.array([0.7, 0.4, 0.2]), (64, 1))
     t = np.array([0.0, 0.5, 2.0])
-    kw = dict(rtol=1e-11, atol=1e-13, first_step=1e-4, lu_precision="fp64")
+    kw = dict(
+        rtol=1e-11, atol=1e-13, first_step=1e-4, method=Rodas5P(lu_precision="fp64")
+    )
 
     dense = np.asarray(solve(chain_ode, y0, t, p, **kw))
     sparse = np.asarray(solve(chain_ode, y0, t, p, sparsity=CHAIN, **kw))
@@ -132,7 +134,9 @@ def test_gradients_survive_compression():
     """The joint system only ever asks the solver for the n_vars block."""
     y0 = jnp.asarray([[1.0, 0.0, 0.0, 0.0]])
     t = jnp.asarray([0.0, 2.0])
-    kw = dict(rtol=1e-11, atol=1e-13, first_step=1e-4, lu_precision="fp64")
+    kw = dict(
+        rtol=1e-11, atol=1e-13, first_step=1e-4, method=Rodas5P(lu_precision="fp64")
+    )
 
     def loss(p, **extra):
         out = solve(chain_ode, y0, t, jnp.asarray([p]), **kw, **extra)

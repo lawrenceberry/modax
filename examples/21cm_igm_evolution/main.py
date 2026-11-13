@@ -37,6 +37,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import modax
 from benchmarks.benchmark_common import (
     MODAX_COLOR,
     configure_latex_plot_style,
@@ -44,7 +45,6 @@ from benchmarks.benchmark_common import (
 )
 from examples._common import Backends, parse_args, run_benchmark
 from examples.dual_backend import build_fn, build_rhs
-from modax.rodas5P import solve as rodas5P_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -82,17 +82,16 @@ SOLVER_MAX_STEPS = 4096
 # on Diffrax Kvaerno5 (GPU, jax.vmap) and on serial scipy.solve_ivp LSODA, the
 # no-GPU baseline used by codes such as ECHO21.
 MODAX_KWARGS = dict(
-    lu_precision="fp32",
+    method=modax.Rodas5P(
+        lu_precision="fp32", gains=modax.PIDGains(pcoeff=0.3, icoeff=0.4)
+    ),
     rtol=SOLVER_RTOL,
     atol=SOLVER_ATOL,
     first_step=SOLVER_FIRST_STEP,
     max_steps=SOLVER_MAX_STEPS,
     error_weights=jnp.array([1.0, 0.2, 0.2], dtype=jnp.float64),
-    pcoeff=0.3,
-    icoeff=0.4,
 )
 BACKENDS = Backends(
-    modax_solve=rodas5P_solve,
     modax_kwargs=MODAX_KWARGS,
     diffrax_method="kvaerno5",
     diffrax_kwargs=dict(
@@ -111,7 +110,7 @@ BACKENDS = Backends(
 # Background, sources and the right-hand side
 # ---------------------------------------------------------------------------
 #
-# The solvers want these in two forms: ``rodas5P`` compiles its right-hand
+# The solvers want these in two forms: modax compiles its right-hand
 # side with ``numba_cuda_mlir`` and differentiates it with Enzyme, while the
 # Diffrax reference backend traces ``jnp`` arrays.  Everything the right-hand
 # side shares with the observables below is therefore written once, as a
@@ -321,7 +320,7 @@ def initial_state():
 
 def solve_histories(params, n_save=N_SAVE):
     """Integrate the batched IGM histories on the modax Rodas5P solver."""
-    return rodas5P_solve(
+    return modax.solve(
         IGM_ODE.device, initial_state(), u_grid(n_save), params, **MODAX_KWARGS
     )
 

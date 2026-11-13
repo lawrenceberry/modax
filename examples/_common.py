@@ -15,7 +15,7 @@ import argparse
 import importlib
 import time
 from functools import partial
-from typing import Any, Callable, NamedTuple
+from typing import Any, NamedTuple
 
 import jax
 import numpy as np
@@ -28,14 +28,12 @@ BACKENDS = ("modax", "diffrax", "scipy")
 class Backends(NamedTuple):
     """How one example runs its ensemble on each backend.
 
-    ``modax_solve`` is the kernel solver (``modax.tsit5.solve`` or
-    ``modax.rodas5P.solve``); ``diffrax_method`` names the Diffrax reference
-    solver as its module suffix, ``"kvaerno5"`` or ``"tsit5"``. The three
-    keyword dicts are what each solver is called with beyond
-    ``(ode_fn, y0, t_span, params)``.
+    ``diffrax_method`` names the Diffrax reference solver as its module
+    suffix, ``"kvaerno5"`` or ``"tsit5"``. The three keyword dicts are what
+    each solver is called with beyond ``(ode_fn, y0, t_span, params)``,
+    :func:`modax.solve`'s including its ``method``.
     """
 
-    modax_solve: Callable
     modax_kwargs: dict[str, Any]
     diffrax_method: str
     diffrax_kwargs: dict[str, Any]
@@ -49,7 +47,9 @@ def make_solver(backend: str, backends: Backends):
     example that only ever runs on the kernel solver never imports Diffrax.
     """
     if backend == "modax":
-        return partial(backends.modax_solve, **backends.modax_kwargs)
+        import modax
+
+        return partial(modax.solve, **backends.modax_kwargs)
     if backend == "diffrax":
         module = importlib.import_module(
             f"reference.solvers.python.diffrax_{backends.diffrax_method}"

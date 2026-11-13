@@ -15,9 +15,8 @@ import numpy as np
 import pytest
 from numba_cuda_mlir import cuda
 
+from modax import Rodas5P, Tsit5, solve
 from modax._sensitivity import SensitivitySpec, augmented_y0, split_augmented
-from modax.rodas5P import solve as rodas5P_solve
-from modax.tsit5 import solve as tsit5_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -25,8 +24,8 @@ requires_cuda = pytest.mark.skipif(not cuda.is_available(), reason="CUDA require
 both_solvers = pytest.mark.parametrize(
     "solve_fn, kwargs",
     [
-        pytest.param(tsit5_solve, {}, id="tsit5"),
-        pytest.param(rodas5P_solve, {"lu_precision": "fp64"}, id="rodas5P"),
+        pytest.param(solve, {"method": Tsit5()}, id="tsit5"),
+        pytest.param(solve, {"method": Rodas5P(lu_precision="fp64")}, id="rodas5P"),
     ],
 )
 
@@ -364,7 +363,7 @@ def test_t_span_is_not_differentiable():
     with pytest.raises(NotImplementedError, match="t_span"):
         jax.grad(
             lambda t: jnp.sum(
-                tsit5_solve(cascade, y0, t, params, rtol=1e-8, atol=1e-10)
+                solve(cascade, y0, t, params, method=Tsit5(), rtol=1e-8, atol=1e-10)
             )
         )(jnp.asarray(T_SPAN))
 
@@ -465,11 +464,16 @@ def test_joint_solve_costs_about_what_the_plain_solve_costs():
     y0 = jnp.asarray(Y0)
     params = jnp.asarray([A, B])
     t_span = jnp.asarray(T_SPAN)
-    settings = dict(rtol=1e-8, atol=1e-10, return_stats=True, lu_precision="fp64")
+    settings = dict(
+        rtol=1e-8,
+        atol=1e-10,
+        return_stats=True,
+        method=Rodas5P(lu_precision="fp64"),
+    )
 
-    _, plain = rodas5P_solve(cascade, y0, t_span, params, **settings)
+    _, plain = solve(cascade, y0, t_span, params, **settings)
     (_, joint), _ = jax.jvp(
-        lambda p: rodas5P_solve(cascade, y0, t_span, p, **settings),
+        lambda p: solve(cascade, y0, t_span, p, **settings),
         (params,),
         (jnp.ones_like(params),),
     )

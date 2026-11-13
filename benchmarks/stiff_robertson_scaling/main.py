@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # the `reference.systems.python` modules build device arrays at import time,
 # which initialises the backend and fixes that policy for the whole process.
 import benchmarks.benchmark_common  # noqa: E402,F401
+import modax
 from benchmarks._sweep import (
     ENSEMBLE_SIZE,
     IDENTICAL_DIVERGENCE,
@@ -38,7 +39,6 @@ from benchmarks.benchmark_common import (  # noqa: E402
     JULIA_COLOR,
     MODAX_COLOR,
 )
-from modax.rodas5P import solve as rodas5P_solve
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
 from reference.solvers.python.gradsolve_engines import solve as gradsolve_solve
 from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
@@ -85,15 +85,15 @@ BENCHMARK = SweepBenchmark(
             color=MODAX_COLOR,
             marker="P",
             linestyle="--",
-            solve_fn=rodas5P_solve,
-            kwargs={**_SOLVER_KWARGS, "lu_precision": "fp32"},
+            solve_fn=modax.solve,
+            kwargs={**_SOLVER_KWARGS, "method": modax.Rodas5P(lu_precision="fp32")},
         ),
         SweepCase(
             key="modax rodas5P fp64",
             color=MODAX_COLOR,
             marker="X",
-            solve_fn=rodas5P_solve,
-            kwargs={**_SOLVER_KWARGS, "lu_precision": "fp64"},
+            solve_fn=modax.solve,
+            kwargs={**_SOLVER_KWARGS, "method": modax.Rodas5P(lu_precision="fp64")},
         ),
         SweepCase(
             key="diffrax kvaerno5",

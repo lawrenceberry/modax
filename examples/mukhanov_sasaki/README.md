@@ -324,7 +324,7 @@ $$
 ## Ensemble Solve
 
 Each $k$-mode is an independent ODE system. The script batches all modes into
-one call to `solve(...)` from `modax.tsit5`.
+one call to `modax.solve(..., method=modax.Tsit5())`.
 
 Each mode has its own start and stop e-folds, so the script maps each trajectory
 to a normalized solver time

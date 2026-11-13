@@ -25,6 +25,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import modax
 from benchmarks.benchmark_common import (
     MODAX_COLOR,
     configure_latex_plot_style,
@@ -32,7 +33,6 @@ from benchmarks.benchmark_common import (
 )
 from examples._common import Backends, parse_args, run_benchmark
 from examples.dual_backend import build_fn, build_rhs
-from modax.rodas5P import solve as rodas5P_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -96,7 +96,7 @@ P_PHOTON = math.pi**2 / 45.0
 # Helper functions
 # ---------------------------------------------------------------------------
 #
-# The solvers want the network in two forms: ``rodas5P`` compiles its
+# The solvers want the network in two forms: modax compiles its
 # right-hand side with ``numba_cuda_mlir`` and differentiates it with Enzyme,
 # while the Diffrax reference backend traces ``jnp`` arrays.  Each piece below
 # is therefore written once, as a factory over the names the two spell
@@ -499,14 +499,13 @@ SOLVER_MAX_STEPS = 1024
 # tolerances the GPU solvers use; it runs with an automatic initial step, as
 # serial codes do.
 MODAX_KWARGS = dict(
-    lu_precision="fp32",
+    method=modax.Rodas5P(lu_precision="fp32"),
     rtol=SOLVER_RTOL,
     atol=SOLVER_ATOL,
     first_step=SOLVER_FIRST_STEP,
     max_steps=SOLVER_MAX_STEPS,
 )
 BACKENDS = Backends(
-    modax_solve=rodas5P_solve,
     modax_kwargs=MODAX_KWARGS,
     diffrax_method="kvaerno5",
     diffrax_kwargs=dict(
@@ -543,7 +542,7 @@ def initial_conditions(params):
 
 def predict_abundances(params):
     """Integrate BBN network and return [Y_P, D/H] for given params."""
-    sol = rodas5P_solve(
+    sol = modax.solve(
         BBN_ODE.device, initial_conditions(params), X_SAVE, params, **MODAX_KWARGS
     )
     _, Yp, Yd, YHe = sol[0, -1]

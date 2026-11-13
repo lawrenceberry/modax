@@ -16,6 +16,8 @@ import numpy as np
 import pytest
 from numba_cuda_mlir import cuda
 
+from modax import Rodas5P, clear_caches
+from modax import solve as modax_solve
 from modax._sparse_direct import (
     ORDERINGS,
     SparseDirectSolver,
@@ -25,7 +27,6 @@ from modax._sparse_direct import (
     sparse_direct_solver,
 )
 from modax._sparsity import normalize_sparsity
-from modax.rodas5P import solve as rodas5P_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -370,12 +371,14 @@ def ring_ode(y, t, p):
 @requires_amd
 def test_a_dense_pattern_is_the_uninformative_end_of_the_same_mechanism():
     """No structure to find, so it must simply agree with the dense LU."""
-    kw = dict(rtol=1e-10, atol=1e-12, first_step=1e-8, lu_precision="fp64")
+    kw = dict(
+        rtol=1e-10, atol=1e-12, first_step=1e-8, method=Rodas5P(lu_precision="fp64")
+    )
     builtin = np.asarray(
-        rodas5P_solve(robertson, ROBERTSON_Y0, ROBERTSON_TIMES, ROBERTSON_PARAMS, **kw)
+        modax_solve(robertson, ROBERTSON_Y0, ROBERTSON_TIMES, ROBERTSON_PARAMS, **kw)
     )
     got = np.asarray(
-        rodas5P_solve(
+        modax_solve(
             robertson,
             ROBERTSON_Y0,
             ROBERTSON_TIMES,
@@ -399,10 +402,12 @@ def test_a_pattern_with_fill_in_solves_the_same():
     y0[:, 0] = 1.0
     params = np.tile(np.array([50.0, 1.0]), (64, 1))
     t = np.array([0.0, 0.01, 0.2])
-    kw = dict(rtol=1e-11, atol=1e-13, first_step=1e-6, lu_precision="fp64")
+    kw = dict(
+        rtol=1e-11, atol=1e-13, first_step=1e-6, method=Rodas5P(lu_precision="fp64")
+    )
 
-    builtin = np.asarray(rodas5P_solve(ring_ode, y0, t, params, **kw))
-    got = np.asarray(rodas5P_solve(ring_ode, y0, t, params, sparsity=_ring(6), **kw))
+    builtin = np.asarray(modax_solve(ring_ode, y0, t, params, **kw))
+    got = np.asarray(modax_solve(ring_ode, y0, t, params, sparsity=_ring(6), **kw))
     np.testing.assert_allclose(got, builtin, rtol=1e-8, atol=1e-11)
 
 
@@ -418,12 +423,12 @@ def test_a_pattern_without_a_diagonal_solves_the_same():
     y0 = np.tile(np.array([1.0, 0.0]), (64, 1))
     params = np.tile(np.array([3.0]), (64, 1))
     t = np.array([0.0, 0.5, 1.0])
-    kw = dict(rtol=1e-11, atol=1e-13, first_step=1e-6, lu_precision="fp64")
-
-    builtin = np.asarray(rodas5P_solve(oscillator_ode, y0, t, params, **kw))
-    got = np.asarray(
-        rodas5P_solve(oscillator_ode, y0, t, params, sparsity=pattern, **kw)
+    kw = dict(
+        rtol=1e-11, atol=1e-13, first_step=1e-6, method=Rodas5P(lu_precision="fp64")
     )
+
+    builtin = np.asarray(modax_solve(oscillator_ode, y0, t, params, **kw))
+    got = np.asarray(modax_solve(oscillator_ode, y0, t, params, sparsity=pattern, **kw))
     np.testing.assert_allclose(got, builtin, rtol=1e-8, atol=1e-11)
     exact = np.stack([np.cos(3.0 * t), -np.sin(3.0 * t)], axis=-1)
     np.testing.assert_allclose(got[0], exact, atol=1e-7)
@@ -439,25 +444,23 @@ def test_the_table_driven_form_solves_what_the_unrolled_one_does(monkeypatch):
     index tables are exercised at all.
     """
     import modax._sparse_direct as module
-    import modax.rodas5P as rodas5P
 
     y0 = np.zeros((64, 6))
     y0[:, 0] = 1.0
     params = np.tile(np.array([50.0, 1.0]), (64, 1))
     t = np.array([0.0, 0.01, 0.2])
-    kw = dict(rtol=1e-11, atol=1e-13, first_step=1e-6, lu_precision="fp64")
-
-    unrolled = np.asarray(
-        rodas5P_solve(ring_ode, y0, t, params, sparsity=_ring(6), **kw)
+    kw = dict(
+        rtol=1e-11, atol=1e-13, first_step=1e-6, method=Rodas5P(lu_precision="fp64")
     )
+
+    unrolled = np.asarray(modax_solve(ring_ode, y0, t, params, sparsity=_ring(6), **kw))
 
     monkeypatch.setattr(module, "MAX_UNROLLED_SUBSTITUTIONS", 0)
     monkeypatch.setattr(module, "MAX_UNROLLED_UPDATES", 0)
     # Both caches key on the pattern, and the pattern has not changed.
     module.sparse_direct_solver_for.cache_clear()
-    rodas5P._make_kernel.cache_clear()
-    rodas5P._make_jax_launch.cache_clear()
-    got = np.asarray(rodas5P_solve(ring_ode, y0, t, params, sparsity=_ring(6), **kw))
+    clear_caches()
+    got = np.asarray(modax_solve(ring_ode, y0, t, params, sparsity=_ring(6), **kw))
 
     # Same factorisation to the last bit, so the step sequences coincide too.
     np.testing.assert_array_equal(got, unrolled)
@@ -469,10 +472,12 @@ def test_gradients_survive_the_sparse_solver():
     """The joint system only ever asks the solver for the n_vars block."""
     y0 = jnp.zeros((1, 6)).at[0, 0].set(1.0)
     t = jnp.asarray([0.0, 0.2])
-    kw = dict(rtol=1e-11, atol=1e-13, first_step=1e-6, lu_precision="fp64")
+    kw = dict(
+        rtol=1e-11, atol=1e-13, first_step=1e-6, method=Rodas5P(lu_precision="fp64")
+    )
 
     def loss(p, **extra):
-        out = rodas5P_solve(ring_ode, y0, t, jnp.asarray([p]), **kw, **extra)
+        out = modax_solve(ring_ode, y0, t, jnp.asarray([p]), **kw, **extra)
         return jnp.sum(out[0, -1] ** 2)
 
     p0 = jnp.asarray([50.0, 1.0])

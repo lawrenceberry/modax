@@ -1,6 +1,6 @@
 """The Enzyme-derived Jacobian must match JAX's own, system by system.
 
-``rodas5P`` takes no Jacobian: it forward-differentiates the right-hand side
+Rodas5P takes no Jacobian: it forward-differentiates the right-hand side
 with Enzyme instead. The reference systems no longer carry hand-written
 Jacobians either, so the check on that derivation is JAX's forward-mode AD of
 the very same ``ode_fn`` -- an independent differentiation pipeline, even
@@ -8,7 +8,7 @@ though it reads the same equations. It also covers the ``df/dt`` the solver
 takes from the same sweeps, which is zero for every reference system, all of
 them being autonomous.
 
-The derivative is built here exactly as ``rodas5P._make_kernel`` builds it --
+The derivative is built here exactly as ``modax._rodas5P.make_kernel`` builds it --
 one directional derivative, seeded with a unit column at a time rather than
 with a colour group -- so this pins the call shape the kernel depends on as
 well as the values.

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import functools
-from dataclasses import dataclass, replace
-from typing import Any, Callable, cast
+from dataclasses import dataclass
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
@@ -14,19 +13,15 @@ from jax.typing import ArrayLike
 from modax._jax_numba_custom_call import CudaLaunch, ffi_abi_call
 from modax._numba_common import (
     SOLVER_INPUT_KINDS,
-    HookedOutput,
-    SolveOutput,
-    SolverStats,
     SolveSettings,
     build_error_weights,
 )
-from modax._params import Params, as_param_row, param_leaves
+from modax._params import Params, as_param_row
 from modax._sensitivity import (
     RawOutput,
     SensitivitySpec,
     augmented_error_weights,
     augmented_y0,
-    make_sensitivity_solver,
 )
 
 
@@ -164,33 +159,31 @@ def ensemble_ffi_call(
     inputs: EnsembleInputs,
     settings: SolveSettings,
     *,
-    n_save_hist: int | None = None,
-    hook_size: int | None = None,
+    n_save_hist: int,
+    hook_size: int,
 ) -> tuple[jax.Array, ...]:
     """Launch a solver kernel from JAX and return its outputs.
 
     Args:
-        n_save_hist: The history's time extent when it differs from the number
-            of save times. A kernel that keeps only the final state passes 1.
-        hook_size: Width of the save hook's per-trajectory accumulator rows,
-            which the kernel takes as one more output after the counters.
+        n_save_hist: The history's time extent: the number of save times, or
+            1 for a kernel that keeps only the final state.
+        hook_size: The width of the save hook's per-trajectory output rows,
+            at least 1.
 
     Returns:
-        ``(hist, accepted, rejected, loop)``, plus ``hook_out`` when
-        you give a ``hook_size``. ``hist`` is ``(N, n_hist, n_system)``, the
-        counters ``(N,)`` and ``hook_out`` ``(N, hook_size)``.
+        ``(hist, accepted, rejected, loop, hook_out)``: ``hist`` is ``(N,
+        n_save_hist, n_system)``, the counters ``(N,)`` and ``hook_out``
+        ``(N, hook_size)``.
     """
     n = inputs.n
     int_spec = jax.ShapeDtypeStruct((n,), jnp.int32)
-    n_hist = inputs.n_save if n_save_hist is None else n_save_hist
     output_specs = (
-        jax.ShapeDtypeStruct((n, n_hist, inputs.n_system), jnp.float64),
+        jax.ShapeDtypeStruct((n, n_save_hist, inputs.n_system), jnp.float64),
         int_spec,
         int_spec,
         int_spec,
+        jax.ShapeDtypeStruct((n, hook_size), jnp.float64),
     )
-    if hook_size is not None:
-        output_specs += (jax.ShapeDtypeStruct((n, hook_size), jnp.float64),)
     return ffi_abi_call(
         launch,
         inputs.arrays,
@@ -266,69 +259,3 @@ def make_custom_vmap_solver(
         return out, jax.tree_util.tree_map(lambda _: True, out)
 
     return _solve
-
-
-def pack_output(
-    hist: jax.Array,
-    quantities: jax.Array | None,
-    stats: SolverStats | None,
-    return_stats: bool,
-) -> SolveOutput | HookedOutput:
-    """A solve's outputs in the shape it returns.
-
-    The history alone, then the save hook's quantities when there is a hook,
-    then the stats when asked for.
-    """
-    out: tuple[Any, ...] = (hist,)
-    if quantities is not None:
-        out += (quantities,)
-    if return_stats:
-        out += (stats,)
-    return cast(Any, out[0] if len(out) == 1 else out)
-
-
-def differentiable_solve(
-    impl: Callable[..., RawOutput],
-    options: Any,
-    settings: SolveSettings,
-    return_stats: bool,
-    y0: ArrayLike,
-    t_span: ArrayLike,
-    params: Params,
-    *,
-    sens_error_control: bool,
-) -> SolveOutput | HookedOutput:
-    """Solve through the ``vmap`` and forward-sensitivity rules.
-
-    ``impl(y0, t_span, params, *, options, settings, return_stats)`` is the
-    plain launch, returning a :data:`RawOutput`, and ``options`` a dataclass
-    with a ``spec`` field. A save hook's quantities are differentiable like
-    the history: the joint launch stores their tangents beside them.
-    ``params`` may be a pytree, and the parameter columns differentiated are
-    those of its leaves JAX differentiates (:mod:`modax._params`).
-    """
-
-    # The JVP rule wraps the vmap-aware solvers rather than the other way
-    # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
-    # what tells the rule which sensitivity blocks it has to integrate.
-    def solver_for(spec: SensitivitySpec | None) -> custom_vmap:
-        return make_custom_vmap_solver(
-            functools.partial(
-                impl,
-                options=replace(options, spec=spec),
-                settings=settings,
-                return_stats=return_stats,
-            )
-        )
-
-    leaves = param_leaves(params)
-    raw = make_sensitivity_solver(
-        solver_for,
-        jnp.shape(y0)[-1],
-        [leaf.shape[-1] for leaf in leaves],
-        sens_error_control=sens_error_control,
-    )(y0, t_span, *leaves)
-    hist, quantities, stats = raw
-    # the values alone: (N, n_save, n_out)
-    values = None if quantities is None else quantities[:, :, 0]
-    return pack_output(hist, values, stats, return_stats)

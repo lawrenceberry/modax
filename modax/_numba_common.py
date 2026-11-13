@@ -1,4 +1,4 @@
-"""What the two kernels share: callback coercion, solve settings, the step
+"""What the kernels share: callback coercion, solve settings, the step
 controller and the kernel signature."""
 
 from __future__ import annotations
@@ -60,13 +60,10 @@ Shaped like the right-hand side, and compiled the same way. The length of the
 tuple it returns is the number of quantities, read from its inferred type.
 """
 
-Solver: TypeAlias = Callable[[ArrayLike, ArrayLike, ArrayLike], SolveOutput]
-"""A ``(y0, t_span, params)`` solve of fixed callback and settings."""
-
 
 @dataclass(frozen=True)
 class SolveSettings:
-    """Per-call settings both solvers pass to the kernel at launch.
+    """Per-call settings a solve passes to the kernel at launch.
 
     These select no compiled code. The tolerances, ``first_step`` and
     ``max_steps`` go in as scalars and the error weights as an array input.
@@ -138,8 +135,8 @@ def make_step_controller(
     factor, clipped to ``[factor_min, factor_max]``, and the error history to
     carry forward, which advances only on an accepted step. It clamps the
     error away from zero, infinity and NaN first, so a NaN norm shrinks the
-    step by ``factor_min`` instead of poisoning the history. Both kernels call
-    it once per attempted step, with their own ``order`` and factor bounds.
+    step by ``factor_min`` instead of poisoning the history. Every kernel calls
+    it once per attempted step, with its own ``order`` and factor bounds.
     """
     e1, e2, e3 = gains.exponents(order)
 
@@ -164,10 +161,9 @@ def make_step_controller(
     return next_step
 
 
-# Both kernels open with the same parameters -- the ensemble inputs, the scalar
-# step-control settings, and the history and counter outputs -- and differ only
-# in what follows (Rodas5P appends its save-hook output), so the leading argument types and ABI kinds
-# are declared once here.
+# Every kernel takes the same arguments -- the ensemble inputs, the scalar
+# step-control settings, the history and counter outputs, and the save hook's
+# output rows -- so their types and ABI kinds are declared once here.
 _F64_1D = types.float64[::1]
 _F64_2D = types.float64[:, ::1]
 _I32_1D = types.int32[::1]
@@ -185,9 +181,8 @@ SOLVER_ARGTYPES: tuple[Type, ...] = (
     _I32_1D,  # accepted steps
     _I32_1D,  # rejected steps
     _I32_1D,  # loop steps
+    _F64_2D,  # the (n, hook_size) rows a save hook writes
 )
-HOOK_OUT_ARGTYPE: Type = _F64_2D
-"""The ``(n, hook_size)`` rows a save hook accumulates into."""
 SOLVER_INPUT_KINDS: tuple[int, ...] = (
     ABI_ARRAY,
     ABI_ARRAY,

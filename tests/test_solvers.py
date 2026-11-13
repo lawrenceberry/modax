@@ -2,8 +2,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from modax.rodas5P import solve as rodas5Pnumba_solve
-from modax.tsit5 import solve as tsit5numba_solve
+from modax import Rodas5P, Tsit5, solve
 from tests.benchmark_helpers import (
     assert_case_output,
     benchmark_solve,
@@ -23,11 +22,12 @@ pytestmark = pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 def test_tsit5_reference_system(benchmark, case):
     result = benchmark_solve(
         benchmark,
-        lambda: tsit5numba_solve(
+        lambda: solve(
             case.ode_fn,
             case.y0,
             case.t_span,
             case.params,
+            method=Tsit5(),
             **case.kwargs,
         ),
     )
@@ -48,8 +48,8 @@ def test_tsit5_shared_matches_local():
     t_span = jnp.asarray(vdp.TIMES)
     kw = dict(first_step=1e-4, rtol=1e-6, atol=1e-8)
 
-    shared = tsit5numba_solve(ode_fn, y0, t_span, params, backend="shared", **kw)
-    local = tsit5numba_solve(ode_fn, y0, t_span, params, backend="local", **kw)
+    shared = solve(ode_fn, y0, t_span, params, method=Tsit5(backend="shared"), **kw)
+    local = solve(ode_fn, y0, t_span, params, method=Tsit5(backend="local"), **kw)
     assert float(jnp.max(jnp.abs(shared - local))) == 0.0
 
 
@@ -65,11 +65,17 @@ def test_tsit5_shared_backend_rejects_oversized_system():
     y0 = jnp.asarray(np.ascontiguousarray(y0))
     params = jnp.asarray(np.ascontiguousarray(params))
     with pytest.raises(ValueError, match="shared backend requires"):
-        tsit5numba_solve(ode_fn, y0, jnp.asarray(vdp.TIMES), params, backend="shared")
+        solve(
+            ode_fn,
+            y0,
+            jnp.asarray(vdp.TIMES),
+            params,
+            method=Tsit5(backend="shared"),
+        )
 
 
-@pytest.mark.parametrize("solve_fn", (tsit5numba_solve, rodas5Pnumba_solve))
-def test_default_first_step_matches_explicit(solve_fn):
+@pytest.mark.parametrize("method", (Tsit5(), Rodas5P()))
+def test_default_first_step_matches_explicit(method):
     """``first_step=None`` is derived inside the kernel, so it survives tracing.
 
     ``dt0`` reaches the kernel as a launch-time scalar, which rules out deriving
@@ -85,14 +91,14 @@ def test_default_first_step_matches_explicit(solve_fn):
     y0 = jnp.asarray(np.ascontiguousarray(y0))
     params = jnp.asarray(np.ascontiguousarray(params))
     t_span = jnp.asarray(vdp.TIMES)
-    kw = dict(rtol=1e-6, atol=1e-8)
+    kw = dict(rtol=1e-6, atol=1e-8, method=method)
     window = float(t_span[-1] - t_span[0])
 
-    explicit = solve_fn(ode_fn, y0, t_span, params, first_step=window * 1e-6, **kw)
-    default = solve_fn(ode_fn, y0, t_span, params, **kw)
+    explicit = solve(ode_fn, y0, t_span, params, first_step=window * 1e-6, **kw)
+    default = solve(ode_fn, y0, t_span, params, **kw)
     assert float(jnp.max(jnp.abs(default - explicit))) == 0.0
 
-    jitted = jax.jit(lambda y, p: solve_fn(ode_fn, y, t_span, p, **kw))(y0, params)
+    jitted = jax.jit(lambda y, p: solve(ode_fn, y, t_span, p, **kw))(y0, params)
     assert float(jnp.max(jnp.abs(jitted - explicit))) == 0.0
 
 
@@ -101,12 +107,12 @@ def test_default_first_step_matches_explicit(solve_fn):
 def test_rodas5P_reference_system(benchmark, case, lu_precision):
     result = benchmark_solve(
         benchmark,
-        lambda: rodas5Pnumba_solve(
+        lambda: solve(
             case.ode_fn,
             case.y0,
             case.t_span,
             case.params,
-            lu_precision=lu_precision,
+            method=Rodas5P(lu_precision=lu_precision),
             **case.kwargs,
         ),
     )

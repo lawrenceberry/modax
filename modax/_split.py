@@ -7,13 +7,12 @@ their own, and everything downstream can read it as a known function of
 time. The thermal history under an Einstein-Boltzmann hierarchy motivated
 this, but the split comes from the pattern alone.
 
-``Hierarchy.from_sparsity`` (or ``split=True`` on :func:`modax.rodas5P.solve`)
-gathers the components that read only components already gathered into one
-driver block, while it stays small, and makes the rest the main block. The
-hierarchy kernel of :mod:`modax._hierarchy` integrates them as a two-block
-:class:`~modax._hierarchy.Hierarchy`, each on its own steps. The driver
-publishes its states, the main block reads them as a quintic Hermite
-interpolant of ``t``, and the driver's error passes down. Both right-hand
+``Hierarchy.from_sparsity`` gathers the components that read only components
+already gathered into one driver block, while it stays small, and makes the
+rest the main block. The hierarchy kernel of :mod:`modax._hierarchy`
+integrates them as a two-block :class:`~modax._hierarchy.Hierarchy`, each on
+its own steps. The driver publishes its states, the main block reads them as
+a quintic Hermite interpolant of ``t``, and the driver's error passes down. Both right-hand
 sides come from the user's single ``ode_fn``. The driver's sets the main
 states to zero (dead code after inlining), and the main's takes the driver
 states from the interpolant. The history, the hook's state and the error
@@ -214,7 +213,7 @@ def generate_main_rhs(ode_fn, n_vars: int, split: BlockSplit, hslot: int):
 def make_split_kernel(ode_fn, n_vars: int, n_params: int, options, split: BlockSplit):
     """The hierarchy kernel over the pattern's driver and main blocks, in the user's layout.
 
-    ``options`` is the :class:`modax.rodas5P.KernelOptions`. Returns
+    ``options`` is the :class:`~modax._options.KernelOptions`. Returns
     ``(kernel, trajectories_per_block)``.
     """
     from modax._hierarchy import Block, Hierarchy, make_hierarchy_kernel

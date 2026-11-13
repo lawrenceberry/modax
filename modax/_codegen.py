@@ -3,7 +3,7 @@
 The Rodas5P kernel emits two parts as source: the sparse factorisation and
 triangular solves, with every slot a literal (:py:obj:`modax._sparse_direct`),
 and the Jacobian writer, with every colour's seed row a literal
-(``modax.rodas5P``). Both need the same handling of the text they produce,
+(``modax._rodas5P``). Both need the same handling of the text they produce,
 and this module does it in one place.
 """
 

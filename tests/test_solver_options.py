@@ -13,11 +13,7 @@ import pytest
 from numba_cuda_mlir import cuda
 
 import modax
-from modax.rodas5P import (
-    _DEFAULT_TRAJECTORIES_PER_BLOCK,
-    trajectories_per_block_or_default,
-)
-from modax.rodas5P import solve as rodas5P_solve
+from modax._options import DEFAULT_TRAJECTORIES_PER_BLOCK, KernelOptions
 
 requires_cuda = pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 
@@ -37,13 +33,21 @@ def _exact_forced(t):
     return FORCING * (LAMBDA * t - 1.0 + np.exp(-LAMBDA * t)) / LAMBDA**2
 
 
-def test_trajectories_per_block_or_default():
+def test_trajectories_per_block():
     """A warp by default; nothing on chip bounds an explicit request."""
-    assert trajectories_per_block_or_default() == _DEFAULT_TRAJECTORIES_PER_BLOCK
-    assert trajectories_per_block_or_default(8) == 8
-    assert trajectories_per_block_or_default(64) == 64
+    assert KernelOptions().trajectories_per_block == DEFAULT_TRAJECTORIES_PER_BLOCK
+    assert DEFAULT_TRAJECTORIES_PER_BLOCK == 32
+    assert KernelOptions(trajectories_per_block=64).trajectories_per_block == 64
     with pytest.raises(ValueError, match="must be positive"):
-        trajectories_per_block_or_default(0)
+        KernelOptions(trajectories_per_block=0)
+    with pytest.raises(ValueError, match="must be positive"):
+        modax.solve(
+            forced_decay,
+            np.zeros(1),
+            np.linspace(0.0, 1.0, 3),
+            np.ones(2),
+            trajectories_per_block=0,
+        )
 
 
 @requires_cuda
@@ -52,15 +56,15 @@ def test_the_time_derivative_term_reaches_the_stages():
     y0 = np.zeros((1, 1), dtype=np.float64)
     params = np.array([[LAMBDA, FORCING]], dtype=np.float64)
     result = np.asarray(
-        rodas5P_solve(
+        modax.solve(
             forced_decay,
             y0,
             t_span,
             params,
+            method=modax.Rodas5P(lu_precision="fp64"),
             rtol=1e-10,
             atol=1e-12,
             first_step=1e-4,
-            lu_precision="fp64",
         )
     )[0, :, 0]
     assert np.allclose(result, _exact_forced(t_span), rtol=1e-8, atol=1e-10)

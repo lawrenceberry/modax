@@ -10,8 +10,7 @@ which installs on Python 3.11 up.
 import numpy as np
 import pytest
 
-from modax.rodas5P import solve as rodas5P_solve
-from modax.tsit5 import solve as tsit5_solve
+from modax import PIDGains, Tsit5, solve
 from reference.systems.python import lorenz, robertson, vdp
 
 cuda = pytest.importorskip("numba_cuda_mlir.cuda")
@@ -22,7 +21,7 @@ pytestmark = pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 
 N = 8
 KWARGS = {"first_step": 1e-4, "rtol": 1e-6, "atol": 1e-8}
-I_CONTROLLER = {"pcoeff": 0.0, "icoeff": 1.0, "dcoeff": 0.0}
+I_CONTROLLER = Tsit5(gains=PIDGains(0.0, 1.0, 0.0))
 
 
 @pytest.fixture(scope="module")
@@ -35,7 +34,7 @@ def ge():
 def test_tsit5_matches_modax_on_lorenz(ge):
     y0, params = lorenz.make_scenario(N, divergence=0.5)
     ref = np.asarray(
-        tsit5_solve(lorenz.ode_fn, y0, lorenz.TIMES, params, **KWARGS, **I_CONTROLLER)
+        solve(lorenz.ode_fn, y0, lorenz.TIMES, params, method=I_CONTROLLER, **KWARGS)
     )
     out = ge.solve(lorenz.ode_fn, y0, lorenz.TIMES, params, engine="warp_ode", **KWARGS)
     assert out.shape == ref.shape
@@ -48,7 +47,7 @@ def test_tsit5_matches_modax_on_the_vdp_lattice(ge):
     ode_fn, _ = vdp.make_system(n_osc, mu=1.0)
     y0, params = vdp.make_scenario(n_osc, N, divergence=0.0)
     ref = np.asarray(
-        tsit5_solve(ode_fn, y0, vdp.TIMES, params, **KWARGS, **I_CONTROLLER)
+        solve(ode_fn, y0, vdp.TIMES, params, method=I_CONTROLLER, **KWARGS)
     )
     out = ge.solve(ode_fn, y0, vdp.TIMES, params, engine="warp_ode", **KWARGS)
     np.testing.assert_allclose(out[:, -1], ref[:, -1], rtol=1e-4, atol=1e-6)
@@ -56,9 +55,7 @@ def test_tsit5_matches_modax_on_the_vdp_lattice(ge):
 
 def test_rosenbrock23_matches_modax_on_robertson(ge):
     y0, params = robertson.make_scenario(N, divergence=0.5)
-    ref = np.asarray(
-        rodas5P_solve(robertson.ode_fn, y0, robertson.TIMES, params, **KWARGS)
-    )
+    ref = np.asarray(solve(robertson.ode_fn, y0, robertson.TIMES, params, **KWARGS))
     out = ge.solve(
         robertson.ode_fn,
         y0,
@@ -89,7 +86,7 @@ def test_value_and_grad_matches_modax(ge, record_each_call):
     ode_fn, _ = vdp.make_system(n_osc)
     y0, params = vdp.make_scenario(n_osc, N, divergence=0.0)
     value, grad = jit_value_and_grad(
-        rodas5P_solve, ode_fn, vdp.TIMES, sparsity=vdp.make_sparsity(n_osc), **KWARGS
+        solve, ode_fn, vdp.TIMES, sparsity=vdp.make_sparsity(n_osc), **KWARGS
     )(y0, params)
     run = ge.make_value_and_grad(
         ode_fn,

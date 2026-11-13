@@ -135,10 +135,12 @@ without one. Very little of the suite therefore runs on a machine with no GPU.
 
 | Method   | Type                   | Use for           | File          |
 |----------|------------------------|-------------------|---------------|
-| Tsit5    | Explicit RK (order 5)  | Non-stiff systems | `tsit5.py`    |
-| Rodas5P  | Rosenbrock-W (order 5) | Stiff systems     | `rodas5P.py`  |
+| Tsit5    | Explicit RK (order 5)  | Non-stiff systems | `_tsit5.py`   |
+| Rodas5P  | Rosenbrock-W (order 5) | Stiff systems     | `_rodas5P.py` |
 
-Rodas5P also takes a **save hook**: a function `hook(y, t, p) -> tuple`,
+Both are private kernel builders; `modax.solve` is the only entry point.
+
+Every kernel takes a **save hook**: a function `hook(y, t, p) -> tuple`,
 shaped like `ode_fn`, whose values the kernel keeps at every save time, so the
 solve returns `(history, quantities)` with quantities `(N, n_save, n_out)`
 (`save_history=False` then keeps only the final state). There is no
@@ -149,7 +151,7 @@ kept instead of the whole history.
 
 The quantities differentiate and `vmap` like the history. Under both rules the
 solvers return `(hist, quantities, stats)` (`RawOutput` in `_sensitivity.py`),
-and `rodas5P._launch` turns the user's hook into the kernel's
+and `_solve._run` turns the user's hook into the kernel's
 `hook(save_idx, y, t, p_row, acc)` with `quantity_hook` for the launch's spec,
 which stores each save's values and then one Enzyme tangent per direction.
 The JVP rule contracts those tangents with the input tangents exactly as it
@@ -162,11 +164,13 @@ and run time). `tests/test_save_hook.py` pins all of it against the history.
 
 Shared support modules:
 
-- **`_numba_common.py`** — what both kernels share: the `cuda.jit` coercion
+- **`_numba_common.py`** — what the kernels share: the `cuda.jit` coercion
   for user callbacks, the per-call `SolveSettings`, the `PIDGains` and the
-  step-controller device function (`make_step_controller`, which both kernels
-  call once per attempted step), the error weights and the shared kernel
+  step-controller device function (`make_step_controller`, which every kernel
+  calls once per attempted step), the error weights and the shared kernel
   signature.
+- **`_options.py`** — `KernelOptions`, the method and launch options of one
+  solve, and the key of every kernel cache.
 - **`_codegen.py`** — `compile_device_source`, the one place generated device
   source is exec'd and registered with `linecache`. Both emitters below use it.
 - **`_jax_numba_custom_call.py`** — the XLA FFI shim. Compiles a launcher,
@@ -212,14 +216,16 @@ y = modax.solve(ode_fn, y0, t_span, params, method=modax.Tsit5(backend="local"))
 `modax.solve` (`modax/_solve.py`) has an explicit signature and no `**kwargs`.
 A method's numerics live on its object (`modax/_methods.py`): `Rodas5P`'s
 `lu_precision`, `gains` and `ordering`, `Tsit5`'s `gains` and `backend`.
-Two kernels sit under it: Rodas5P's, which also runs hierarchies (and so
-Tsit5 and `Auto` blocks), and the plain Tsit5 kernel, which has no save hook,
-`cache` or launch tuning. A plain Tsit5 solve that asks for one of those is
-routed to a one-block hierarchy, as a plain `Auto` solve always is; Tsit5
-ignores `sparsity`. `modax.rodas5P.solve` and
-`modax.tsit5.solve` are the per-method solvers underneath, with the flat
-keyword arguments (including `split=True`); the benchmarks, examples and most
-tests call them directly.
+`solve` builds one `KernelOptions` (`modax/_options.py`: the method plus the
+launch options, hashable, the key every kernel cache uses) and `_run`
+launches it. The kernel follows from the system and the method alone, never
+from the launch options (`_make_jax_launch`): a hierarchy or a split system
+runs on the hierarchy kernel, a plain system on Rodas5P's or Tsit5's own,
+and a plain `Auto` solve as a one-block hierarchy (`_one_block`). Every
+kernel takes the same arguments (`SOLVER_ARGTYPES`), the save hook's rows
+included, and every one has the save hook, `save_history`,
+`trajectories_per_block`, `max_registers` and `cache`. Tsit5 ignores
+`sparsity`. `modax.clear_caches()` drops every compiled kernel.
 
 `y0` is `(n_vars,)` or `(N, n_vars)`; `params` is `(n_params,)` or
 `(N, n_params)`; the result is `(N, n_save, n_vars)`. `return_stats=True` adds a
@@ -232,8 +238,8 @@ passing a non-positive value) hands the kernel a sentinel, and it starts from
 
 `trajectories_per_block` is one thread's worth of work each, defaulting to a
 warp. Nothing on chip bounds it, since every per-trajectory buffer is
-thread-local; `trajectories_per_block_or_default` is where that decision is
-made.
+thread-local; `KernelOptions` holds the default and rejects a
+non-positive count.
 
 `sparsity` takes an `(n_vars, n_vars)` mask, a scipy sparse matrix, or an
 `(nnz, 2)` index array. It compresses the Jacobian by colouring *and* selects a
@@ -422,7 +428,7 @@ module goes through `build_fn`, whose `.device` member is a
 
 ### Derived Jacobians
 
-`rodas5P` takes no `jac_fn`. `_make_kernel` forward-differentiates `ode_fn`
+Rodas5P takes no `jac_fn`. `_rodas5P.make_kernel` forward-differentiates `ode_fn`
 with [numba-enzyme][ne], as it stands and with no adapter around it: a
 callback of the documented shape already reaches Enzyme as a function of flat
 scalars returning a struct, because numba-cuda-mlir flattens a tuple argument
@@ -481,7 +487,7 @@ Things to know when touching this:
   arguments at any `n_vars`; numba-enzyme's entry point loads the scalars out
   of those rows before handing them to Enzyme. There is no generated Python
   here at all, and no module either: the derivative is a signature and one
-  `jvp` call inside `_make_kernel`.
+  `jvp` call inside `_rodas5P.make_kernel`.
 - The column index runs over the primal's **flattened** arguments, which is why
   `df/dt` is free: `t` is the argument after the state. It is a run-time
   argument and the unit seed is built inside the derivative, so this is one
@@ -600,14 +606,13 @@ touching the code.
   t, p[, q])` (its states when `None`). `solve(Hierarchy(root), ...)` takes
   the blocks' states upstream first (or in `layout`'s order).
   `modax.solve(Hierarchy.from_sparsity(ode_fn, n, pattern, max_driver), ...)`
-  (`modax/_split.py`; `modax.rodas5P.solve(..., split=True)` underneath)
-  finds a two-block hierarchy from a single `ode_fn`: the strongly connected
+  (`modax/_split.py`) finds a two-block hierarchy from a single `ode_fn`: the strongly connected
   components of the pattern, in topological order, that read only
   components already taken, within `max_driver` states, publish their
   states (the *driver*);
   the rest reads them. The driver is closed under dependence (a row that only
-  integrates driver states joins it). `split_blocks(pattern, n_vars)` shows
-  the split without compiling anything. Both generated right-hand sides come
+  integrates driver states joins it). `from_sparsity` compiles nothing,
+  so its `driver` and `main` show the split before any solve. Both generated right-hand sides come
   from the user's `ode_fn`: zeros for the other block's states (dead code
   after inlining) or the quintic read from the parameter row
   (`reads_from_params=True`, which spares the main block a wrapper and the
@@ -707,9 +712,9 @@ touching the code.
   a warp diverge and the block runs until its slowest trajectory finishes.
   Rodas5P needs no barrier at all: a finished thread simply returns.
 - In-kernel LU factorisation, entirely in thread-local memory.
-- `tsit5` is the same shape, with `backend="shared"` and `backend="local"`
+- Tsit5's is the same shape, with `backend="shared"` and `backend="local"`
   choosing where the state and its seven stage vectors live: per-block
-  shared memory laid out `(n_vars, 32)`, or the thread's own `cuda.local`
+  shared memory laid out `(n_vars, trajectories_per_block)`, or the thread's own `cuda.local`
   arrays. The integrator is one device function over nine 1-D vectors and the
   two kernels only allocate differently, so they are bit-identical
   (`tests/test_solvers.py` pins it). Both run a warp per block, and that is

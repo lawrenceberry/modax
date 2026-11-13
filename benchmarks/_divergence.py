@@ -95,7 +95,7 @@ class DivergenceBenchmark:
     title: str
     """Plot title; ``— {n_traj} trajectories — {gpu}`` is appended."""
     solve: Callable[..., Any]
-    """The modax solver, ``modax.tsit5.solve`` or ``modax.rodas5P.solve``."""
+    """The modax solve, :func:`modax.solve` with the method bound."""
     ode_fn: Callable[..., Any]
     t_span: Any
     dim: int

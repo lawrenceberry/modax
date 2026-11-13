@@ -23,9 +23,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import modax
 from examples._common import Backends, make_solver, parse_args, rhs_for, run_benchmark
 from examples.dual_backend import Forms, build_fn, build_rhs
-from modax.tsit5 import solve as tsit5_solve
 
 jax.config.update("jax_enable_x64", True)
 
@@ -65,8 +65,7 @@ _MODE_KWARGS = dict(
     max_steps=MODE_MAX_STEPS,
 )
 BACKENDS = Backends(
-    modax_solve=tsit5_solve,
-    modax_kwargs=_MODE_KWARGS,
+    modax_kwargs=dict(_MODE_KWARGS, method=modax.Tsit5()),
     diffrax_method="tsit5",
     diffrax_kwargs=_MODE_KWARGS,
     scipy_kwargs=dict(
@@ -88,7 +87,7 @@ def quadratic_mass_from_slow_roll(
 MASS = quadratic_mass_from_slow_roll()
 
 
-# The background solve needs its right-hand side in two forms: ``tsit5``
+# The background solve needs its right-hand side in two forms: modax
 # compiles one with ``numba_cuda_mlir``, and the Diffrax reference backend
 # traces the other.  Both are built from one body by
 # ``examples/dual_backend.py``; ``potential`` goes the same way because the
@@ -144,11 +143,12 @@ def solve_background():
     times = jnp.linspace(0.0, N_BACKGROUND_MAX, N_BACKGROUND_SAMPLES)
     y0 = jnp.array([PHI_INITIAL, D_PHI_DN_INITIAL], dtype=jnp.float64)
     params = jnp.array([MASS], dtype=jnp.float64)
-    solution = tsit5_solve(
+    solution = modax.solve(
         BACKGROUND_ODE.device,
         y0,
         times,
         params,
+        method=modax.Tsit5(),
         rtol=BACKGROUND_RTOL,
         atol=BACKGROUND_ATOL,
         first_step=1.0e-4,

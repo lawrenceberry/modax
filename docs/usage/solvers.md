@@ -69,8 +69,7 @@ simplicity.
 - *Stiff problems.* An explicit method's step is bounded by stability rather
   than accuracy, so on a stiff problem it takes a very large number of small
   steps, or exhausts `max_steps`, however smooth the solution is.
-- *Fewer options.* Its own kernel has no sparsity pattern, and asking for a
-  save hook, `cache` or launch tuning runs it on the hierarchy kernel instead.
+- *No use for a pattern.* It forms no Jacobian, so it ignores `sparsity`.
 
 ## Rodas5P: linearly implicit, for stiff problems
 

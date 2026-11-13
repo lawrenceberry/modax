@@ -9,7 +9,6 @@ import pytest
 
 import modax
 from modax import Hierarchy, Rodas5P, Tsit5
-from modax.rodas5P import solve, split_blocks
 
 jax.config.update("jax_enable_x64", True)
 cuda = pytest.importorskip("numba_cuda_mlir.cuda")
@@ -19,11 +18,26 @@ pytestmark = pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 LAM, MU = 1.0, 25.0
 PATTERN = np.array([[0, 0], [1, 0], [1, 1]])
 T_SPAN = np.linspace(0.0, 3.0, 7)
+FP64 = Rodas5P(lu_precision="fp64")
 
 
 def ode(y, t, p):
     """A forced decay driving a stiff follower: theta' = -lam theta + cos t, x' = -mu (x - theta)."""
     return (-p[0] * y[0] + math.cos(t), -p[1] * (y[1] - y[0]))
+
+
+SPLIT = Hierarchy.from_sparsity(ode, 2, PATTERN)
+
+
+def solve(y0, p, split, **kw):
+    """The system split by its pattern, or whole with the pattern as its sparsity."""
+    if split:
+        return modax.solve(SPLIT, y0, T_SPAN, p, method=FP64, **kw)
+    return modax.solve(ode, y0, T_SPAN, p, sparsity=PATTERN, method=FP64, **kw)
+
+
+def split_blocks(pattern, n, max_driver=16):
+    return Hierarchy.from_sparsity(ode, n, pattern, max_driver)
 
 
 def theta_exact(t, lam, theta0):
@@ -47,7 +61,8 @@ def x_exact(t, lam, mu, theta0, x0):
 def test_the_pattern_splits():
     blocks = split_blocks(PATTERN, 2)
     assert blocks.driver == (0,) and blocks.main == (1,)
-    assert split_blocks(np.ones((2, 2)), 2) is None
+    with pytest.raises(ValueError, match="nothing else feeds back"):
+        split_blocks(np.ones((2, 2)), 2)
 
 
 def test_the_driver_is_closed_under_dependence():
@@ -70,19 +85,7 @@ def test_the_driver_is_closed_under_dependence():
 def test_split_matches_the_exact_solution(split):
     y0 = jnp.array([[0.3, 0.1], [1.0, -0.5]])
     p = jnp.array([[LAM, MU], [0.5 * LAM, 2.0 * MU]])
-    sol = np.asarray(
-        solve(
-            ode,
-            y0,
-            T_SPAN,
-            p,
-            sparsity=PATTERN,
-            split=split,
-            rtol=1e-9,
-            atol=1e-11,
-            lu_precision="fp64",
-        )
-    )
+    sol = np.asarray(solve(y0, p, split, rtol=1e-9, atol=1e-11))
     for n in range(2):
         th = np.asarray(theta_exact(T_SPAN, p[n, 0], y0[n, 0]))
         x = np.asarray(x_exact(T_SPAN, p[n, 0], p[n, 1], y0[n, 0], y0[n, 1]))
@@ -93,9 +96,9 @@ def test_split_matches_the_exact_solution(split):
 def test_split_and_plain_agree_to_the_tolerance():
     y0 = jnp.array([[0.3, 0.1]])
     p = jnp.array([[LAM, MU]])
-    kw = dict(sparsity=PATTERN, rtol=1e-8, atol=1e-10, lu_precision="fp64")
-    plain = np.asarray(solve(ode, y0, T_SPAN, p, split=False, **kw))
-    sp = np.asarray(solve(ode, y0, T_SPAN, p, split=True, **kw))
+    kw = dict(rtol=1e-8, atol=1e-10)
+    plain = np.asarray(solve(y0, p, False, **kw))
+    sp = np.asarray(solve(y0, p, True, **kw))
     assert np.abs(plain - sp).max() < 1e-6
 
 
@@ -103,17 +106,10 @@ def test_split_sensitivities_match_the_closed_form():
     """d(theta, x)/d(lam, mu) and d/dy0 through the split, against the exact solution's derivatives."""
     y0 = jnp.array([0.3, 0.1])
     p = jnp.array([LAM, MU])
-    kw = dict(
-        sparsity=PATTERN,
-        split=True,
-        rtol=1e-9,
-        atol=1e-11,
-        lu_precision="fp64",
-        sens_error_control=False,
-    )
+    kw = dict(rtol=1e-9, atol=1e-11, sens_error_control=False)
 
     def final(p_, y0_):
-        return solve(ode, y0_, T_SPAN, p_, **kw)[0, -1]
+        return solve(y0_, p_, True, **kw)[0, -1]
 
     def exact(p_, y0_):
         t = T_SPAN[-1]
@@ -141,18 +137,7 @@ def test_split_with_a_save_hook_sees_the_user_layout():
 
     y0 = jnp.array([[0.3, 0.1]])
     p = jnp.array([[LAM, MU]])
-    hist, acc = solve(
-        ode,
-        y0,
-        T_SPAN,
-        p,
-        sparsity=PATTERN,
-        split=True,
-        rtol=1e-8,
-        atol=1e-10,
-        lu_precision="fp64",
-        save_hook=hook,
-    )
+    hist, acc = solve(y0, p, True, rtol=1e-8, atol=1e-10, save_hook=hook)
     hist = np.asarray(hist)
     assert np.allclose(np.asarray(acc), hist, atol=1e-9)
 
@@ -163,10 +148,7 @@ def test_the_driver_steps_on_its_own():
     p = jnp.array(
         [0.05, MU]
     )  # a decay a hundred times slower than the follower's relaxation
-    kw = dict(
-        sparsity=PATTERN, rtol=1e-8, atol=1e-10, lu_precision="fp64", return_stats=True
-    )
-    sol, stats = solve(ode, y0, T_SPAN, p, split=True, **kw)
+    sol, stats = solve(y0, p, True, rtol=1e-8, atol=1e-10, return_stats=True)
     accepted, rejected, loop = (
         int(stats[k][0]) for k in ("accepted_steps", "rejected_steps", "loop_steps")
     )
@@ -176,24 +158,15 @@ def test_the_driver_steps_on_its_own():
     assert jnp.max(jnp.abs(sol[0, :, 1] - expected)) < 1e-6
 
 
-def test_from_sparsity_is_the_split_solve():
+def test_from_sparsity_steps_with_the_solve_method():
     y0 = jnp.array([[0.3, 0.1]])
     p = jnp.array([[LAM, MU]])
-    split = Hierarchy.from_sparsity(ode, 2, PATTERN)
-    assert (split.driver, split.main) == ((0,), (1,))
+    assert (SPLIT.driver, SPLIT.main) == ((0,), (1,))
     kw = dict(rtol=1e-8, atol=1e-10)
-    old = np.asarray(
-        solve(
-            ode, y0, T_SPAN, p, sparsity=PATTERN, split=True, lu_precision="fp64", **kw
-        )
-    )
-    new = np.asarray(
-        modax.solve(split, y0, T_SPAN, p, method=Rodas5P(lu_precision="fp64"), **kw)
-    )
-    np.testing.assert_array_equal(old, new)
+    implicit = np.asarray(solve(y0, p, True, **kw))
     # the blocks step with the solve's method, whatever it is
-    explicit = np.asarray(modax.solve(split, y0, T_SPAN, p, method=Tsit5(), **kw))
-    assert np.abs(explicit - new).max() < 1e-6
+    explicit = np.asarray(modax.solve(SPLIT, y0, T_SPAN, p, method=Tsit5(), **kw))
+    assert np.abs(explicit - implicit).max() < 1e-6
 
 
 def test_from_sparsity_refuses_a_pattern_that_does_not_split():

@@ -11,6 +11,14 @@ Importing `modax` enables JAX float64.
 .. autofunction:: modax.solve
 ```
 
+Every problem size and set of options compiles a kernel of its own, cached
+for the life of the process. A process that sweeps problem sizes can drop
+them.
+
+```{eval-rst}
+.. autofunction:: modax.clear_caches
+```
+
 ## Step control
 
 ```{eval-rst}

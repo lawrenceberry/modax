@@ -12,10 +12,9 @@ import numpy as np
 import pytest
 from numba_cuda_mlir import cuda
 
+from modax import Rodas5P, Tsit5, solve
 from modax._params import as_param_row, param_leaves, param_width
 from modax._sensitivity import SensitivitySpec, make_sensitivity_solver
-from modax.rodas5P import solve as rodas5P_solve
-from modax.tsit5 import solve as tsit5_solve
 from tests.test_sensitivity import (
     T_SPAN,
     Y0,
@@ -32,8 +31,8 @@ requires_cuda = pytest.mark.skipif(not cuda.is_available(), reason="CUDA require
 both_solvers = pytest.mark.parametrize(
     "solve_fn, kwargs",
     [
-        pytest.param(tsit5_solve, {}, id="tsit5"),
-        pytest.param(rodas5P_solve, {"lu_precision": "fp64"}, id="rodas5P"),
+        pytest.param(solve, {"method": Tsit5()}, id="tsit5"),
+        pytest.param(solve, {"method": Rodas5P(lu_precision="fp64")}, id="rodas5P"),
     ],
 )
 

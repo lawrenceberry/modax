@@ -11,6 +11,7 @@ Usage:
     uv run python benchmarks/stiff_robertson_divergence/main.py
 """
 
+import functools
 import sys
 from pathlib import Path
 
@@ -22,12 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # the `reference.systems.python` modules build device arrays at import time,
 # which initialises the backend and fixes that policy for the whole process.
 import benchmarks.benchmark_common  # noqa: E402,F401
+import modax
 from benchmarks._divergence import DivergenceBenchmark, DivergenceCase, main
 from benchmarks.benchmark_common import (  # noqa: E402
     JULIA_COLOR,
     MODAX_COLOR,
 )
-from modax.rodas5P import solve as rodas5P_solve
 from reference.solvers.python.julia_rodas5P import solve as julia_rodas5P_solve
 from reference.systems.python import robertson
 
@@ -40,7 +41,7 @@ BENCHMARK = DivergenceBenchmark(
     script_dir=Path(__file__).resolve().parent,
     system="Robertson",
     title="Robertson Rodas5P divergence",
-    solve=rodas5P_solve,
+    solve=functools.partial(modax.solve, method=modax.Rodas5P(lu_precision="fp32")),
     ode_fn=robertson.ode_fn,
     t_span=robertson.TIMES,
     dim=robertson.N_VARS,

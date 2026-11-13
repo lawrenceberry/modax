@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # the `reference.systems.python` modules build device arrays at import time,
 # which initialises the backend and fixes that policy for the whole process.
 import benchmarks.benchmark_common  # noqa: E402,F401
+import modax
 from benchmarks._sweep import (
     DIMENSION,
     IDENTICAL_DIVERGENCE,
@@ -59,7 +60,6 @@ from benchmarks.benchmark_common import (  # noqa: E402
     JULIA_COLOR,
     MODAX_COLOR,
 )
-from modax.rodas5P import solve as rodas5P_solve
 from reference.solvers.python.diffrax_kvaerno5 import solve as diffrax_kvaerno5_solve
 from reference.solvers.python.gradsolve_engines import (
     ROSENBROCK23_MAX_DIM,
@@ -139,7 +139,7 @@ BENCHMARK = SweepBenchmark(
             marker="P",
             linestyle="--",
             mode="jax_grad",
-            solve_fn=rodas5P_solve,
+            solve_fn=modax.solve,
             kwargs=_SOLVER_KWARGS,
             sparse=True,
         ),
@@ -149,7 +149,7 @@ BENCHMARK = SweepBenchmark(
             color=MODAX_COLOR,
             marker="X",
             mode="jax_grad",
-            solve_fn=rodas5P_solve,
+            solve_fn=modax.solve,
             kwargs=_SOLVER_KWARGS,
         ),
         SweepCase(

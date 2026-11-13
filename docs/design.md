@@ -313,6 +313,6 @@ options, and numba-enzyme keys its derivative cache on the primal's lowered
 IR. Because the five-argument derivative call is inlined, the kernel's PTX is
 byte-identical across processes and the CUDA JIT cache is reused between
 them.
-`modax.tsit5.clear_caches()` drops Tsit5's compiled kernels and the sensitivity
-helpers' caches; Rodas5P has no equivalent, so its kernels stay cached for the
-life of the process.
+`modax.clear_caches()` drops every compiled kernel and the sensitivity
+helpers' caches, for a process that sweeps problem sizes; otherwise they stay
+cached for the life of the process.

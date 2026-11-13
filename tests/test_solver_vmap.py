@@ -32,13 +32,12 @@ def _solver_cases():
     if not _have_cuda():
         return []
 
-    from modax.rodas5P import solve as rodas5Pnumba_solve
-    from modax.tsit5 import solve as tsit5numba_solve
+    from modax import Rodas5P, Tsit5, solve
 
     decay = _build_numba_callbacks()
     return [
-        ("tsit5", tsit5numba_solve, (decay,), {}),
-        ("rodas5P", rodas5Pnumba_solve, (decay,), {}),
+        ("tsit5", solve, (decay,), {"method": Tsit5()}),
+        ("rodas5P", solve, (decay,), {"method": Rodas5P()}),
     ]
 
 
@@ -99,8 +98,7 @@ def test_solver_vmap_over_y0_and_params_matches_native_ensemble(
 
 @pytest.mark.skipif(not _have_cuda(), reason="numba_cuda_mlir unavailable")
 def test_solvers_auto_jit_plain_python_callbacks():
-    from modax.rodas5P import solve as rodas5Pnumba_solve
-    from modax.tsit5 import solve as tsit5numba_solve
+    from modax import Tsit5, solve
 
     y0 = np.array([1.0], dtype=np.float64)
     t_span = np.array([0.0, 0.5, 1.0], dtype=np.float64)
@@ -113,8 +111,10 @@ def test_solvers_auto_jit_plain_python_callbacks():
     }
     expected = y0[0] * np.exp(-params[:, 0, None] * t_span[None, :])
 
-    tsit5_sol = tsit5numba_solve(_plain_numba_decay, y0, t_span, params, **solve_kwargs)
-    rodas5P_sol = rodas5Pnumba_solve(
+    tsit5_sol = solve(
+        _plain_numba_decay, y0, t_span, params, method=Tsit5(), **solve_kwargs
+    )
+    rodas5P_sol = solve(
         _plain_numba_decay,
         y0,
         t_span,
@@ -127,7 +127,7 @@ def test_solvers_auto_jit_plain_python_callbacks():
 
 @pytest.mark.skipif(not _have_cuda(), reason="numba_cuda_mlir unavailable")
 def test_solver_vmap_return_stats_shapes():
-    from modax.rodas5P import solve as rodas5Pnumba_solve
+    from modax import solve
 
     decay = _build_numba_callbacks()
 
@@ -136,7 +136,7 @@ def test_solver_vmap_return_stats_shapes():
     params = jnp.array([[0.5], [1.0], [2.0], [4.0]])
 
     _, stats = jax.vmap(
-        lambda p: rodas5Pnumba_solve(
+        lambda p: solve(
             decay,
             y0,
             t_span,

@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # the `reference.systems.python` modules build device arrays at import time,
 # which initialises the backend and fixes that policy for the whole process.
 import benchmarks.benchmark_common  # noqa: E402,F401
+import modax
 from benchmarks._sweep import (
     ENSEMBLE_SIZE,
     IDENTICAL_DIVERGENCE,
@@ -41,7 +42,6 @@ from benchmarks.benchmark_common import (  # noqa: E402
     MODAX_COLOR,
     TORCHDIFFEQ_COLOR,
 )
-from modax.tsit5 import solve as tsit5_solve
 from reference.solvers.python.diffrax_tsit5 import solve as diffrax_tsit5_solve
 from reference.solvers.python.gradsolve_engines import solve as gradsolve_solve
 from reference.solvers.python.julia_tsit5 import solve as julia_tsit5_solve
@@ -76,8 +76,8 @@ BENCHMARK = SweepBenchmark(
             key="modax tsit5",
             color=MODAX_COLOR,
             marker="P",
-            solve_fn=tsit5_solve,
-            kwargs=_LOCAL_SOLVER_KWARGS,
+            solve_fn=modax.solve,
+            kwargs={**_SOLVER_KWARGS, "method": modax.Tsit5()},
         ),
         SweepCase(
             key="diffrax tsit5",

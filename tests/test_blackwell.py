@@ -145,8 +145,9 @@ def decay(y, t, p):
 def test_rodas5p_links_for_blackwell(pretend_blackwell, with_sensitivities):
     """The kernel, its Enzyme Jacobian and its hook compile for 9.0, link for 12.0."""
 
-    from modax.rodas5P import HOOK_OUT_ARGTYPE, SOLVER_ARGTYPES, KernelOptions
-    from modax.rodas5P import _make_kernel as make_rodas5p_kernel
+    from modax._numba_common import SOLVER_ARGTYPES
+    from modax._options import KernelOptions
+    from modax._rodas5P import make_kernel as make_rodas5p_kernel
 
     spec = (
         _sensitivity.SensitivitySpec(2, 2, wrt_y0=False, wrt_params=True)
@@ -157,9 +158,7 @@ def test_rodas5p_links_for_blackwell(pretend_blackwell, with_sensitivities):
     hook = _sensitivity.quantity_hook(lambda y, t, p: (y[0] + y[1],), 1, 2, 2, spec)
     options = KernelOptions(spec=spec, save_hook=hook, hook_size=4)
     kernel, _ = make_rodas5p_kernel(decay, 2, 2, options)
-    cres = (
-        bridge.target_kernel(kernel).compile(SOLVER_ARGTYPES + (HOOK_OUT_ARGTYPE,)).cres
-    )
+    cres = bridge.target_kernel(kernel).compile(SOLVER_ARGTYPES).cres
     assert kernel.targetoptions["chip"] == "sm_90"
     assert cres.metadata["cubin"]
 
@@ -168,12 +167,14 @@ def test_rodas5p_links_for_blackwell(pretend_blackwell, with_sensitivities):
 def test_tsit5_sensitivities_link_for_blackwell(pretend_blackwell):
     """Tsit5's kernel links an Enzyme tangent only when it carries sensitivities."""
 
-    from modax._numba_common import PIDGains
-    from modax.tsit5 import SOLVER_ARGTYPES
-    from modax.tsit5 import _make_kernel as make_tsit5_kernel
+    from modax import Tsit5
+    from modax._numba_common import SOLVER_ARGTYPES
+    from modax._options import KernelOptions
+    from modax._tsit5 import make_kernel as make_tsit5_kernel
 
     spec = _sensitivity.SensitivitySpec(2, 2, wrt_y0=True, wrt_params=True)
-    kernel = make_tsit5_kernel(decay, 2, PIDGains(), spec, False)
+    options = KernelOptions(method=Tsit5(backend="local"), spec=spec)
+    kernel, _ = make_tsit5_kernel(decay, 1, 2, options)
     cres = bridge.target_kernel(kernel).compile(SOLVER_ARGTYPES).cres
     assert cres.metadata["cubin"]
 
@@ -188,10 +189,9 @@ def _on_blackwell():
 def test_solves_and_differentiates_on_blackwell(solver):
     """A linear decay against its closed form, value and parameter derivative."""
 
-    from modax.rodas5P import solve as rodas5p_solve
-    from modax.tsit5 import solve as tsit5_solve
+    from modax import Rodas5P, Tsit5, solve
 
-    solve = {"rodas5P": rodas5p_solve, "tsit5": tsit5_solve}[solver]
+    method = {"rodas5P": Rodas5P(), "tsit5": Tsit5()}[solver]
 
     def one(y, t, p):
         return (-p[0] * y[0],)
@@ -201,7 +201,9 @@ def test_solves_and_differentiates_on_blackwell(solver):
     rates = jnp.asarray([[0.7], [2.0]])
 
     def final(p):
-        return solve(one, y0, t_span, p, rtol=1e-10, atol=1e-12)[:, -1, 0]
+        return solve(one, y0, t_span, p, method=method, rtol=1e-10, atol=1e-12)[
+            :, -1, 0
+        ]
 
     t = float(t_span[-1])
     exact = np.asarray(y0[:, 0] * jnp.exp(-rates[:, 0] * t))

@@ -9,8 +9,6 @@ import pytest
 
 import modax
 from modax import Auto, Block, Hierarchy, Rodas5P, Tsit5
-from modax.rodas5P import solve as rodas_solve
-from modax.tsit5 import solve as tsit_solve
 
 jax.config.update("jax_enable_x64", True)
 cuda = pytest.importorskip("numba_cuda_mlir.cuda")
@@ -18,8 +16,6 @@ cuda = pytest.importorskip("numba_cuda_mlir.cuda")
 pytestmark = pytest.mark.skipif(not cuda.is_available(), reason="CUDA required")
 
 T_SPAN = np.linspace(0.0, 3.0, 7)
-TOL = dict(rtol=1e-9, atol=1e-11, lu_precision="fp64")  # the per-method solvers'
-# modax.solve takes the LU's precision on its method
 SOLVE_TOL = dict(rtol=1e-9, atol=1e-11, method=Rodas5P(lu_precision="fp64"))
 
 
@@ -63,7 +59,7 @@ def chain(ma=None, mb=None, mc=None):
 
 @pytest.fixture(scope="module")
 def whole():
-    return np.asarray(rodas_solve(joint, Y0, T_SPAN, P, **TOL))
+    return np.asarray(modax.solve(joint, Y0, T_SPAN, P, **SOLVE_TOL))
 
 
 @pytest.mark.parametrize(
@@ -87,14 +83,6 @@ def test_modax_solve_takes_the_default_method(whole):
         modax.solve(chain(), Y0, T_SPAN, P, method=Tsit5(), rtol=1e-9, atol=1e-11)
     )
     assert np.abs(split - whole).max() < 1e-7
-
-
-def test_the_plain_solvers_refuse_blocks():
-    for plain in (rodas_solve, tsit_solve):
-        with pytest.raises(TypeError, match="modax.solve"):
-            plain(chain(), Y0, T_SPAN, P, rtol=1e-9, atol=1e-11)
-        with pytest.raises(TypeError, match="modax.solve"):
-            plain(Block(rhs_a, 1), Y0[:, :1], T_SPAN, P)
 
 
 def stiffening(y, t, p):
@@ -256,17 +244,29 @@ def test_a_plain_tsit5_solve_ignores_sparsity():
     np.testing.assert_array_equal(plain, np.asarray(with_pattern))
 
 
-def test_a_plain_tsit5_solve_takes_a_save_hook_on_the_hierarchy_kernel():
-    """A hook routes a plain Tsit5 solve to a one-block hierarchy, still Tsit5."""
-
-    def first(y, t, p):
-        return (y[0],)
-
-    kw = dict(method=Tsit5(), rtol=1e-9, atol=1e-11)
-    hist = np.asarray(modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, **kw))
-    hooked, q = modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, save_hook=first, **kw)
-    assert np.abs(np.asarray(hooked) - hist).max() < 1e-8
-    np.testing.assert_allclose(np.asarray(q)[..., 0], hist[:, :, 0], rtol=1e-8)
+@pytest.mark.parametrize(
+    "launch",
+    [
+        dict(save_hook=lambda y, t, p: (y[0],)),
+        dict(trajectories_per_block=8),
+        dict(max_registers=64),
+        dict(cache=True),
+    ],
+    ids=["save_hook", "trajectories_per_block", "max_registers", "cache"],
+)
+def test_a_plain_tsit5_solve_stays_on_its_kernel(launch):
+    """Launch options do not move a plain Tsit5 solve: its steps are unchanged."""
+    kw = dict(method=Tsit5(), rtol=1e-9, atol=1e-11, return_stats=True)
+    hist, stats = modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, **kw)
+    out = modax.solve(decay, DECAY_Y0, T_SPAN, DECAY_P, **kw, **launch)
+    np.testing.assert_array_equal(np.asarray(out[0]), np.asarray(hist))
+    np.testing.assert_array_equal(
+        np.asarray(out[-1]["accepted_steps"]), np.asarray(stats["accepted_steps"])
+    )
+    if "save_hook" in launch:
+        np.testing.assert_array_equal(
+            np.asarray(out[1])[..., 0], np.asarray(hist)[..., 0]
+        )
 
 
 def test_method_options_are_checked():

@@ -8,6 +8,15 @@ jax.config.update("jax_enable_x64", True)
 from modax._hierarchy import Block, Hierarchy  # noqa: E402
 from modax._methods import Auto, Rodas5P, Tsit5  # noqa: E402
 from modax._numba_common import PIDGains  # noqa: E402
-from modax._solve import solve  # noqa: E402
+from modax._solve import clear_caches, solve  # noqa: E402
 
-__all__ = ["Auto", "Block", "Hierarchy", "PIDGains", "Rodas5P", "Tsit5", "solve"]
+__all__ = [
+    "Auto",
+    "Block",
+    "Hierarchy",
+    "PIDGains",
+    "Rodas5P",
+    "Tsit5",
+    "clear_caches",
+    "solve",
+]
