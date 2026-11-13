@@ -5,6 +5,36 @@ Releases are cut by python-semantic-release from the Conventional Commits on
 
 <!-- version list -->
 
+## v0.4.0 (2026-11-13)
+
+### Documentation
+
+- Fix typos in the params gradient docs
+  ([`a19ed77`](https://github.com/lawrenceberry/modax/commit/a19ed77f45062aa4899638f5289868cfe3392f69))
+
+- Update the logo with the narrower M
+  ([`7af202d`](https://github.com/lawrenceberry/modax/commit/7af202d8e300da87f6c8952b0d8b4b3e5d8c9241))
+
+### Features
+
+- Differentiable save hooks of quantities
+  ([`e53fbf5`](https://github.com/lawrenceberry/modax/commit/e53fbf5b1814aa57579b39e5a1ef0d99abedb619))
+
+- Make modax.solve the only entry point
+  ([`202fad6`](https://github.com/lawrenceberry/modax/commit/202fad66c8a33d901b8e8ea71fc0469f6e0738ff))
+
+- Remove the sensitivity argument
+  ([`0cd29f8`](https://github.com/lawrenceberry/modax/commit/0cd29f8a442a3f2969d297cc995ebb073c0ee313))
+
+- Take params as a pytree for gradients
+  ([`93ccc9e`](https://github.com/lawrenceberry/modax/commit/93ccc9ea8a3c844c9682de828032090c5acae15a))
+
+### Refactoring
+
+- Drop the overload stubs on solve
+  ([`93e79ab`](https://github.com/lawrenceberry/modax/commit/93e79ab8589cfe04dd367adcada141c708338785))
+
+
 ## v0.3.0 (2026-11-12)
 
 ### Features
