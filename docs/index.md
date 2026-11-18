@@ -81,7 +81,6 @@ acknowledgement
 usage/solvers
 usage/running
 usage/sparse
-usage/hierarchies
 usage/switching-methods
 usage/gradients
 ```
