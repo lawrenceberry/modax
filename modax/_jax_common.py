@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Callable
 
@@ -18,6 +19,7 @@ from modax._numba_common import (
 )
 from modax._params import Params, as_param_row
 from modax._sensitivity import (
+    DirectionalSolver,
     RawOutput,
     SensitivitySpec,
     augmented_error_weights,
@@ -115,8 +117,9 @@ def prepare_inputs(
 
     A shared ``t_span`` stays as it is. An ``(N, n_save)`` one, one grid per
     trajectory, flattens row by row, and also sets ``N`` when ``y0`` and
-    ``params`` are both 1-D. With a ``spec`` the kernel integrates the joint ``[y, S]`` system, so this
-    widens the initial state and error weights to the augmented extent.
+    ``params`` are both 1-D. With a ``spec`` the kernel integrates the joint
+    ``[y, s_0, ...]`` system: ``y0`` arrives joint already, and this widens
+    the error weights to match.
     """
     params = as_param_row(params)
     y0_arr, params_arr, n, n_vars = normalize_y0_params(y0, params)
@@ -139,6 +142,8 @@ def prepare_inputs(
             )
         time_rows = n
         times = times.reshape(-1)
+    if spec is not None:
+        n_vars = spec.n_vars  # y0 is the joint [y, dy0_0, ...]
     weights = build_error_weights(settings.error_weights, n, n_vars)
     if spec is not None:
         y0_arr = augmented_y0(y0_arr, spec)
@@ -259,3 +264,238 @@ def make_custom_vmap_solver(
         return out, jax.tree_util.tree_map(lambda _: True, out)
 
     return _solve
+
+
+def _ensemble_rows(
+    arr: jax.Array, is_batched: bool, axis_size: int, n: int, name: str
+) -> jax.Array:
+    """Flatten a mapped argument to ``(axis_size * n, k)``, row ``b * n + i``.
+
+    Unmapped it is ``(k,)`` or ``(n, k)``, and mapped it has ``axis_size``
+    in front of that.
+    """
+    base = arr.ndim - int(is_batched)
+    if base not in (1, 2) or (base == 2 and arr.shape[-2] != n):
+        raise ValueError(
+            f"{name} must be (k,) or ({n}, k) under each vmap; got shape {arr.shape}"
+        )
+    k = arr.shape[-1]
+    if is_batched and base == 2:
+        return arr.reshape(axis_size * n, k)
+    if is_batched:
+        return jnp.repeat(arr, n, axis=0)
+    if base == 2:
+        return jnp.tile(arr, (axis_size, 1))
+    return jnp.broadcast_to(arr, (axis_size * n, k))
+
+
+def make_directional_solver(
+    run_for: Callable[..., Callable[[jax.Array, jax.Array, jax.Array], RawOutput]],
+    n_vars: int,
+    n_columns: int | None = None,
+    *,
+    max_directions_per_thread: int | None = None,
+) -> DirectionalSolver:
+    """Wrap the directional launches so ``vmap`` over directions adds columns.
+
+    ``run_for(n_dirs, copies)(y0, t_span, params)`` launches the joint system
+    of a :class:`~modax._sensitivity.SensitivitySpec`: ``y0`` holds ``[y,
+    dy0_0, ...]`` and ``params`` the row ``(p, dp_0, ...)``, for an
+    ensemble whose trajectories ``copies`` repeats. The returned solver
+    takes ``(y0, t_span, params, dy0, dparams)`` with the tangents'
+    directions on the axis before last, and returns the :data:`RawOutput`
+    and the tangents of the history and the quantities, ``(N, n_save,
+    n_dirs, n)``.
+
+    ``jax.jacfwd`` maps the solver over directions with the primals fixed.
+    The batching rule folds the mapped axis into the direction axis and
+    launches once: each trajectory stays one thread, which integrates its
+    state and a column per direction. The primal output is that launch's
+    and stays unmapped, as ``jacfwd`` requires. Mapped primals are other
+    trajectories, and they flatten into the ensemble.
+
+    With ``max_directions_per_thread`` a thread integrates at most that many
+    columns. The directions then split into groups of one width, the last
+    padded with zero directions, and each group runs in a thread of its own
+    beside a copy of its trajectory, all in one launch.
+
+    ``n_columns`` is how many inputs of one trajectory move. More directions
+    than that cannot all be independent: ``jax.jacfwd`` over the
+    per-trajectory parameters of an ensemble sends every trajectory a
+    direction per trajectory, nearly all of them zero for it, and the rule
+    raises instead of integrating them.
+    """
+
+    @functools.cache
+    def solver(n_dirs: int, copies: int = 1):
+        run = run_for(n_dirs, copies)
+
+        def impl(y0, t_span, params, dy0, dparams):
+            lead = jnp.broadcast_shapes(y0.shape[:-1], dy0.shape[:-2])
+            start = jnp.broadcast_to(dy0, lead + dy0.shape[-2:])
+            rows = jnp.broadcast_shapes(params.shape[:-1], dparams.shape[:-2])
+            moved = jnp.broadcast_to(dparams, rows + dparams.shape[-2:])
+            hist, quantities, stats = run(
+                jnp.concatenate(
+                    [
+                        jnp.broadcast_to(y0, lead + y0.shape[-1:]),
+                        start.reshape(lead + (-1,)),
+                    ],
+                    axis=-1,
+                ),
+                t_span,
+                jnp.concatenate(
+                    [
+                        jnp.broadcast_to(params, rows + params.shape[-1:]),
+                        moved.reshape(rows + (-1,)),
+                    ],
+                    axis=-1,
+                ),
+            )
+            primal = (
+                hist[..., :n_vars],
+                None if quantities is None else quantities[:, :, :1],
+                stats,
+            )
+            tangent = (
+                hist[..., n_vars:].reshape(hist.shape[:-1] + (n_dirs, n_vars)),
+                None if quantities is None else quantities[:, :, 1:],
+            )
+            return primal, tangent
+
+        @custom_vmap
+        def _solve(y0, t_span, params, dy0, dparams):
+            return impl(
+                jnp.asarray(y0, dtype=jnp.float64),
+                jnp.asarray(t_span),
+                jnp.asarray(params, dtype=jnp.float64),
+                jnp.asarray(dy0, dtype=jnp.float64),
+                jnp.asarray(dparams, dtype=jnp.float64),
+            )
+
+        @_solve.def_vmap
+        def _solve_vmap(axis_size, in_batched, y0, t_span, params, dy0, dparams):
+            y0, t_span, params, dy0, dparams = (
+                jnp.asarray(a) for a in (y0, t_span, params, dy0, dparams)
+            )
+            if not any(in_batched[:3]):
+                return _more_directions(
+                    axis_size, in_batched, y0, t_span, params, dy0, dparams
+                )
+            # Other trajectories: flatten the mapped axis into the ensemble,
+            # the tangents with their directions folded into the last axis.
+            tangents = [t.reshape(t.shape[:-2] + (-1,)) for t in (dy0, dparams)]
+            arrays = [y0, t_span, params, *tangents]
+            bases = [a.ndim - int(b) for a, b in zip(arrays, in_batched)]
+            sizes = {a.shape[-2] for a, base in zip(arrays, bases) if base == 2}
+            if len(sizes) > 1:
+                raise ValueError(f"the mapped solve's arguments disagree on N: {sizes}")
+            n = sizes.pop() if sizes else 1
+            names = ("y0", "t_span", "params", "the y0 tangent", "the params tangent")
+            flat = [
+                _ensemble_rows(a, b, axis_size, n, name)
+                for a, b, name in zip(arrays, in_batched, names)
+            ]
+            if not in_batched[1] and bases[1] == 1:
+                flat[1] = t_span  # one save grid for every trajectory
+            flat[3] = flat[3].reshape(-1, n_dirs, dy0.shape[-1])
+            flat[4] = flat[4].reshape(-1, n_dirs, dparams.shape[-1])
+            # Through the wrapped solver, so an outer vmap maps this launch too.
+            out = _solve(*flat)
+            out = jax.tree_util.tree_map(
+                lambda x: x.reshape((axis_size, n) + x.shape[1:]), out
+            )
+            return out, jax.tree_util.tree_map(lambda _: True, out)
+
+        def _more_directions(axis_size, in_batched, y0, t_span, params, dy0, dparams):
+            """The mapped axis as ``axis_size`` times the directions of the same trajectories."""
+            total = axis_size * n_dirs
+
+            def fold(tangent, is_batched):
+                # (axis, ..., n_dirs, k) or (..., n_dirs, k) to (..., total, k)
+                if not is_batched:
+                    tangent = jnp.broadcast_to(tangent, (axis_size,) + tangent.shape)
+                tangent = jnp.moveaxis(tangent, 0, -3)
+                return tangent.reshape(tangent.shape[:-3] + (total, tangent.shape[-1]))
+
+            dy0, dparams = fold(dy0, in_batched[3]), fold(dparams, in_batched[4])
+            if n_columns is not None and total > n_columns:
+                raise ValueError(
+                    f"this derivative asks a modax solve for {total} directions, "
+                    f"but only {n_columns} of each trajectory's inputs move, so "
+                    "every trajectory would integrate a column per direction, "
+                    "most of them zero. jax.jacfwd over an ensemble's "
+                    "per-trajectory parameters does this: map over the "
+                    "trajectories outside the derivative instead, "
+                    "jax.vmap(jax.jacfwd(f)), so each jacfwd sees one "
+                    "trajectory's inputs"
+                )
+            primal, tangent = _along(y0, t_span, params, dy0, dparams)
+            # (N, n_save, total, k) back to (axis, N, n_save, n_dirs, k)
+            tangent = jax.tree_util.tree_map(
+                lambda x: jnp.moveaxis(
+                    x.reshape(x.shape[:2] + (axis_size, n_dirs) + x.shape[3:]), 2, 0
+                ),
+                tangent,
+            )
+            return (primal, tangent), (
+                jax.tree_util.tree_map(lambda _: False, primal),
+                jax.tree_util.tree_map(lambda _: True, tangent),
+            )
+
+        return _solve
+
+    def _along(y0, t_span, params, dy0, dparams):
+        """The tangents along ``total`` directions, ``(..., total, k)``, in groups of at most ``max_directions_per_thread``."""
+        total = dy0.shape[-2]
+        groups = 1
+        if max_directions_per_thread is not None:
+            groups = -(-total // max_directions_per_thread)
+        if groups == 1:
+            return solver(total)(y0, t_span, params, dy0, dparams)
+        width = -(-total // groups)
+        spare = groups * width - total
+        if spare:
+            dy0, dparams = (
+                jnp.concatenate(
+                    [d, jnp.zeros(d.shape[:-2] + (spare, d.shape[-1]), d.dtype)],
+                    axis=-2,
+                )
+                for d in (dy0, dparams)
+            )
+        return _replicated(y0, t_span, params, dy0, dparams, groups, width, total)
+
+    def _replicated(y0, t_span, params, dy0, dparams, groups, width, total):
+        """A thread per trajectory and group: copy ``g`` of trajectory ``i`` is row ``i * groups + g``."""
+        n = max(
+            [a.shape[0] for a in (y0, params) if a.ndim == 2]
+            + [d.shape[0] for d in (dy0, dparams) if d.ndim == 3]
+            + [t_span.shape[0] if t_span.ndim == 2 else 1]
+        )
+
+        def copied(a):
+            return jnp.repeat(jnp.broadcast_to(a, (n, a.shape[-1])), groups, axis=0)
+
+        def grouped(d):
+            # (..., groups * width, k) to (n * groups, width, k)
+            return jnp.broadcast_to(d, (n,) + d.shape[-2:]).reshape(
+                n * groups, width, d.shape[-1]
+            )
+
+        times = copied(t_span) if t_span.ndim == 2 and t_span.shape[0] > 1 else t_span
+        primal, tangent = solver(width, groups)(
+            copied(y0), times, copied(params), grouped(dy0), grouped(dparams)
+        )
+        # Every copy integrates the primal; the first of each trajectory's
+        # is its value.
+        primal = jax.tree_util.tree_map(lambda x: x[::groups], primal)
+        # (n * groups, n_save, width, k) back to (n, n_save, total, k)
+        tangent = jax.tree_util.tree_map(
+            lambda x: jnp.moveaxis(x.reshape((n, groups) + x.shape[1:]), 1, 2).reshape(
+                (n, x.shape[1], groups * width) + x.shape[3:]
+            )[:, :, :total],
+            tangent,
+        )
+        return primal, tangent
+
+    return solver(1)

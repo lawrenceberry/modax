@@ -8,14 +8,15 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 import jax.numpy as jnp
-from jax.custom_batching import custom_vmap
+import numpy as np
 from jax.typing import ArrayLike
 
 from modax import _rodas5P, _tsit5
-from modax._hierarchy import Hierarchy, as_hierarchy, make_hierarchy_kernel
+from modax._hierarchy import Block, Hierarchy, as_hierarchy, make_hierarchy_kernel
 from modax._jax_common import (
     ensemble_ffi_call,
     make_custom_vmap_solver,
+    make_directional_solver,
     prepare_inputs,
 )
 from modax._jax_numba_custom_call import CudaLaunch, make_launch
@@ -32,9 +33,11 @@ from modax._numba_common import (
 from modax._options import DEFAULT_TRAJECTORIES_PER_BLOCK, KernelOptions
 from modax._params import Params, param_leaves, param_width
 from modax._sensitivity import (
+    DirectionalSolver,
     RawOutput,
     SensitivitySpec,
     make_sensitivity_solver,
+    own_params,
     quantity_count,
     quantity_hook,
 )
@@ -43,7 +46,6 @@ from modax._sparsity import Pattern, normalize_sparsity, pattern_mask
 from modax._split import SplitHierarchy, make_split_kernel
 
 if TYPE_CHECKING:
-    from modax._hierarchy import Block
     from modax._sparsity import Sparsity
 
 System = OdeFn | Hierarchy | SplitHierarchy
@@ -65,6 +67,7 @@ def solve(
     return_stats: bool = False,
     sparsity: Sparsity | None = None,
     sens_error_control: bool = True,
+    max_directions_per_thread: int | None = None,
     save_hook: SaveHook | None = None,
     save_history: bool = True,
     trajectories_per_block: int | None = None,
@@ -83,10 +86,15 @@ def solve(
     ``method`` steps every block that names no method of its own.
 
     The solve is ``jit``-traceable, and an outer ``jax.vmap`` becomes one
-    larger ensemble launch. ``jax.jvp``, ``jax.grad`` and friends
-    differentiate it with respect to ``y0`` and ``params`` by integrating the
-    forward-sensitivity system with the state. That works for Tsit5 and
-    Rodas5P on plain systems and for Rodas5P blocks in a hierarchy.
+    larger ensemble launch. ``jax.jvp`` and ``jax.jacfwd`` differentiate it
+    with respect to ``y0`` and ``params`` by integrating the
+    forward-sensitivity system with the state, one column along each
+    tangent: ``jax.jvp`` costs one column whatever the number of parameters,
+    and ``jax.jacfwd`` one column per direction. Reverse mode (``jax.grad``,
+    ``jax.vjp`` and the rest) raises NotImplementedError. A trajectory
+    and its directions share one thread, unless ``max_directions_per_thread``
+    spreads them over replicas. That works for Tsit5 and Rodas5P on plain systems
+    and for Rodas5P blocks in a hierarchy.
 
     Args:
         ode_fn: The right-hand side ``(y, t, p) -> tuple`` of scalars, a
@@ -105,12 +113,7 @@ def solve(
         params: Parameters: an array, ``(n_params,)`` or ``(N, n_params)``,
             or a pytree of them (a tuple, a dict) whose leaves are ``()``,
             ``(k,)`` or ``(N, k)`` and concatenate, in ``jax.tree.leaves``
-            order, into the row ``ode_fn`` sees. Differentiation follows the
-            leaves: only the columns of the leaves JAX differentiates get a
-            sensitivity, so ``jax.grad(loss)(rates, temp)`` with
-            ``params=(rates, temp)`` integrates the rates' columns alone,
-            when ``temp`` is a constant or wrapped in ``stop_gradient``. Each
-            column costs a second-order Enzyme sweep per stage. ``N`` comes
+            order, into the row ``ode_fn`` sees. ``N`` comes
             from whichever of ``y0``, ``params`` and ``t_span`` has a batch
             axis. Batched ones must agree.
         method: :class:`~modax.Rodas5P` (``None`` means ``Rodas5P()``),
@@ -137,6 +140,12 @@ def solve(
         sens_error_control: Hold the sensitivities to the tolerance too, when
             differentiated. ``False`` takes them out of step-size control, so
             the joint solve takes the plain solve's steps.
+        max_directions_per_thread: The most directions one thread
+            integrates when the solve is differentiated. ``None`` puts every
+            direction in its trajectory's thread. An integer splits the
+            directions into groups of at most that many, each in a thread of
+            its own beside a copy of the trajectory, so a small ensemble's
+            directions run side by side. Every copy repeats the primal.
         save_hook: A function ``(y, t, p) -> tuple`` of quantities to keep
             at every save time, shaped like ``ode_fn`` and compiled the same
             way. The solve returns ``(history, quantities)``, the quantities
@@ -161,19 +170,26 @@ def solve(
             ``save_hook`` does not return a tuple of numbers.
         ValueError: If ``t_span``'s rows disagree with the ensemble, a
             hierarchy or split system gets a ``sparsity`` or a ``y0`` of the
-            wrong width, or ``save_history=False`` comes without a hook.
+            wrong width, ``save_history=False`` comes without a hook, or
+            ``max_directions_per_thread`` is below 1.
     """
     method = Rodas5P() if method is None else method
     if not isinstance(method, (Rodas5P, Tsit5, Auto)):
         raise TypeError(f"method must be Rodas5P, Tsit5 or Auto, got {method!r}")
+    if max_directions_per_thread is not None and max_directions_per_thread < 1:
+        raise ValueError(
+            "max_directions_per_thread must be at least 1, got "
+            f"{max_directions_per_thread}"
+        )
     if save_hook is None and not save_history:
         raise ValueError("save_history=False needs a save_hook to consume the saves")
     n_vars = int(jnp.shape(y0)[-1])
     system, pattern, max_driver = _system(ode_fn, method, n_vars, sparsity)
+    n_params = param_width(params)
     if save_hook is not None:
         # Typed here, on the host, so a hook of the wrong shape fails before
         # any tracing does.
-        quantity_count(save_hook, n_vars, param_width(params))
+        quantity_count(save_hook, n_vars, n_params)
     options = KernelOptions(
         method=method,
         trajectories_per_block=(
@@ -192,24 +208,51 @@ def solve(
 
     # The JVP rule wraps the vmap-aware solvers rather than the other way
     # round: custom_vmap's own JVP path instantiates symbolic zeros, which is
-    # what tells the rule which sensitivity blocks it has to integrate.
-    def solver_for(spec: SensitivitySpec | None) -> custom_vmap:
-        return make_custom_vmap_solver(
-            functools.partial(
+    # what tells the rule which inputs move.
+    primal_solver = make_custom_vmap_solver(
+        functools.partial(
+            _run,
+            system,
+            options=options,
+            settings=settings,
+            return_stats=return_stats,
+        )
+    )
+
+    def directional(n_columns: int) -> DirectionalSolver:
+        # The kernel integrates a column per direction, seeded with that
+        # direction's window of the parameter row.
+        def run_for(n_dirs: int, copies: int = 1):
+            # ``copies`` repeats every trajectory, and so its error weights.
+            weights = settings.error_weights
+            if copies > 1 and weights is not None and np.ndim(weights) == 2:
+                weights = np.repeat(np.asarray(weights), copies, axis=0)
+            return functools.partial(
                 _run,
                 system,
-                options=replace(options, spec=spec),
-                settings=settings,
+                options=replace(
+                    options,
+                    spec=SensitivitySpec(
+                        n_vars, n_params, n_dirs, error_control=sens_error_control
+                    ),
+                ),
+                settings=replace(settings, error_weights=weights),
                 return_stats=return_stats,
             )
+
+        return make_directional_solver(
+            run_for,
+            n_vars,
+            n_columns,
+            max_directions_per_thread=max_directions_per_thread,
         )
 
     leaves = param_leaves(params)
     hist, quantities, stats = make_sensitivity_solver(
-        solver_for,
+        primal_solver,
+        directional,
         n_vars,
         [leaf.shape[-1] for leaf in leaves],
-        sens_error_control=sens_error_control,
     )(y0, t_span, *leaves)
     out: tuple[Any, ...] = (hist,)
     if quantities is not None:
@@ -270,8 +313,6 @@ def _one_block(rhs: OdeFn, n: int, pattern: Pattern | None, method: Method) -> B
     The hierarchy kernel caches on the block, so a fresh block would mean a
     fresh compile on every solve.
     """
-    from modax._hierarchy import Block
-
     sparsity = None if pattern is None else pattern_mask(pattern)
     return Block(rhs, n, sparsity=sparsity, method=method)
 
@@ -298,12 +339,13 @@ def _run(
     if options.save_hook is not None:
         # The user's quantities become the kernel's hook here, where the spec
         # and the save count are known: values and tangents, save after save.
-        n_out = quantity_count(options.save_hook, inputs.n_vars, inputs.n_params)
+        n_params = own_params(inputs.n_params, spec)
+        n_out = quantity_count(options.save_hook, inputs.n_vars, n_params)
         n_dirs = 1 + (spec.n_sens if spec is not None else 0)
         options = replace(
             options,
             save_hook=quantity_hook(
-                options.save_hook, n_out, inputs.n_vars, inputs.n_params, spec
+                options.save_hook, n_out, inputs.n_vars, n_params, spec
             ),
             hook_size=n_out * n_dirs * inputs.n_save,
         )

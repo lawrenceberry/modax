@@ -154,13 +154,11 @@ solvers return `(hist, quantities, stats)` (`RawOutput` in `_sensitivity.py`),
 and `_solve._run` turns the user's hook into the kernel's
 `hook(save_idx, y, t, p_row, acc)` with `quantity_hook` for the launch's spec,
 which stores each save's values and then one Enzyme tangent per direction.
-The JVP rule contracts those tangents with the input tangents exactly as it
-does `S`. There is no `sensitivity=` to ask for a joint launch by hand: a
-caller that wants its own layout of directions says so through the leaves of
-`params`. DISCO-EB's one column per replica is a leaf holding its `eps`
-column, differentiated with `jax.jvp` and `sens_error_control=False`, which
-derives the very spec it used to pass (measured bit-identical, same compile
-and run time). `tests/test_save_hook.py` pins all of it against the history.
+A directional launch's quantity tangents are its tangents along the
+directions it was given, like the history's. There is no `sensitivity=` to
+ask for a joint launch by hand: forward mode integrates a column per tangent
+by itself (the directional mode, below). DISCO-EB held an `eps` column in a
+leaf of its own until that mode replaced it. `tests/test_save_hook.py` pins all of it against the history.
 
 Shared support modules:
 
@@ -528,38 +526,93 @@ taking smaller steps. At the level of FP32 rounding that costs little, and the
 ### Forward sensitivities
 
 Both solvers carry a `jax.custom_jvp` rule (`modax/_sensitivity.py`), so
-`jax.jvp`, `jax.jacfwd`, `jax.grad`, `jax.jacrev` and `jax.value_and_grad` work
-with respect to `y0` and `params`. Asking for a derivative integrates the
-continuous forward-sensitivity system jointly with the state,
+`jax.jvp` and `jax.jacfwd` work with respect to `y0` and `params`. Reverse
+mode does not (2026-11-18, at the user's direction): `grad`,
+`value_and_grad`, `vjp`, `jacrev` and `linearize` raise. Asking for a
+derivative integrates one column along each tangent jointly with the
+state,
 
 ```
-d/dt [y, S] = [f(t, y, p), J_y S + J_p]
+d/dt [y, s] = [f(t, y, p), J_y s + J_p dp],    s(t0) = dy0
 ```
 
-as one system of `n_aug = n_vars * (1 + n_sens)` components, so `value_and_grad`
-is one solve rather than two. `t_span` is not differentiable and raises. The
-docs' `usage/gradients.md` carries the design argument and the proof that a
-stiff ODE has an equally stiff sensitivity system; this is what to know before
-touching the code.
+a system of `2 n_vars` components per direction whatever the parameter
+count, so a `jvp` returns the value from the same solve (`jacfwd` with
+`has_aux` does the same for a gradient). `t_span` is not differentiable
+and raises. The docs' `usage/gradients.md` carries the contraction step by
+step, the design argument and the proof that a stiff ODE has an equally
+stiff sensitivity system; this is what to know before touching the code.
 
 - **The rule sits outside `custom_vmap`, not inside.** `custom_vmap`'s own JVP
   path traces to a jaxpr, which instantiates every symbolic zero; the rule uses
-  `symbolic_zeros=True` to see *which* arguments are being differentiated and
-  integrate only those blocks. Nest it the other way and every solve carries
-  the `n_vars` initial-state columns whether or not anyone wants them.
-- **`jax.grad` needs no adjoint.** The rule materialises `S` and contracts it
-  with the input tangents; that contraction is linear in the tangents, so JAX
-  transposes it and reverse mode falls out of the same rule.
-- **`params` is a pytree, and its leaves pick the parameter columns.**
-  `modax/_params.py` concatenates the leaves into the kernel's row, and the
-  rule takes them as separate arguments, `(y0, t_span, *leaves)`, so a leaf
-  whose tangent is a `SymbolicZero` drops its columns from the joint solve.
-  There is no `sens_param_columns`: symbolic zeros are per leaf, never per
-  element, and that is the whole reason params are split this way. All leaves
-  live gives `param_columns=None`, the plain array's spec and kernel.
-- **Everything is a directional derivative, never a Jacobian.** `J_y S_k + J_p_k`
-  is `jvp` of `ode_fn` seeded with `(S_k, 0, e_k)` — one sweep per column at any
-  `n_vars`, where unit columns would cost `n_vars + 1`. The joint Jacobian's
+  `symbolic_zeros=True` to see *which* arguments are being differentiated,
+  which is what counts the moving columns below.
+- **Forward mode is directional, and the seeds are native** (2026-11-18).
+  A launch's parameter row is `(p, dp_0, ..., dp_{d-1})` and its `y0`
+  `[y, dy0_0, ...]` (`SensitivitySpec(n_vars, n_params, n_dirs)`,
+  `row_width`, `direction_offset`). The callbacks are handed the whole row
+  unwrapped and read the `p` at its front; numba-enzyme reads a tuple
+  argument by its declared width, so the derivatives built for `n_params`
+  read the same. The sweep for column `b` seeds the parameters with the row
+  window `p_row[direction_offset(b):][:n_params]`. `own_params` is the
+  kernels' way back from the row width to `n_params`. This replaced a
+  generated wrapper reading `p + sum_b eps_b dp_b` from a row `(p, eps,
+  dp)` with unit seeds on the `eps` columns, which needed a mirrored
+  hierarchy and a forced-inline wrapper and did the same arithmetic once
+  inlined. The hierarchy's `seed` copies `dp_b` from `p_local` into `pbuf`,
+  beside the upstream Hermite seeds, and every block carries every
+  direction.
+- **There is no column system any more** (2026-11-18). A column per
+  differentiated input (`n_vars (1 + n_vars + D)` with everything moving)
+  served reverse mode, `jit`-staged tangents and `jacfwd` with more
+  directions than inputs. Reverse mode is gone; staged tangents go
+  directional; and the last raises (below). `SensitivitySpec` describes
+  directions only.
+- **Reverse mode raises.** A directional launch takes the tangents as
+  data, so JAX cannot transpose it, and reverse mode has no input-side
+  direction to give it: `S^T ybar` from products `S v` takes one per basis
+  vector, the whole column system. `_reverse_mode` spots `grad`, `vjp`,
+  `jacrev` and `linearize` by their `partial_eval.JaxprTracer` tangents
+  (through `BatchTracer`s) and raises `NotImplementedError`. Under `jit`
+  the tangents are `DynamicJaxprTracer`s for `jit(jvp(f))` and
+  `grad(jit(f))` alike, so the second goes directional and fails at
+  transposition with JAX's "Linearization failed" error.
+- **`jacfwd` adds columns** (`_jax_common.make_directional_solver`).
+  `jacfwd` maps the tangents with the primals fixed and demands an unmapped
+  primal output. The solver's vmap rule folds the mapped axis into the
+  direction axis and launches the kernel built for that many directions
+  (one kernel per count), so a trajectory and all its directions share one
+  thread. Mapped primals are other trajectories and flatten into the
+  ensemble. Measured on DISCO-EB's 55-state hierarchy, five parameters
+  moving six of nine inputs (RTX 4070 SUPER), against the column system:
+  128 trajectories 1.79 s against 3.57 s (nine columns) and 1.99 s (six);
+  16,384 trajectories 3.58 s against 6.97 s and 3.72 s.
+- **`max_directions_per_thread` spreads directions over replicas**
+  (2026-11-18, replacing `Derivatives`, whose per-launch method, error
+  weights and register cap were dropped at the user's direction: a
+  differentiated launch now uses the solve's own). With an integer `k`,
+  `_along` splits the directions into `ceil(total / k)` groups of one
+  width, pads the last with zero directions, and `_replicated` runs each
+  group beside a copy of its trajectory in one launch (`run_for(n_dirs,
+  copies)` repeats 2-D error weights). `k = 1` is a thread per
+  (trajectory, direction): DISCO-EB's 128-trajectory derivative in 0.38 s
+  against 1.79 s as columns, since an idle device absorbs the copies, and
+  16,384 trajectories in 4.49 s against 3.58 s, since they repeat the
+  primal.
+- **More directions than moving inputs raise.** The rule counts a
+  trajectory's moving inputs (`n_vars` for a live `y0`, plus the widths of
+  the live leaves) and hands the count to `make_directional_solver`, whose
+  vmap rule raises a ValueError when the folded directions exceed it.
+  `jacfwd` over an ensemble's `(N, k)` parameters is the case: every
+  trajectory would get `N k` directions, nearly all zero for it. The
+  message points to `jax.vmap(jax.jacfwd(f))`, which gives each thread `k`.
+- **`params` is a pytree.** `modax/_params.py` concatenates the leaves
+  into the kernel's row, and the rule takes them as separate arguments,
+  `(y0, t_span, *leaves)`, so a leaf whose tangent is a `SymbolicZero`
+  counts no moving column and gets a zero direction.
+- **Everything is a directional derivative, never a Jacobian.** `J_y s_b +
+  J_p dp_b` is `jvp` of `ode_fn` seeded with `(s_b, 0, dp_b)`: one sweep per
+  column at any `n_vars`, where unit columns would cost `n_vars + 1`. The joint Jacobian's
   coupling block applied to a vector, and the sensitivity rows' `dF/dt`, are
   `jvp(jvp(ode_fn))` (forward over forward) with the second direction set to the
   state increment or to the time direction. Composing makes the derivative of
@@ -568,11 +621,10 @@ touching the code.
   bilinear form. Both the tuple-shaped `jvp` and its composability are
   modax-driven additions to the numba-enzyme fork, where every endpoint now
   composes over a `jvp`; see `wheels/README.md`.
-- **The unit and zero directions are windows into one constant-memory table**,
-  `seed_table`: `2L` zeros with a single `1.0` at `L`, so the window starting at
-  `L - k` has its `1.0` at `k`, and any window inside `[0, L)` is all zeros. A
-  per-thread one-hot buffer instead could not promote to registers, because its
-  store index is dynamic.
+- **The zero directions are windows into one constant-memory table**,
+  `seed_table`, `max(n_vars, n_params)` zeros. A per-thread buffer could not
+  promote to registers. The Jacobian's colour seeds have a table of their own
+  (`CompressedJacobian.seed_table`).
 - **Rodas5P factorises the state block only.** The joint iteration matrix is
   block lower triangular with the same `M0 = I/(h*gamma) - J_y` on every
   diagonal block, so `block_solve` is a forward substitution against one
@@ -765,8 +817,10 @@ touching the code.
   on 3.10 the dev group leaves it out and the gradsolve cases fail to import.
 - `benchmarks/` — scaling, dimensionality and divergence benchmarks behind the
   figures of the "Accelerating massive ensembles of ODEs" paper, plus a
-  Jacobian-density sweep (`stiff_vdp_sparsity`) and a `value_and_grad` sweep
-  (`stiff_vdp_gradient`). Each caches timings in `results.json` and writes a
+  Jacobian-density sweep (`stiff_vdp_sparsity`) and a value-and-gradient
+  sweep (`stiff_vdp_gradient`: modax under `vmap(jacfwd)` with `has_aux`,
+  `jit_value_and_jacfwd`, Diffrax under `value_and_grad`). Each caches
+  timings in `results.json` and writes a
   per-GPU CSV and plot. Two drivers: `_sweep.py` for one axis over an
   ensemble of identical trajectories, `_divergence.py` for the
   divergence knob. Every point is measured in a child process

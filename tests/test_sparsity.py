@@ -143,6 +143,6 @@ def test_gradients_survive_compression():
         return jnp.sum(out[0, -1] ** 2)
 
     p0 = jnp.asarray([0.7, 0.4, 0.2])
-    dense = jax.grad(loss)(p0)
-    sparse = jax.grad(loss)(p0, sparsity=CHAIN)
+    dense = jax.jacfwd(loss)(p0)
+    sparse = jax.jacfwd(loss)(p0, sparsity=CHAIN)
     np.testing.assert_allclose(np.asarray(sparse), np.asarray(dense), rtol=1e-9)

@@ -94,7 +94,7 @@ def test_derivatives_are_built_for_the_kernel_target(device, monkeypatch):
         _sensitivity.make_tangent(rhs, 1, 1)
         _sensitivity.make_second_tangent(rhs, 1, 1)
         _sensitivity.quantity_hook(
-            rhs, 1, 1, 1, _sensitivity.SensitivitySpec(1, 1, False, True)
+            rhs, 1, 1, 1, _sensitivity.SensitivitySpec(1, 1, n_dirs=1)
         )
     finally:
         _sensitivity.clear_caches()
@@ -149,15 +149,12 @@ def test_rodas5p_links_for_blackwell(pretend_blackwell, with_sensitivities):
     from modax._options import KernelOptions
     from modax._rodas5P import make_kernel as make_rodas5p_kernel
 
-    spec = (
-        _sensitivity.SensitivitySpec(2, 2, wrt_y0=False, wrt_params=True)
-        if with_sensitivities
-        else None
-    )
+    spec = _sensitivity.SensitivitySpec(2, 2, n_dirs=1) if with_sensitivities else None
     # With a quantity hook, whose tangent is a third Enzyme derivative to link.
     hook = _sensitivity.quantity_hook(lambda y, t, p: (y[0] + y[1],), 1, 2, 2, spec)
     options = KernelOptions(spec=spec, save_hook=hook, hook_size=4)
-    kernel, _ = make_rodas5p_kernel(decay, 2, 2, options)
+    row = 2 if spec is None else spec.row_width  # the parameters, then dp
+    kernel, _ = make_rodas5p_kernel(decay, 2, row, options)
     cres = bridge.target_kernel(kernel).compile(SOLVER_ARGTYPES).cres
     assert kernel.targetoptions["chip"] == "sm_90"
     assert cres.metadata["cubin"]
@@ -172,7 +169,7 @@ def test_tsit5_sensitivities_link_for_blackwell(pretend_blackwell):
     from modax._options import KernelOptions
     from modax._tsit5 import make_kernel as make_tsit5_kernel
 
-    spec = _sensitivity.SensitivitySpec(2, 2, wrt_y0=True, wrt_params=True)
+    spec = _sensitivity.SensitivitySpec(2, 2, n_dirs=2)
     options = KernelOptions(method=Tsit5(backend="local"), spec=spec)
     kernel, _ = make_tsit5_kernel(decay, 1, 2, options)
     cres = bridge.target_kernel(kernel).compile(SOLVER_ARGTYPES).cres

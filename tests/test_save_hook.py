@@ -157,42 +157,51 @@ def test_quantities_differentiate_like_the_history(quantities, n_out, method):
     """``jax.jacfwd`` of the hooked quantities, with respect to ``params`` and ``y0``."""
     y0, _, params = _problem()
     y0, params = jnp.asarray(y0), jnp.asarray(params)
-    rows = np.arange(3)
+    # Each trajectory's quantities depend on its own row only, so the
+    # derivative maps over the rows.
     for argnum in (0, 1):
-        hooked = jax.jacfwd(
-            lambda a, p: _hooked(quantities, a, p, method, sens_error_control=False),
-            argnums=argnum,
+        hooked = jax.vmap(
+            jax.jacfwd(
+                lambda a, p: _hooked(
+                    quantities, a, p, method, sens_error_control=False
+                )[0],
+                argnums=argnum,
+            )
         )(y0, params)
-        expected = jax.jacfwd(
-            lambda a, p: _over_history(quantities, n_out, a, p, method), argnums=argnum
+        expected = jax.vmap(
+            jax.jacfwd(
+                lambda a, p: _over_history(quantities, n_out, a, p, method)[0],
+                argnums=argnum,
+            )
         )(y0, params)
-        # Each trajectory's quantities depend on its own row only.
         np.testing.assert_allclose(
-            np.asarray(hooked)[rows, :, :, rows],
-            np.asarray(expected)[rows, :, :, rows],
-            rtol=1e-6,
-            atol=1e-9,
+            np.asarray(hooked), np.asarray(expected), rtol=1e-6, atol=1e-9
         )
 
 
 @requires_cuda
 @METHODS
-def test_grad_through_the_quantities_alone(method):
-    """``save_history=False``: a loss of the quantities, and its gradient."""
+def test_gradient_through_the_quantities_alone(method):
+    """``save_history=False``: a loss of the quantities, its value and gradient."""
     y0, _, params = _problem()
-    params = jnp.asarray(params)
+    y0, params = jnp.asarray(y0), jnp.asarray(params)
 
-    def loss(p):
-        q = _hooked(energy_alone, y0, p, method, save_history=False)
-        return jnp.sum(q**2)
+    def loss_and_value(p, a):
+        q = _hooked(energy_alone, a, p, method, save_history=False)
+        value = jnp.sum(q**2)
+        return value, value
 
-    def reference(p):
-        return jnp.sum(_over_history(energy_alone, 1, jnp.asarray(y0), p, method) ** 2)
+    def reference(p, a):
+        return jnp.sum(_over_history(energy_alone, 1, a, p, method) ** 2)
 
-    value, grad = jax.value_and_grad(loss)(params)
-    np.testing.assert_allclose(float(value), float(reference(params)), rtol=1e-8)
+    grad, value = jax.vmap(jax.jacfwd(loss_and_value, has_aux=True))(params, y0)
     np.testing.assert_allclose(
-        np.asarray(grad), np.asarray(jax.grad(reference)(params)), rtol=1e-6
+        np.asarray(value), np.asarray(jax.vmap(reference)(params, y0)), rtol=1e-8
+    )
+    np.testing.assert_allclose(
+        np.asarray(grad),
+        np.asarray(jax.vmap(jax.jacfwd(reference))(params, y0)),
+        rtol=1e-6,
     )
 
 
@@ -203,11 +212,11 @@ def test_quantity_gradients_follow_the_params_leaves(method):
     y0, _, params = _problem()
     stiffness, damping = jnp.asarray(params[:, :1]), jnp.asarray(params[:, 1:])
 
-    def loss(k, c):
-        return jnp.sum(_hooked(energy_and_position, y0, (k, c), method) ** 2)
+    def loss(k, c, a):
+        return jnp.sum(_hooked(energy_and_position, a, (k, c), method) ** 2)
 
-    only_k = jax.grad(loss)(stiffness, damping)
-    both = jax.grad(loss, (0, 1))(stiffness, damping)
+    only_k = jax.vmap(jax.jacfwd(loss))(stiffness, damping, jnp.asarray(y0))
+    both = jax.vmap(jax.jacfwd(loss, (0, 1)))(stiffness, damping, jnp.asarray(y0))
     assert only_k.shape == (3, 1)
     np.testing.assert_allclose(np.asarray(only_k), np.asarray(both[0]), rtol=1e-6)
 
@@ -235,7 +244,7 @@ def test_a_vmapped_hooked_solve_is_one_ensemble(method):
 def test_jvp_along_one_leaf_carries_one_column(quantities, n_out, method):
     """A leaf of its own for one parameter column, differentiated by ``jax.jvp``.
 
-    The rule then integrates that column alone (``param_columns=(0,)``), out of
+    The rule then integrates one column along it, out of
     step control with ``sens_error_control=False``, and the quantities'
     tangent is that column of their Jacobian.
     """
@@ -256,10 +265,11 @@ def test_jvp_along_one_leaf_carries_one_column(quantities, n_out, method):
     )
     assert values.shape == tangent.shape == (3, N_SAVE, n_out)
     y0_j, p_j = jnp.asarray(y0), jnp.asarray(params)
-    rows = np.arange(3)
     d_p = np.asarray(
-        jax.jacfwd(lambda p: _over_history(quantities, n_out, y0_j, p, method))(p_j)
-    )[rows, :, :, rows]
+        jax.vmap(
+            jax.jacfwd(lambda p, a: _over_history(quantities, n_out, a, p, method)[0])
+        )(p_j, y0_j)
+    )
     np.testing.assert_allclose(
         values,
         _over_history(quantities, n_out, y0_j, p_j, method),
@@ -271,8 +281,6 @@ def test_jvp_along_one_leaf_carries_one_column(quantities, n_out, method):
 
 def test_quantity_hook_needs_a_spec_of_its_problem():
     with pytest.raises(ValueError, match="sensitivity spec"):
-        quantity_hook(
-            energy_alone, 1, 2, 2, SensitivitySpec(3, 2, wrt_y0=False, wrt_params=True)
-        )
+        quantity_hook(energy_alone, 1, 2, 2, SensitivitySpec(3, 2, n_dirs=1))
     with pytest.raises(ValueError, match="at least one"):
         quantity_hook(energy_alone, 0, 2, 2)

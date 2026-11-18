@@ -123,8 +123,8 @@ def test_split_sensitivities_match_the_closed_form():
     jy = np.asarray(jax.jacfwd(final, argnums=1)(p, y0))
     jy_exact = np.asarray(jax.jacfwd(exact, argnums=1)(p, y0))
     assert np.abs(jy - jy_exact).max() < 1e-5 * (1.0 + np.abs(jy_exact).max())
-    # reverse mode falls out of the same rule
-    g = np.asarray(jax.grad(lambda p_: final(p_, y0)[1])(p))
+    # the gradient of one component, as forward mode gives it
+    g = np.asarray(jax.jacfwd(lambda p_: final(p_, y0)[1])(p))
     assert np.abs(g - jp_exact[1]).max() < 1e-5 * (1.0 + np.abs(jp_exact).max())
 
 

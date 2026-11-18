@@ -16,7 +16,7 @@ import pytest
 from numba_cuda_mlir import cuda
 
 from modax import Rodas5P, Tsit5, solve
-from modax._sensitivity import SensitivitySpec, augmented_y0, split_augmented
+from modax._sensitivity import SensitivitySpec, augmented_y0, own_params
 
 jax.config.update("jax_enable_x64", True)
 
@@ -121,43 +121,35 @@ def central_diff(fn, x, rel=1e-6):
 
 
 # --- the spec itself (no device needed) ------------------------------------
-def test_spec_sizes_only_count_requested_blocks():
-    """Only the blocks JAX asks for are carried, so grad wrt p stays cheap."""
-    params_only = SensitivitySpec(n_vars=4, n_params=2, wrt_y0=False, wrt_params=True)
-    assert params_only.n_sens == 2
-    assert params_only.n_aug == 4 * (1 + 2)
-
-    y0_only = SensitivitySpec(n_vars=4, n_params=2, wrt_y0=True, wrt_params=False)
-    assert y0_only.n_sens == 4
-    assert y0_only.n_aug == 4 * (1 + 4)
-
-    both = SensitivitySpec(n_vars=4, n_params=2, wrt_y0=True, wrt_params=True)
-    assert both.n_sens == 6
-    assert both.n_aug == 4 * (1 + 6)
-
-    with pytest.raises(ValueError, match="at least one direction block"):
-        SensitivitySpec(n_vars=4, n_params=2, wrt_y0=False, wrt_params=False)
+def test_spec_sizes_follow_the_directions():
+    """A column per direction, and a ``dp`` per direction in the row."""
+    spec = SensitivitySpec(n_vars=4, n_params=2, n_dirs=3)
+    assert spec.n_sens == 3
+    assert spec.n_aug == 4 * (1 + 3)
+    assert spec.row_width == 2 * (1 + 3)
+    assert [spec.direction_offset(b) for b in range(3)] == [2, 4, 6]
+    with pytest.raises(ValueError, match="at least one direction"):
+        SensitivitySpec(n_vars=4, n_params=2, n_dirs=0)
 
 
 def test_spec_error_norm_denominator():
     """Excluded sensitivities must not dilute the state's error norm."""
-    spec = SensitivitySpec(3, 2, False, True, False)
+    spec = SensitivitySpec(3, 2, 1, error_control=False)
     assert spec.n_error == 3
-    assert SensitivitySpec(3, 2, False, True, True).n_error == spec.n_aug
+    assert SensitivitySpec(3, 2, 1, error_control=True).n_error == spec.n_aug
 
 
-def test_augmented_layout_round_trips():
-    """``S(t0)`` is the identity for y0 directions and zero for parameters."""
-    spec = SensitivitySpec(n_vars=2, n_params=3, wrt_y0=True, wrt_params=True)
-    y0 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
-    z0 = augmented_y0(y0, spec)
-    assert z0.shape == (2, spec.n_aug)
-
-    state, sens = split_augmented(z0[:, None, :], spec)
-    np.testing.assert_allclose(np.asarray(state)[:, 0], np.asarray(y0))
-    for trajectory in range(2):
-        np.testing.assert_allclose(np.asarray(sens)[trajectory, 0, :, :2], np.eye(2))
-        np.testing.assert_allclose(np.asarray(sens)[trajectory, 0, :, 2:], 0.0)
+def test_a_joint_launch_takes_its_row_and_state_joint():
+    """``y0`` arrives as ``[y, dy0_0, ...]`` and the row as ``(p, dp_0, ...)``."""
+    spec = SensitivitySpec(n_vars=2, n_params=3, n_dirs=2)
+    z0 = jnp.ones((5, spec.n_aug))
+    assert augmented_y0(z0, spec) is z0
+    with pytest.raises(ValueError, match="joint initial state"):
+        augmented_y0(jnp.ones((5, 2)), spec)
+    assert own_params(spec.row_width, spec) == 3
+    assert own_params(7, None) == 7
+    with pytest.raises(ValueError, match="parameter row"):
+        own_params(4, spec)
 
 
 # --- closed-form sensitivities ---------------------------------------------
@@ -225,11 +217,11 @@ def test_nonautonomous_sensitivities_match_closed_form(solve_fn, kwargs):
     np.testing.assert_allclose(jac, exact, rtol=1e-5, atol=1e-10)
 
 
-# --- reverse mode, which transposes the same rule ---------------------------
+# --- gradients, as forward mode gives them ---------------------------------
 @requires_cuda
 @both_solvers
-def test_grad_matches_central_differences(solve_fn, kwargs):
-    """jax.grad works by transposing the tangent contraction -- no adjoint solve."""
+def test_jacfwd_gradient_matches_central_differences(solve_fn, kwargs):
+    """The gradient of a scalar loss is jacfwd's, a column per input."""
     y0 = jnp.asarray(Y0)
     params = jnp.asarray([A, B])
     t_span = jnp.asarray(T_SPAN)
@@ -239,21 +231,21 @@ def test_grad_matches_central_differences(solve_fn, kwargs):
         return jnp.sum(solve_fn(cascade, y0, t_span, p, **settings) ** 2)
 
     # Central differences are the noisy side of this comparison, not the solver.
-    grad = np.asarray(jax.grad(loss)(params))
+    grad = np.asarray(jax.jacfwd(loss)(params))
     np.testing.assert_allclose(grad, central_diff(loss, params), rtol=1e-4)
 
     def loss_y0(a):
         return jnp.sum(solve_fn(cascade, a, t_span, params, **settings) ** 2)
 
     np.testing.assert_allclose(
-        np.asarray(jax.grad(loss_y0)(y0)), central_diff(loss_y0, y0), rtol=1e-4
+        np.asarray(jax.jacfwd(loss_y0)(y0)), central_diff(loss_y0, y0), rtol=1e-4
     )
 
 
 @requires_cuda
 @both_solvers
-def test_value_and_grad_reuses_one_joint_solve(solve_fn, kwargs):
-    """The value from the joint solve is the value the plain solve returns."""
+def test_value_and_gradient_come_from_one_joint_solve(solve_fn, kwargs):
+    """``has_aux`` returns the joint solve's value, which is the plain solve's."""
     y0 = jnp.asarray(Y0)
     params = jnp.asarray([A, B])
     t_span = jnp.asarray(T_SPAN)
@@ -262,18 +254,22 @@ def test_value_and_grad_reuses_one_joint_solve(solve_fn, kwargs):
     def loss(p):
         return jnp.sum(solve_fn(cascade, y0, t_span, p, **settings) ** 2)
 
+    def loss_and_value(p):
+        value = loss(p)
+        return value, value
+
     # The joint solve error-controls the sensitivities by default, so it picks
     # its own steps; the value it returns still agrees to solver tolerance.
-    value, grad = jax.value_and_grad(loss)(params)
+    grad, value = jax.jacfwd(loss_and_value, has_aux=True)(params)
     np.testing.assert_allclose(float(value), float(loss(params)), rtol=1e-8)
     np.testing.assert_allclose(
-        np.asarray(grad), np.asarray(jax.grad(loss)(params)), rtol=1e-12
+        np.asarray(grad), np.asarray(jax.jacfwd(loss)(params)), rtol=1e-12
     )
 
 
 @requires_cuda
 @both_solvers
-def test_grad_wrt_params_ignores_the_y0_block(solve_fn, kwargs):
+def test_jacfwd_wrt_params_ignores_the_y0_directions(solve_fn, kwargs):
     """Asking only for dL/dp must not change the answer, only the cost."""
     y0 = jnp.asarray(Y0)
     params = jnp.asarray([A, B])
@@ -283,42 +279,55 @@ def test_grad_wrt_params_ignores_the_y0_block(solve_fn, kwargs):
     def loss(a, p):
         return jnp.sum(solve_fn(cascade, a, t_span, p, **settings) ** 2)
 
-    params_only = jax.grad(loss, 1)(y0, params)
-    both = jax.grad(loss, (0, 1))(y0, params)
-    # Not bit-identical: carrying the initial-state block as well puts more
-    # components in the error norm, which moves the step sequence slightly.
+    params_only = jax.jacfwd(loss, 1)(y0, params)
+    both = jax.jacfwd(loss, (0, 1))(y0, params)
+    # Not bit-identical: the initial-state directions put more components in
+    # the error norm, which moves the step sequence slightly.
     np.testing.assert_allclose(np.asarray(params_only), np.asarray(both[1]), rtol=1e-8)
 
 
 # --- integration with the rest of the JAX surface ---------------------------
 @requires_cuda
 @both_solvers
-def test_ensemble_gradients_are_per_trajectory(solve_fn, kwargs):
-    """Each trajectory's gradient depends only on its own row of params."""
+def test_vmap_of_jacfwd_is_per_trajectory(solve_fn, kwargs):
+    """Mapped outside the derivative, each trajectory integrates its own columns."""
     t_span = jnp.asarray(T_SPAN)
     y0 = jnp.asarray(np.broadcast_to(Y0, (3, 2)))
     params = jnp.asarray([[A, B], [0.4, 0.9], [1.1, 2.0]])
     settings = dict(rtol=1e-10, atol=1e-12, **kwargs)
 
-    def loss(p):
-        return jnp.sum(solve_fn(cascade, y0, t_span, p, **settings) ** 2)
+    def loss(a, p):
+        return jnp.sum(solve_fn(cascade, a, t_span, p, **settings) ** 2)
 
-    grad = np.asarray(jax.jit(jax.grad(loss))(params))
+    grad = np.asarray(jax.jit(jax.vmap(jax.jacfwd(loss, 1)))(y0, params))
     assert grad.shape == (3, 2)
     for row in range(3):
-        single = jax.grad(
-            lambda p: jnp.sum(solve_fn(cascade, y0[row], t_span, p, **settings) ** 2)
-        )(params[row])
+        single = jax.jacfwd(loss, 1)(y0[row], params[row])
         np.testing.assert_allclose(grad[row], np.asarray(single), rtol=1e-8)
 
 
 @requires_cuda
 @both_solvers
-def test_grad_through_vmap(solve_fn, kwargs):
+def test_jacfwd_over_an_ensembles_rows_raises(solve_fn, kwargs):
+    """A direction per trajectory per parameter would give every thread six columns for two inputs."""
+    t_span = jnp.asarray(T_SPAN)
+    params = jnp.asarray([[A, B], [0.4, 0.9], [1.1, 2.0]])
+
+    def final(p):
+        return solve_fn(cascade, jnp.asarray(Y0), t_span, p, **kwargs)
+
+    with pytest.raises(ValueError, match=r"jax\.vmap\(jax\.jacfwd\(f\)\)"):
+        jax.jacfwd(final)(params)
+
+
+@requires_cuda
+@both_solvers
+def test_jvp_through_vmap(solve_fn, kwargs):
     """An outer vmap still lowers to one ensemble launch under differentiation."""
     t_span = jnp.asarray(T_SPAN)
     y0 = jnp.asarray(np.broadcast_to(Y0, (3, 2)))
     params = jnp.asarray([[A, B], [0.4, 0.9], [1.1, 2.0]])
+    dparams = jnp.asarray([[1.0, -0.5], [0.2, 0.3], [-1.0, 2.0]])
     settings = dict(rtol=1e-10, atol=1e-12, **kwargs)
 
     def loss(p):
@@ -331,15 +340,15 @@ def test_grad_through_vmap(solve_fn, kwargs):
         return jnp.sum(solve_fn(cascade, y0, t_span, p, **settings) ** 2)
 
     np.testing.assert_allclose(
-        np.asarray(jax.grad(loss)(params)),
-        np.asarray(jax.grad(flat_loss)(params)),
+        float(jax.jvp(loss, (params,), (dparams,))[1]),
+        float(jax.jvp(flat_loss, (params,), (dparams,))[1]),
         rtol=1e-8,
     )
 
 
 @requires_cuda
 @both_solvers
-def test_stats_stay_available_under_grad(solve_fn, kwargs):
+def test_stats_stay_available_under_jacfwd(solve_fn, kwargs):
     """Step counters have no derivative but must not block differentiation."""
     y0 = jnp.asarray(Y0)
     params = jnp.asarray([A, B])
@@ -351,7 +360,7 @@ def test_stats_stay_available_under_grad(solve_fn, kwargs):
         assert set(stats) == {"accepted_steps", "rejected_steps", "loop_steps"}
         return jnp.sum(solution**2)
 
-    grad = jax.grad(loss)(params)
+    grad = jax.jacfwd(loss)(params)
     assert np.all(np.isfinite(np.asarray(grad)))
 
 
@@ -361,7 +370,7 @@ def test_t_span_is_not_differentiable():
     y0 = jnp.asarray(Y0)
     params = jnp.asarray([A, B])
     with pytest.raises(NotImplementedError, match="t_span"):
-        jax.grad(
+        jax.jacfwd(
             lambda t: jnp.sum(
                 solve(cascade, y0, t, params, method=Tsit5(), rtol=1e-8, atol=1e-10)
             )
@@ -448,6 +457,172 @@ def test_sens_error_control_is_what_makes_the_gradient_converge(solve_fn, kwargs
     assert controlled <= error(False)
 
 
+# --- forward mode: one column along the tangent ------------------------------
+def _launches(monkeypatch):
+    """Record ``(trajectories, spec)`` of every kernel launch, the last one last.
+
+    A ``vmap`` rule traces the unmapped launch before it runs the mapped
+    one, so only the last record is sure to have reached the device.
+    """
+    import modax._solve as solve_module
+
+    seen = []
+    run = solve_module._run
+
+    def recording(system, y0, t_span, params, *, options, **rest):
+        rows = [jnp.shape(x)[0] for x in (y0, params) if jnp.ndim(x) == 2]
+        seen.append((max(rows, default=1), options.spec))
+        return run(system, y0, t_span, params, options=options, **rest)
+
+    monkeypatch.setattr(solve_module, "_run", recording)
+    return seen
+
+
+@requires_cuda
+@both_solvers
+def test_jvp_integrates_one_column_along_the_tangent(solve_fn, kwargs, monkeypatch):
+    """Both parameters and the initial state move, and the joint state is ``2 n``."""
+    seen = _launches(monkeypatch)
+    y0, params, t_span = jnp.asarray(Y0), jnp.asarray([A, B]), jnp.asarray(T_SPAN)
+    dp, dy0 = jnp.asarray([1.0, -0.5]), jnp.asarray([0.3, 0.2])
+
+    value, tangent = jax.jvp(
+        lambda p, y: solve_fn(cascade, y, t_span, p, rtol=1e-10, atol=1e-12, **kwargs),
+        (params, y0),
+        (dp, dy0),
+    )
+    n, spec = seen[-1]
+    assert n == 1 and spec.n_sens == 1 and spec.n_aug == 2 * len(Y0)
+    np.testing.assert_allclose(
+        value[0], cascade_exact(T_SPAN, Y0, (A, B)), rtol=1e-7, atol=1e-9
+    )
+    expected = cascade_dparams(T_SPAN, Y0, (A, B)) @ np.asarray(dp) + cascade_dy0(
+        T_SPAN, Y0, (A, B)
+    ) @ np.asarray(dy0)
+    np.testing.assert_allclose(tangent[0], expected, rtol=1e-6, atol=1e-8)
+
+
+@requires_cuda
+@both_solvers
+def test_jacfwd_integrates_a_column_per_direction(solve_fn, kwargs, monkeypatch):
+    """Two directions move four inputs of three trajectories: three threads, each ``3 n`` wide."""
+    seen = _launches(monkeypatch)
+    t_span = jnp.asarray(T_SPAN)
+    params = np.asarray([[A, B], [1.2 * A, B], [A, 0.8 * B]])
+
+    def final(theta):
+        # theta scales every trajectory's parameters, and the initial state
+        p, y0 = jnp.asarray(params) * theta[0], jnp.asarray(Y0) * theta[1]
+        return solve_fn(cascade, y0, t_span, p, **kwargs)
+
+    forward = jax.jacfwd(final)(jnp.ones(2))
+    n, spec = seen[-1]
+    assert n == len(params) and spec.n_sens == 2 and spec.n_aug == 3 * len(Y0)
+    assert spec.row_width == 2 * (1 + 2)  # the row (p, dp_0, dp_1)
+    for i, row in enumerate(params):
+        expected = np.stack(
+            [
+                cascade_dparams(T_SPAN, Y0, row) @ row,
+                cascade_dy0(T_SPAN, Y0, row) @ Y0,
+            ],
+            axis=-1,
+        )
+        np.testing.assert_allclose(forward[i], expected, rtol=1e-6, atol=1e-8)
+    # Under jit the tangents are staged values, and still go along directions.
+    np.testing.assert_allclose(
+        jax.jit(jax.jacfwd(final))(jnp.ones(2)), forward, rtol=1e-6, atol=1e-8
+    )
+
+
+@requires_cuda
+@both_solvers
+def test_the_directional_value_is_the_plain_solves(solve_fn, kwargs):
+    """Out of step control the joint solve takes the plain solve's steps."""
+    y0, params, t_span = jnp.asarray(Y0), jnp.asarray([A, B]), jnp.asarray(T_SPAN)
+
+    def run(p):
+        return solve_fn(cascade, y0, t_span, p, sens_error_control=False, **kwargs)
+
+    value, _ = jax.jvp(run, (params,), (jnp.ones_like(params),))
+    np.testing.assert_allclose(value, run(params), rtol=1e-12, atol=1e-14)
+
+
+@requires_cuda
+def test_reverse_mode_raises():
+    """The launch takes the tangents as data, so there is nothing to transpose."""
+    y0, t_span = jnp.asarray(Y0), jnp.asarray(T_SPAN)
+    params = jnp.asarray([A, B])
+
+    def final(p):
+        return solve(cascade, y0, t_span, p, method=Tsit5())
+
+    def loss(p):
+        return jnp.sum(final(p) ** 2)
+
+    for transform in (
+        lambda: jax.grad(loss)(params),
+        lambda: jax.value_and_grad(loss)(params),
+        lambda: jax.jacrev(final)(params),
+        lambda: jax.vjp(final, params),
+        lambda: jax.linearize(final, params),
+    ):
+        with pytest.raises(NotImplementedError, match="forward mode only"):
+            transform()
+    # Under jit JAX stages the rule before it knows it will transpose it, so
+    # the transposition is what fails.
+    with pytest.raises(ValueError, match="reverse-mode"):
+        jax.grad(jax.jit(loss))(params)
+
+
+# --- max_directions_per_thread: directions spread over replicas -------------
+def _scaled(solve_fn, kwargs, max_directions_per_thread=None):
+    """Three directions of three trajectories: both parameters and the initial state scale."""
+    t_span = jnp.asarray(T_SPAN)
+    params = np.asarray([[A, B], [1.2 * A, B], [A, 0.8 * B]])
+
+    def final(theta):
+        p = jnp.asarray(params) * jnp.stack([theta[0], theta[1]])
+        return solve_fn(
+            cascade,
+            jnp.asarray(Y0) * theta[2],
+            t_span,
+            p,
+            max_directions_per_thread=max_directions_per_thread,
+            **kwargs,
+        )
+
+    return final
+
+
+@requires_cuda
+@both_solvers
+def test_two_directions_a_thread_run_on_replicas(solve_fn, kwargs, monkeypatch):
+    """Three directions at two a thread: two copies of each trajectory, the last padded."""
+    reference = jax.jacfwd(_scaled(solve_fn, kwargs))(jnp.ones(3))
+    seen = _launches(monkeypatch)
+    split = jax.jacfwd(_scaled(solve_fn, kwargs, 2))(jnp.ones(3))
+    n, spec = seen[-1]
+    assert n == 6 and spec.n_sens == 2
+    np.testing.assert_allclose(split, reference, rtol=1e-6, atol=1e-8)
+
+
+@requires_cuda
+@both_solvers
+def test_one_direction_a_thread_gives_each_its_own(solve_fn, kwargs, monkeypatch):
+    """Three directions of three trajectories: nine threads of one column each."""
+    reference = jax.jacfwd(_scaled(solve_fn, kwargs))(jnp.ones(3))
+    seen = _launches(monkeypatch)
+    replicated = jax.jacfwd(_scaled(solve_fn, kwargs, 1))(jnp.ones(3))
+    n, spec = seen[-1]
+    assert n == 9 and spec.n_sens == 1
+    np.testing.assert_allclose(replicated, reference, rtol=1e-6, atol=1e-8)
+
+
+def test_max_directions_per_thread_must_be_positive():
+    with pytest.raises(ValueError, match="max_directions_per_thread"):
+        solve(cascade, Y0, T_SPAN, [A, B], max_directions_per_thread=0)
+
+
 # --- the exact joint Jacobian, which is what makes any of this affordable ---
 @requires_cuda
 def test_joint_solve_costs_about_what_the_plain_solve_costs():
@@ -520,6 +695,6 @@ def test_stiff_bilinear_gradients(solve_fn, kwargs):
     def loss(p):
         return jnp.sum(run(p)[-1] ** 2)
 
-    grad = np.asarray(jax.grad(loss)(params))
+    grad = np.asarray(jax.jacfwd(loss)(params))
     grad_fd = central_diff(loss, params, rel=1e-6)
     np.testing.assert_allclose(grad, grad_fd, rtol=1e-4)

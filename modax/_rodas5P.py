@@ -28,6 +28,7 @@ from modax._sensitivity import (
     make_augmented_local_writer,
     make_second_tangent,
     make_tangent,
+    own_params,
     seed_table,
 )
 from modax._sparse_direct import sparse_direct_solver_for
@@ -307,6 +308,9 @@ def make_kernel(
         The kernel and its trajectories per block.
     """
     spec, sparsity, lu_precision = options.spec, options.sparsity, options.lu_precision
+    # A joint launch's row also holds the directions; the callbacks and their
+    # derivatives see the parameters at its front.
+    n_params = own_params(n_params, spec)
     # Both compile-time constants: numba prunes the hook call and the history
     # writes it does not need, so a solve without a hook compiles as before.
     HAS_HOOK = options.save_hook is not None
@@ -361,17 +365,14 @@ def make_kernel(
         ode_write = make_cuda_local_vector_writer(ode_fn, n_vars)
 
     if spec is not None:
-        n_y0_dirs = spec.n_y0_dirs
-        param_cols = spec.param_seed_columns
         seeds = seed_table(spec)
-        length = max(n_vars, n_params)
         second_tangent = make_second_tangent(ode_fn, n_vars, n_params)
 
         @cuda.jit(device=True)
         def write_sensitivity_time_derivative(y_local, t, p_row, dT):
             """Write ``dF/dt`` for the sensitivity rows of the joint system.
 
-            This is ``d/dt (J_y S_k + J_p_k)`` at fixed state, a second derivative of
+            This is ``d/dt (J_y s_b + J_p dp_b)`` at fixed state, a second derivative of
             ode_fn that the second-order sweep returns when seeded with the time
             direction on the outside. Without it these rows of ``dT`` hold stale local
             memory, and the method loses order when the parameter dependence varies
@@ -381,7 +382,7 @@ def make_kernel(
             column = cuda.local.array(n_vars, types.float64)
             for k in range(n_sens):
                 base = n_vars + k * n_vars
-                start = 0 if k < n_y0_dirs else length - param_cols[k - n_y0_dirs]
+                start = n_params * (1 + k)
                 second_tangent(
                     column,
                     y_local,
@@ -389,7 +390,7 @@ def make_kernel(
                     p_row,
                     y_local[base : base + n_vars],
                     0.0,
-                    seed[start : start + n_params],
+                    p_row[start : start + n_params],
                     seed[0:n_vars],
                     1.0,
                     seed[0:n_params],
@@ -483,12 +484,13 @@ def make_kernel(
             The joint iteration matrix is block lower triangular
 
                 [  M0        ] [ k_y   ]   [ r_y   ]
-                [ -L_k   M0  ] [ k_S_k ] = [ r_S_k ]
+                [ -L_b   M0  ] [ k_s_b ] = [ r_s_b ]
 
-            so the state row solves first, then each sensitivity row against the same
-            factorisation with ``L_k k_y`` added to its right-hand side. The kernel
-            never forms ``L_k``. One second-order sweep of ode_fn gives the correction,
-            seeded with the sensitivity column inside and the state increment outside.
+            so the state row solves first, then each direction's row against the same
+            factorisation with ``L_b k_y`` added to its right-hand side. The kernel
+            never forms ``L_b``. One second-order sweep of ode_fn gives the correction,
+            seeded with the direction ``(s_b, 0, dp_b)`` inside and the state
+            increment outside.
             Like the Jacobian, it stays frozen at the step's base point, and only the
             outer direction changes per stage.
             """
@@ -505,7 +507,7 @@ def make_kernel(
                 k_state[j] = np.float64(k_stages[s, j])
             for k in range(n_sens):
                 base = n_vars + k * n_vars
-                start = 0 if k < n_y0_dirs else length - param_cols[k - n_y0_dirs]
+                start = n_params * (1 + k)
                 second_tangent(
                     coupling,
                     y,
@@ -513,7 +515,7 @@ def make_kernel(
                     p_row,
                     y[base : base + n_vars],
                     0.0,
-                    seed[start : start + n_params],
+                    p_row[start : start + n_params],
                     k_state,
                     0.0,
                     seed[0:n_params],

@@ -97,6 +97,7 @@ from modax._sensitivity import (
     make_quantity_tangent,
     make_second_tangent,
     make_tangent,
+    own_params,
 )
 from modax._sparse_direct import sparse_direct_solver_for
 from modax._sparsity import (
@@ -407,7 +408,8 @@ class _Plan:
     n_params: int
     p_local: int  # the local parameter row's length
     n_sens: int
-    dir_param_col: tuple[int, ...]
+    dir_param_col: tuple[int, ...]  # where each direction's dp starts in the row
+    n_dp: int  # the parameters a direction moves, 0 without directions
 
     def hoff(self, b: int, w: int) -> int:
         """Where upstream ``w``'s coefficients start in reader ``b``'s hseed rows."""
@@ -524,23 +526,15 @@ def plan_hierarchy(
     if patterns is None:
         # __post_init__ has normalised each block's sparsity to a Pattern.
         patterns = tuple(cast(Pattern | None, block.sparsity) for block in blocks)
-    # directions: the user's initial-state block then the parameter block
+    # directions: each moves the whole initial state and the parameters, so
+    # every block carries all of them
     n_sens = spec.n_sens if spec is not None else 0
-    n_y0 = spec.n_y0_dirs if spec is not None else 0
-    param_cols = (
-        tuple(spec.param_seed_columns) if (spec is not None and spec.wrt_params) else ()
+    if spec is not None:
+        own_params(n_params, spec)  # the row holds the parameters and directions
+    dir_param_col = (
+        tuple(spec.direction_offset(k) for k in range(n_sens)) if spec else ()
     )
-    dir_param_col = tuple([-1] * n_y0 + list(param_cols))
-    owner = {}  # user state -> block
-    for b, idx in enumerate(layout):
-        for i in idx:
-            owner[i] = b
-    upstream_closure: list[set[int]] = []
-    for b in range(len(blocks)):
-        closure = {b}
-        for u in reads[b]:
-            closure |= upstream_closure[u]
-        upstream_closure.append(closure)
+    n_dp = spec.n_params if spec is not None else 0
     # Hermite slots, block after block among those something reads
     hslots, p_local = [], n_params
     for b, block in enumerate(blocks):
@@ -551,9 +545,7 @@ def plan_hierarchy(
             hslots.append(-1)
     plans = []
     for b, block in enumerate(blocks):
-        dirs = [
-            k for k in range(n_sens) if k >= n_y0 or owner[k] in upstream_closure[b]
-        ]
+        dirs = list(range(n_sens))
         pos = [-1] * n_sens
         for kk, k in enumerate(dirs):
             pos[k] = kk
@@ -570,7 +562,7 @@ def plan_hierarchy(
                 pattern=patterns[b],
             )
         )
-    return _Plan(tuple(plans), n_vars, n_params, p_local, n_sens, dir_param_col)
+    return _Plan(tuple(plans), n_vars, n_params, p_local, n_sens, dir_param_col, n_dp)
 
 
 # --- generated wrappers: the upstream quantities as polynomials of t ------------------
@@ -1027,7 +1019,8 @@ def _block_functions(
         else None
     )
 
-    # -- seeds: a unit parameter vector plus the upstream sensitivities' Hermite coefficients
+    # -- seeds: the direction's dp plus the upstream sensitivities' Hermite coefficients
+    N_DP = plan.n_dp
     dirs_t = _table(bp.dirs)
     dpc_t = _table(plan.dir_param_col)
     copies = tuple(
@@ -1039,13 +1032,13 @@ def _block_functions(
         copy_t = np.asarray(copies, dtype=np.int32)
 
         @cuda.jit(device=True)
-        def seed(kk, pbuf, hseed):
+        def seed(kk, p_local, pbuf, hseed):
             for c in range(P_LOCAL):
                 pbuf[c] = 0.0
             k = cuda.const.array_like(dirs_t)[kk]
             col = cuda.const.array_like(dpc_t)[k]
-            if col >= 0:
-                pbuf[col] = 1.0
+            for c in range(N_DP):
+                pbuf[c] = p_local[col + c]
             cp = cuda.const.array_like(copy_t)
             for e in range(n_reads):
                 for c in range(cp[e, 2]):
@@ -1054,13 +1047,13 @@ def _block_functions(
     else:
 
         @cuda.jit(device=True)
-        def seed(kk, pbuf, hseed):
+        def seed(kk, p_local, pbuf, hseed):
             for c in range(P_LOCAL):
                 pbuf[c] = 0.0
             k = cuda.const.array_like(dirs_t)[kk]
             col = cuda.const.array_like(dpc_t)[k]
-            if col >= 0:
-                pbuf[col] = 1.0
+            for c in range(N_DP):
+                pbuf[c] = p_local[col + c]
 
     # -- joint right-hand side [f, J S + J_p] and the sensitivity rows' df/dt --------------
     # Without directions the sensitivity loops are left out rather than run
@@ -1076,7 +1069,7 @@ def _block_functions(
             tan = cuda.local.array(n, types.float64)
             for kk in range(ns):
                 base = n + kk * n
-                seed(kk, pbuf, hseed)
+                seed(kk, p_local, pbuf, hseed)
                 tangent(tan, z, t, p_local, z[base : base + n], 0.0, pbuf)
                 for r in range(n):
                     out[base + r] = tan[r]
@@ -1086,7 +1079,7 @@ def _block_functions(
             column = cuda.local.array(n, types.float64)
             for kk in range(ns):
                 base = n + kk * n
-                seed(kk, pbuf, hseed)
+                seed(kk, p_local, pbuf, hseed)
                 second(
                     column,
                     z,
@@ -1171,7 +1164,7 @@ def _block_functions(
                     for kk in range(ns):
                         base = n + kk * n
                         qb = m + kk * m
-                        seed(kk, pbuf, hseed)
+                        seed(kk, p_local, pbuf, hseed)
                         out_tangent(
                             column, th, t, p_local, th[base : base + n], 0.0, pbuf
                         )
@@ -1381,7 +1374,7 @@ def _block_functions(
                 k_state[j] = np.float64(k_stages[s, j])
             for kk in range(ns):
                 base = n + kk * n
-                seed(kk, pbuf, hseed)
+                seed(kk, p_local, pbuf, hseed)
                 second(
                     coupling,
                     y,
@@ -1920,7 +1913,7 @@ def _block_functions(
             column = cuda.local.array(n, types.float64)
             for kk in range(ns):
                 base = n + kk * n
-                seed(kk, pbuf, hseed)
+                seed(kk, p_local, pbuf, hseed)
                 # D2 f[(S_k, 0, e_k), (g, 1, 0)] + D f[(S_k', 0, 0)]
                 second(
                     column,

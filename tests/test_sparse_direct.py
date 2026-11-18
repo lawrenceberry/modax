@@ -481,6 +481,6 @@ def test_gradients_survive_the_sparse_solver():
         return jnp.sum(out[0, -1] ** 2)
 
     p0 = jnp.asarray([50.0, 1.0])
-    builtin = jax.grad(loss)(p0)
-    got = jax.grad(loss)(p0, sparsity=_ring(6))
+    builtin = jax.jacfwd(loss)(p0)
+    got = jax.jacfwd(loss)(p0, sparsity=_ring(6))
     np.testing.assert_allclose(np.asarray(got), np.asarray(builtin), rtol=1e-7)

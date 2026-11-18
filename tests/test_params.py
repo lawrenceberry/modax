@@ -1,9 +1,8 @@
 """``params`` as a pytree, and differentiation that follows its leaves.
 
-JAX tracks symbolic zeros per leaf, so the sensitivity rule integrates only
-the columns of the leaves being differentiated. The first half needs no
-device: it checks the flattening, and which columns the rule asks a stand-in
-solver for. The second solves the linear cascade of ``test_sensitivity``.
+JAX tracks symbolic zeros per leaf, so the sensitivity rule knows which
+columns of the row move. The first half needs no device: it checks the
+flattening, and what the rule hands a stand-in solver. The second solves the linear cascade of ``test_sensitivity``.
 """
 
 import jax
@@ -14,7 +13,7 @@ from numba_cuda_mlir import cuda
 
 from modax import Rodas5P, Tsit5, solve
 from modax._params import as_param_row, param_leaves, param_width
-from modax._sensitivity import SensitivitySpec, make_sensitivity_solver
+from modax._sensitivity import make_sensitivity_solver
 from tests.test_sensitivity import (
     T_SPAN,
     Y0,
@@ -73,85 +72,107 @@ def test_bad_leaves_raise():
         as_param_row(())
 
 
-# --- which columns the rule integrates (no device needed) ------------------
+# --- what the rule hands the directional solver (no device needed) ---------
 N_VARS, N_SAVE = 2, 3
 
 
-def _recording_solver(specs: list[SensitivitySpec | None]):
-    """A stand-in for the kernels that notes each spec and returns a zero history."""
+def _recording(plain: list, calls: list):
+    """Stand-ins for the kernels: the plain solve notes each call, the
+    directional one the columns that move and the directions it is given."""
 
-    def solver_for(spec):
-        def solve(y0, t_span, params):
-            specs.append(spec)
-            n_system = N_VARS if spec is None else spec.n_aug
-            hist = jnp.zeros((jnp.shape(params)[0], N_SAVE, n_system))
-            return hist, None, None
+    def primal_solver(y0, t_span, params):
+        plain.append(np.asarray(params).shape)
+        return jnp.zeros((jnp.shape(params)[0], N_SAVE, N_VARS)), None, None
+
+    def directional(n_columns):
+        def solve(y0, t_span, params, dy0, dparams):
+            calls.append((n_columns, np.asarray(dy0), np.asarray(dparams)))
+            hist = jnp.zeros((jnp.shape(params)[0], N_SAVE, N_VARS))
+            # the tangents come with their directions on the axis before last
+            return (hist, None, None), (hist[:, :, None] + jnp.sum(dparams), None)
 
         return solve
 
-    return solver_for
+    return primal_solver, directional
 
 
-def _solve_with_leaves(specs, leaves):
+def _solve_with_leaves(plain, calls, leaves, y0=None):
     widths = [leaf.shape[-1] for leaf in leaves]
-    fn = make_sensitivity_solver(
-        _recording_solver(specs), N_VARS, widths, sens_error_control=True
-    )
-    hist, _, _ = fn(jnp.zeros((1, N_VARS)), jnp.arange(N_SAVE * 1.0), *leaves)
+    fn = make_sensitivity_solver(*_recording(plain, calls), N_VARS, widths)
+    y0 = jnp.zeros((1, N_VARS)) if y0 is None else y0
+    hist, _, _ = fn(y0, jnp.arange(N_SAVE * 1.0), *leaves)
     return hist
 
 
-def test_only_the_differentiated_leaves_columns_are_integrated():
+def test_only_the_differentiated_leaves_columns_move():
     rates, temp, tail = jnp.ones((1, 2)), jnp.ones((1, 1)), jnp.ones((1, 3))
-
-    specs = []
-    jax.jacfwd(lambda t: _solve_with_leaves(specs, (rates, t, tail)))(temp)
-    assert specs[-1].param_columns == (2,)
-    assert specs[-1].n_aug == N_VARS * 2
-
-    specs = []
-    jax.grad(lambda r, x: _solve_with_leaves(specs, (r, temp, x)).sum(), (0, 1))(
-        rates, tail
+    plain, calls = [], []
+    jax.jvp(
+        lambda r, x: _solve_with_leaves(plain, calls, (r, temp, x)),
+        (rates, tail),
+        (jnp.ones((1, 2)), jnp.ones((1, 3))),
     )
-    assert specs[-1].param_columns == (0, 1, 3, 4, 5)
+    ((n_columns, _, dparams),) = calls
+    assert n_columns == 5
+    np.testing.assert_array_equal(dparams, [[[1.0, 1.0, 0.0, 1.0, 1.0, 1.0]]])
 
 
 def test_stop_gradient_takes_a_leaf_out():
     rates, temp = jnp.ones((1, 2)), jnp.ones((1, 1))
-    specs = []
-    jax.grad(
-        lambda r, t: _solve_with_leaves(specs, (r, jax.lax.stop_gradient(t))).sum(),
-        (0, 1),
-    )(rates, temp)
-    assert specs[-1].param_columns == (0, 1)
+    plain, calls = [], []
+    jax.jvp(
+        lambda r, t: _solve_with_leaves(plain, calls, (r, jax.lax.stop_gradient(t))),
+        (rates, temp),
+        (jnp.ones((1, 2)), jnp.ones((1, 1))),
+    )
+    assert calls[-1][0] == 2
 
 
-def test_every_leaf_differentiated_is_the_whole_row():
-    """The same spec, and so the same kernel, as a plain array."""
-    rates, temp = jnp.ones((1, 2)), jnp.ones((1, 1))
-    specs = []
-    jax.grad(lambda r, t: _solve_with_leaves(specs, (r, t)).sum(), (0, 1))(rates, temp)
-    assert specs[-1].param_columns is None
-    assert specs[-1].n_params == 3
-
-
-def test_differentiating_y0_alone_carries_no_parameter_block():
+def test_differentiating_y0_alone_moves_no_parameter():
     leaves = (jnp.ones((1, 2)), jnp.ones((1, 1)))
-    specs = []
-    widths = [leaf.shape[-1] for leaf in leaves]
-    fn = make_sensitivity_solver(
-        _recording_solver(specs), N_VARS, widths, sens_error_control=True
+    plain, calls = [], []
+    jax.jvp(
+        lambda y: _solve_with_leaves(plain, calls, leaves, y),
+        (jnp.zeros((1, N_VARS)),),
+        (jnp.ones((1, N_VARS)),),
     )
-    jax.jacfwd(lambda y: fn(y, jnp.arange(N_SAVE * 1.0), *leaves)[0])(
-        jnp.zeros((1, N_VARS))
-    )
-    assert specs[-1] == SensitivitySpec(N_VARS, 3, True, False, True, None)
+    ((n_columns, dy0, dparams),) = calls
+    assert n_columns == N_VARS
+    np.testing.assert_array_equal(dy0, np.ones((1, 1, N_VARS)))
+    np.testing.assert_array_equal(dparams, np.zeros((1, 1, 3)))
 
 
 def test_an_undifferentiated_solve_is_the_plain_one():
-    specs = []
-    _solve_with_leaves(specs, (jnp.ones((1, 2)),))
-    assert specs == [None]
+    plain, calls = [], []
+    _solve_with_leaves(plain, calls, (jnp.ones((1, 2)),))
+    assert plain == [(1, 2)] and calls == []
+
+
+def test_forward_mode_hands_the_tangent_to_the_directional_solver():
+    """One direction over every leaf, with zeros where a leaf does not move."""
+    rates, temp = jnp.ones((1, 2)), jnp.ones((1, 1))
+    plain, calls = [], []
+    _, tangent = jax.jvp(
+        lambda r: _solve_with_leaves(plain, calls, (r, temp)),
+        (rates,),
+        (jnp.asarray([[2.0, 3.0]]),),
+    )
+    assert plain == []
+    ((_, dy0, dparams),) = calls
+    np.testing.assert_array_equal(dy0, np.zeros((1, 1, N_VARS)))
+    np.testing.assert_array_equal(dparams, [[[2.0, 3.0, 0.0]]])
+    np.testing.assert_array_equal(tangent, np.full((1, N_SAVE, N_VARS), 5.0))
+
+
+def test_reverse_mode_raises():
+    rates, temp = jnp.ones((1, 2)), jnp.ones((1, 1))
+
+    def loss(r):
+        return _solve_with_leaves([], [], (r, temp)).sum()
+
+    for transform in (jax.grad(loss), jax.jacrev(loss), jax.jit(jax.grad(loss))):
+        with pytest.raises(NotImplementedError, match="forward mode only"):
+            transform(rates)
 
 
 # --- on the device ---------------------------------------------------------
@@ -177,26 +198,26 @@ def test_jacfwd_over_one_leaf_matches_closed_form(solve_fn, kwargs):
 @requires_cuda
 @both_solvers
 def test_leaf_gradients_match_the_whole_array(solve_fn, kwargs):
-    """Each leaf's cotangent is its own columns of the plain array's gradient."""
+    """Each leaf's derivative is its own columns of the plain array's."""
     y0, t_span = jnp.asarray(Y0), jnp.asarray(T_SPAN)
     settings = dict(rtol=1e-10, atol=1e-12, **kwargs)
 
     def loss(params):
         return jnp.sum(solve_fn(cascade, y0, t_span, params, **settings) ** 2)
 
-    whole = np.asarray(jax.grad(loss)(jnp.array([A, B])))
-    tree = jax.grad(loss)({"a": jnp.array(A), "b": jnp.array(B)})
+    whole = np.asarray(jax.jacfwd(loss)(jnp.array([A, B])))
+    tree = jax.jacfwd(loss)({"a": jnp.array(A), "b": jnp.array(B)})
     np.testing.assert_allclose(float(tree["a"]), whole[0], rtol=1e-7)
     np.testing.assert_allclose(float(tree["b"]), whole[1], rtol=1e-7)
 
-    only_a = jax.grad(lambda a: loss((a, B)))(A)
+    only_a = jax.jacfwd(lambda a: loss((a, B)))(A)
     np.testing.assert_allclose(float(only_a), whole[0], rtol=1e-7)
 
 
 @requires_cuda
 @both_solvers
 def test_mixed_shared_and_per_trajectory_leaves(solve_fn, kwargs):
-    """A per-trajectory leaf beside a shared one, under grad and under vmap."""
+    """A per-trajectory leaf beside a shared one, differentiated row by row."""
     t_span = jnp.asarray(T_SPAN)
     y0 = jnp.asarray(Y0)
     rates = jnp.array([[A], [0.4], [1.1]])
@@ -205,16 +226,13 @@ def test_mixed_shared_and_per_trajectory_leaves(solve_fn, kwargs):
     def loss(a):
         return jnp.sum(solve_fn(cascade, y0, t_span, (a, B), **settings) ** 2)
 
-    grad = np.asarray(jax.grad(loss)(rates))
+    grad = np.asarray(jax.vmap(jax.jacfwd(loss))(rates))
     assert grad.shape == (3, 1)
     for row in range(3):
-        single = jax.grad(loss)(rates[row])
+        single = jax.jacfwd(loss)(rates[row])
         np.testing.assert_allclose(grad[row], np.asarray(single), rtol=1e-8)
 
-    def vmapped(a):
-        per_solve = jax.vmap(
-            lambda r: solve_fn(cascade, y0, t_span, (r, B), **settings)
-        )(a)
-        return jnp.sum(per_solve**2)
-
-    np.testing.assert_allclose(np.asarray(jax.grad(vmapped)(rates)), grad, rtol=1e-8)
+    # jacfwd over the whole leaf would send each trajectory all three rows'
+    # directions for its one moving column.
+    with pytest.raises(ValueError, match="directions"):
+        jax.jacfwd(loss)(rates)
