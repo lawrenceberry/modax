@@ -137,8 +137,8 @@ $$M_0\,k_y = r_y, \qquad M_0\,k_s = r_s + L\,k_y,$$
 
 which solves the state row first, then the direction's row against the same
 factors with its right-hand side corrected by the coupling term. $L$ is
-never formed either: $L\,k_y$ is a second directional derivative of $f$
-(see [below](#computing-second-derivatives)).
+never formed either: $L\,k_y$ is a forward-over-forward sweep of $f$,
+`jvp(jvp(f))` in numba-enzyme, which returns the product directly.
 
 `jax.jacfwd` adds one $s_b$ per direction, each with its own coupling block
 $L_b$ below the state and $M_0$ again on its diagonal. Each direction costs
@@ -174,37 +174,3 @@ y = modax.solve(ode_fn, y0, t_span, params, max_directions_per_thread=2)
 ```
 
 The directions then split into groups which each run in their own thread with a copy of the primal trajectory. A saturated GPU device will ultimately do more work, but a small ensemble will finish sooner since its directional derivatives run in parallel.
-
-## Computing second derivatives
-
-The coupling block $L$ is a second derivative of the right-hand side, with
-respect to (state, state) and (state, parameter), contracted with the
-direction:
-
-$$L = \frac{\partial}{\partial y}\left(J_y\,s + J_p\,\dot p\right) = \frac{\partial^2 f}{\partial y\,\partial y}\!\left[\cdot,\,s\right] + \frac{\partial^2 f}{\partial y\,\partial p}\!\left[\cdot,\,\dot p\right].$$
-
-It arises because $s' = J_y(y)\,s + J_p(y)\,\dot p$ is a linear ODE whose
-coefficients depend on $y$, and an implicit method has to differentiate
-those coefficients. A Newton-iterated method such as BDF or an SDIRK scheme
-could treat $J_y$ as a preconditioner and converge regardless of the
-omission, but Rodas5P is linearly implicit: its Jacobian is part of the
-formula, so an approximation to it enters the answer.
-
-The second derivatives are computed with
-[numba-enzyme](https://github.com/Qruise-ai/numba-enzyme), whose `jvp`
-composes with itself. `jvp(jvp(f))` is a forward-over-forward directional
-derivative, $D^2 f(x)[u,v]$. The kernel seeds $u = (s, 0, \dot p)$, the
-direction itself. With $v = (k_y, 0, 0)$ it returns $L\,k_y$ directly, without
-forming the matrix $L$, and with $v = (0, 1, 0)$ it returns the $\partial
-F/\partial t$ of the direction's rows, the other second derivative a
-Rosenbrock method requires. The same mechanism supplies the first-order
-right-hand side: $J_y s + J_p\,\dot p$ is one sweep along $u$, so each
-direction costs one sweep rather than a full Jacobian.
-
-Composing derivatives is less straightforward here than in JAX, where
-`jax.jvp` maps a jaxpr to a jaxpr and is therefore closed under itself. The
-`jvp` of numba-enzyme maps a Python callable to a compiled device symbol, and
-differentiating that symbol again would present Enzyme with an external
-declaration that has no body. The fork instead records the chain of
-differentiations and emits every level as a definition in one module, where a
-single Enzyme pass resolves the nested markers.
