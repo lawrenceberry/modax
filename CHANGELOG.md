@@ -5,6 +5,44 @@ Releases are cut by python-semantic-release from the Conventional Commits on
 
 <!-- version list -->
 
+## v0.5.0 (2026-11-18)
+
+### Chores
+
+- **benchmarks**: Draw sparse modax lines solid
+  ([`58b91e2`](https://github.com/lawrenceberry/modax/commit/58b91e21f7c573c5dfb1bea82081369abe9d5446))
+
+- **benchmarks**: Refresh the VdP gradient timings
+  ([`e614f71`](https://github.com/lawrenceberry/modax/commit/e614f71d5c499fd4a867bfa51f26deec6d85645d))
+
+- **benchmarks**: Time modax gradients by jacfwd
+  ([`7d04a30`](https://github.com/lawrenceberry/modax/commit/7d04a30ebc6eb5f51e0915d983132df4af2917f7))
+
+### Documentation
+
+- Drop the second-derivatives section
+  ([`755d115`](https://github.com/lawrenceberry/modax/commit/755d1153868b98073691fc206be5bc5d08fd664a))
+
+- Explain directional forward sensitivities
+  ([`f702288`](https://github.com/lawrenceberry/modax/commit/f702288b22ee25e00415eb9e26ed7b986d1d4f90))
+
+- Merge the hierarchies page into sparsity
+  ([`e781ba7`](https://github.com/lawrenceberry/modax/commit/e781ba756b9e97da3f0ab3fe15edfb4a5afb6aa2))
+
+- Update the logo to match jaxogo 0.2.0
+  ([`382364d`](https://github.com/lawrenceberry/modax/commit/382364d34f7fe95a24418e18249a0b60a3deb050))
+
+### Features
+
+- Differentiate along tangents in forward mode
+  ([`a7bea12`](https://github.com/lawrenceberry/modax/commit/a7bea1257000bc48cd3afc38b70ad162b346a474))
+
+### Breaking Changes
+
+- Reverse mode (grad, value_and_grad, vjp, jacrev, linearize) raises NotImplementedError. Use
+  jax.jacfwd, with has_aux for the value.
+
+
 ## v0.4.0 (2026-11-13)
 
 ### Documentation
