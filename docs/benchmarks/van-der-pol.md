@@ -105,10 +105,11 @@ uv run python benchmarks/stiff_vdp_sparsity/main.py
 
 The cost of the final state together with its gradient with respect to each
 trajectory's damping scale (a parameter multiplying $\mu$), which is one sensitivity column integrated alongside the
-state (see [Computing gradients](../usage/gradients.md)). modax is differentiated by
-wrapping the solve in `jax.value_and_grad`, which lowers to one kernel launch
-integrating the joint system. Diffrax is differentiated the same way, but in
-reverse mode through its default recursive checkpointing adjoint. DiffEqGPU.jl
+state (see [Computing gradients](../usage/gradients.md)). modax is differentiated in
+forward mode, by `jax.vmap(jax.jacfwd(...))` of one trajectory's loss with the
+value as `has_aux`, which lowers to one kernel launch integrating the joint
+system. Diffrax is differentiated by `jax.value_and_grad`, in reverse mode
+through its default recursive checkpointing adjoint. DiffEqGPU.jl
 differentiates neither ensemble backend, so it integrates hand-derived forward
 sensitivity equations instead. The sparsity-aware modax solver returns value
 and gradient at two to four times the cost of the plain solve -- one extra

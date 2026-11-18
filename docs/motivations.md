@@ -150,7 +150,7 @@ on the slowest member of its own warp of 32 rather than on the slowest member
 of the whole ensemble, and the entire solve is one kernel launch. The kernel is
 exposed to JAX as an XLA FFI custom call, which makes a solve an ordinary JAX
 primitive: it traces under `jax.jit`, an outer `jax.vmap` lowers to a single
-ensemble launch, and `jax.grad` and its relatives work through a forward
+ensemble launch, and `jax.jvp` and `jax.jacfwd` work through a forward
 sensitivity rule. For stiff systems it implements a linearly implicit
 Rosenbrock-Wanner method, whose fixed sequence of linear solves avoids the
 data-dependent Newton iteration that costs a fully implicit method so dearly on

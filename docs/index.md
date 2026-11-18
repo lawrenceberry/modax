@@ -59,7 +59,7 @@ Speeding up solves using knowledge of which inputs affect which outputs.
 :link: usage/gradients
 :link-type: doc
 
-`jax.grad` using continuous forward-sensitivity solves.
+`jax.jvp` and `jax.jacfwd` using continuous forward-sensitivity solves.
 :::
 
 ::::

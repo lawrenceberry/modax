@@ -58,7 +58,7 @@ final, q = modax.solve(ode_fn, y0, t_span, params,
 # final: (N, 1, n_vars), q: (N, n_save, 1)
 ```
 
-The quantities differentiate as normal: `jax.grad` of a loss of `q` integrates the sensitivities and stores each quantity's tangents in the kernel.
+The quantities differentiate as normal: `jax.jacfwd` of a loss of `q` integrates the sensitivities and stores each quantity's tangents in the kernel.
 
 ## Writing ODE function callbacks
 
