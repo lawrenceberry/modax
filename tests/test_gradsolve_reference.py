@@ -80,12 +80,12 @@ def test_unknown_engine_raises(ge):
 
 @pytest.mark.parametrize("record_each_call", [False, True])
 def test_value_and_grad_matches_modax(ge, record_each_call):
-    from benchmarks.benchmark_common import jit_value_and_grad
+    from benchmarks.benchmark_common import jit_value_and_jacfwd
 
     n_osc = 2
     ode_fn, _ = vdp.make_system(n_osc)
     y0, params = vdp.make_scenario(n_osc, N, divergence=0.0)
-    value, grad = jit_value_and_grad(
+    value, grad = jit_value_and_jacfwd(
         solve, ode_fn, vdp.TIMES, sparsity=vdp.make_sparsity(n_osc), **KWARGS
     )(y0, params)
     run = ge.make_value_and_grad(

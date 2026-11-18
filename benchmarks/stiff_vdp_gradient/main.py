@@ -1,4 +1,4 @@
-"""Gradient benchmark on the coupled VDP lattice: ``value_and_grad`` against dimension.
+"""Gradient benchmark on the coupled VDP lattice: value and gradient against dimension.
 
 Sweeps ODE dimension from 2 to 128 (n_osc = 1 to 64) on a log scale with a
 fixed ensemble of 1000 identical trajectories, and times the value *and* the
@@ -6,9 +6,11 @@ gradient of the summed final state with respect to every trajectory's
 parameter -- the lattice has one, the damping scale -- rather than the solve
 alone. Five solvers:
 
-- modax Rodas5P under ``jax.value_and_grad``, which integrates the forward
-  sensitivities jointly with the state in one kernel launch; once handed the
-  lattice's Jacobian sparsity pattern and once without it.
+- modax Rodas5P under ``jax.vmap(jax.jacfwd(...))`` of one trajectory's
+  loss, which integrates the forward sensitivities jointly with the state
+  in one kernel launch, the value coming from the same solve; once handed
+  the lattice's Jacobian sparsity pattern and once without it. modax
+  differentiates in forward mode only.
 - Diffrax Kvaerno5 under ``jax.value_and_grad``, reverse mode through the
   solver with its default ``RecursiveCheckpointAdjoint``.
 - gradsolve Rosenbrock23's record-and-replay adjoint, up to the 12 state
@@ -138,7 +140,7 @@ BENCHMARK = SweepBenchmark(
             color=MODAX_COLOR,
             marker="P",
             linestyle="--",
-            mode="jax_grad",
+            mode="jax_jacfwd",
             solve_fn=modax.solve,
             kwargs=_SOLVER_KWARGS,
             sparse=True,
@@ -148,7 +150,7 @@ BENCHMARK = SweepBenchmark(
             label="modax Rodas5P FP32 (non-sparse)",
             color=MODAX_COLOR,
             marker="X",
-            mode="jax_grad",
+            mode="jax_jacfwd",
             solve_fn=modax.solve,
             kwargs=_SOLVER_KWARGS,
         ),

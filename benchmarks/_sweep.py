@@ -33,6 +33,7 @@ from benchmarks.benchmark_common import (
     get_gpu_name,
     jit_solve,
     jit_value_and_grad,
+    jit_value_and_jacfwd,
     julia_solve_time_ms,
     label_width,
     load_cache,
@@ -93,7 +94,9 @@ class SweepCase(BenchmarkCase):
     ``solve_fn(ode_fn, y0, t_span, params, **kwargs)`` -- a modax solver or a
     Diffrax reference -- which is jitted and timed to completion;
     ``"jax_grad"`` for the same solver timed under ``jax.value_and_grad`` of
-    the summed final state with respect to ``params``; or ``"julia"`` for a
+    the summed final state with respect to ``params``; ``"jax_jacfwd"`` for
+    that value and gradient in forward mode, which is how modax
+    differentiates; or ``"julia"`` for a
     DiffEqGPU ``ensemble_backend``, which reports its own solve time.
     ``sparse`` hands the problem's Jacobian pattern to the solver as
     ``sparsity=``. ``cleanup`` runs after each timing, for a solver that caches
@@ -113,7 +116,7 @@ class SweepCase(BenchmarkCase):
     jit: bool = True
     make_run: Callable[..., Callable[[], Any]] | None = None
     """``make_run(problem, t_span, **kwargs) -> run`` builds the zero-argument
-    callable a ``"jax"`` or ``"jax_grad"`` case times, in place of the plain
+    callable a ``"jax"``, ``"jax_grad"`` or ``"jax_jacfwd"`` case times, in place of the plain
     ``solve_fn`` call, for a solver whose timed call is not one solve: the
     gradsolve record-and-replay gradient, which records a mesh once and then
     differentiates a replay of it (see
@@ -191,7 +194,7 @@ def measure(bench: SweepBenchmark, job: dict) -> float:
             ensemble_backend=case.ensemble_backend,
             **case.kwargs,
         )
-    if case.mode not in ("jax", "jax_grad"):
+    if case.mode not in ("jax", "jax_grad", "jax_jacfwd"):
         raise ValueError(f"unknown sweep case mode: {case.mode!r}")
     assert case.solve_fn is not None or case.make_run is not None
     kwargs = dict(case.kwargs)
@@ -203,6 +206,10 @@ def measure(bench: SweepBenchmark, job: dict) -> float:
         run = case.make_run(problem, bench.t_span, **kwargs)
     elif case.mode == "jax_grad":
         run = jit_value_and_grad(case.solve_fn, problem.ode_fn, bench.t_span, **kwargs)
+    elif case.mode == "jax_jacfwd":
+        run = jit_value_and_jacfwd(
+            case.solve_fn, problem.ode_fn, bench.t_span, **kwargs
+        )
     elif case.jit:
         run = jit_solve(case.solve_fn, problem.ode_fn, bench.t_span, **kwargs)
     else:

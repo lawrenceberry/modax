@@ -255,6 +255,32 @@ def jit_value_and_grad(
     return run
 
 
+def jit_value_and_jacfwd(
+    solve_fn: Callable[..., Any], ode_fn: Callable, t_span: Any, **kwargs: Any
+) -> Callable[[Any, Any], tuple[Any, Any]]:
+    """:func:`jit_value_and_grad`'s value and gradient, in forward mode.
+
+    modax differentiates in forward mode only. Each trajectory's final state
+    depends on its own row of ``params``, so ``jax.jacfwd`` of one
+    trajectory's loss, mapped over the ensemble, is the gradient of the sum:
+    one launch of the whole ensemble with a column per parameter, the cost
+    reverse mode had. ``has_aux`` returns the value from the same solve.
+    """
+
+    def loss(params, y0):
+        value = jnp.sum(solve_fn(ode_fn, y0, t_span, params, **kwargs)[0, -1, :])
+        return value, value
+
+    per_trajectory = jax.vmap(jax.jacfwd(loss, has_aux=True))
+
+    @jax.jit
+    def run(y0, params):
+        grad, value = per_trajectory(params, y0)
+        return jnp.sum(value), grad
+
+    return run
+
+
 def julia_solve_time_ms(
     solve: Any,
     system_name: str,
