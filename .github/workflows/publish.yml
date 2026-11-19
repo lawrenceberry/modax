@@ -17,6 +17,10 @@ on:
 
 jobs:
   release:
+    # Only the upstream repository releases: on a fork this run would cut a
+    # release commit and tag of its own, and the fork's main would diverge.
+    # `publish` needs this job, so it is skipped with it.
+    if: github.repository == 'lawrenceberry/modax'
     runs-on: ubuntu-latest
     # Two releases racing would both compute the same next version.
     concurrency:

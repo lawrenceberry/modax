@@ -90,7 +90,8 @@ Five workflows, all in `.github/workflows/`:
   So **do not bump `version` by hand**, and since the commit message decides
   the release, the `conventional-pre-commit` hook guards it. PyPI's trusted
   publisher is registered against this file's name and the `pypi`
-  environment.
+  environment. The release job runs in `lawrenceberry/modax` only (`if:
+  github.repository == ...`), so a push to a fork's `main` releases nothing.
 
 `ty` is scoped to `modax/` by `[tool.ty.src]` in `pyproject.toml`, which is
 what both CI and the pre-commit hook read (the hook is deliberately passed no
